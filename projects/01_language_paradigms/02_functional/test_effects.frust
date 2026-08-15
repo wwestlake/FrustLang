@@ -1,0 +1,16 @@
+extern fn frust_print_f64(val: f64) -> f64;
+
+fn do_io() -> f64 = {
+    perform Write(123.456);
+    perform Write(789.012);
+    42.0
+}
+
+fn main() -> f64 = {
+    handle do_io() with {
+        effect Write(val) => {
+            frust_print_f64(val);
+            resume(0.0)
+        }
+    }
+}

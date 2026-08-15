@@ -1,0 +1,10 @@
+extern fn print_f64(v: f64);
+
+entry fn main() = {
+    let mut i = 10.0;
+    while i > 0.0 {
+        print_f64(i);
+        i = i - 1.0
+    };
+    print_f64(0.0)
+}

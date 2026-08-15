@@ -1,0 +1,3 @@
+[submodule "projects/06_frust_library"]
+	path = projects/06_frust_library
+	url = https://github.com/wwestlake/frust-library.git
