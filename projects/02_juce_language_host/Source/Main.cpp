@@ -1,12 +1,12 @@
 #include <JuceHeader.h>
-#include "MainComponent.h"
+#include "WorkbenchComponent.h"
 
-class JuceLanguageHostApplication  : public juce::JUCEApplication
+class LagDaemonIDEApplication  : public juce::JUCEApplication
 {
 public:
-    JuceLanguageHostApplication() {}
+    LagDaemonIDEApplication() {}
 
-    const juce::String getApplicationName() override      { return "LagDaemon Language Host Workbench"; }
+    const juce::String getApplicationName() override      { return "LagDaemon Language Research IDE"; }
     const juce::String getApplicationVersion() override   { return "0.1.0"; }
     bool moreThanOneInstanceAllowed() override             { return true; }
 
@@ -37,14 +37,14 @@ public:
                               DocumentWindow::allButtons)
         {
             setUsingNativeTitleBar (true);
-            setContentOwned (new MainComponent(), true);
+            setContentOwned (new WorkbenchComponent(), true);
 
            #if JUCE_IOS || JUCE_ANDROID
             setFullScreen (true);
            #else
             setResizable (true, true);
-            setResizeLimits (600, 400, 1920, 1080);
-            centreWithSize (getWidth(), getHeight());
+            setResizeLimits (800, 600, 3840, 2160);
+            centreWithSize (1280, 800);
            #endif
 
             setVisible (true);
@@ -63,4 +63,4 @@ private:
     std::unique_ptr<MainWindow> mainWindow;
 };
 
-START_JUCE_APPLICATION (JuceLanguageHostApplication)
+START_JUCE_APPLICATION (LagDaemonIDEApplication)
