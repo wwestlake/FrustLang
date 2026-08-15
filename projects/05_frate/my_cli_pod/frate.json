@@ -1,0 +1,8 @@
+{
+  "name": "my_cli_pod",
+  "version": "1.0.0",
+  "type": "bin",
+  "description": "A new Frust pod.",
+  "exports": [],
+  "dependencies": []
+}
