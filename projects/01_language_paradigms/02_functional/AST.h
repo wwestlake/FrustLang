@@ -78,6 +78,7 @@ enum class ExprKind {
     SmartPtrNew, StructLiteral,
     Block, Let, Return, If, While,
     Loop, For, Break, Continue,
+    ArrayLiteral,
     BuildTime, Quote, Unquote,
     Perform, Resume, Handle,
 };
@@ -129,7 +130,7 @@ struct Expr {
     Expr* condExpr = nullptr; // If/While condition, For range start
     Expr* elseExpr = nullptr; // If else body
 
-    std::vector<Expr*> args;          // Call args, Perform args
+    std::vector<Expr*> args;          // Call args, Perform args, ArrayLiteral elements (element count = Vec<N>'s N)
     std::vector<Expr*> statements;    // Block body
     std::vector<StructFieldInit> fields; // StructLiteral
     std::vector<HandleCase> handleCases; // Handle

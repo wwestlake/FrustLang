@@ -14,7 +14,12 @@ CodeEditorTab::CodeEditorTab(const juce::File& file)
     editor.setTabSize(4, true);
     editor.setLineNumbersShown(true);
 
-    if (targetFile.existsAsFile()) document.replaceAllContent(targetFile.loadFileAsString());
+    if (targetFile.existsAsFile()) {
+        suppressDirtyTracking = true;
+        document.replaceAllContent(targetFile.loadFileAsString());
+        suppressDirtyTracking = false;
+        lastKnownModTime = targetFile.getLastModificationTime();
+    }
 
     document.addListener(this);
     addAndMakeVisible(editor);
@@ -23,6 +28,8 @@ CodeEditorTab::CodeEditorTab(const juce::File& file)
     statusBar.setColour(juce::Label::textColourId, juce::Colours::grey);
     statusBar.setText("File: " + displayName() + " | Ready", juce::dontSendNotification);
     addAndMakeVisible(statusBar);
+
+    startTimer(1000);
 }
 
 juce::String CodeEditorTab::displayName() const
@@ -32,6 +39,7 @@ juce::String CodeEditorTab::displayName() const
 
 CodeEditorTab::~CodeEditorTab()
 {
+    stopTimer();
     document.removeListener(this);
 }
 
@@ -53,6 +61,8 @@ void CodeEditorTab::saveFile()
 
     if (targetFile.existsAsFile() || targetFile.create()) {
         targetFile.replaceWithText(document.getAllContent());
+        lastKnownModTime = targetFile.getLastModificationTime();
+        isDirty = false;
         statusBar.setText("File: " + displayName() + " | Saved", juce::dontSendNotification);
     }
 }
@@ -65,12 +75,29 @@ void CodeEditorTab::saveAs(const juce::File& newFile)
 
 void CodeEditorTab::codeDocumentTextInserted(const juce::String&, int)
 {
+    if (!suppressDirtyTracking) isDirty = true;
     statusBar.setText("File: " + displayName() + " | Modified", juce::dontSendNotification);
 }
 
 void CodeEditorTab::codeDocumentTextDeleted(int, int)
 {
+    if (!suppressDirtyTracking) isDirty = true;
     statusBar.setText("File: " + displayName() + " | Modified", juce::dontSendNotification);
+}
+
+void CodeEditorTab::timerCallback()
+{
+    if (targetFile.getFullPathName().isEmpty() || !targetFile.existsAsFile()) return;
+    if (isDirty) return; // never clobber unsaved local edits
+
+    auto diskModTime = targetFile.getLastModificationTime();
+    if (diskModTime == lastKnownModTime) return;
+
+    suppressDirtyTracking = true;
+    document.replaceAllContent(targetFile.loadFileAsString());
+    suppressDirtyTracking = false;
+    lastKnownModTime = diskModTime;
+    statusBar.setText("File: " + displayName() + " | Reloaded (changed on disk)", juce::dontSendNotification);
 }
 
 // ------------------------------------------------------------------------------

@@ -10,7 +10,7 @@
 %define parse.error detailed
 %locations
 
-// 3 known, understood shift/reduce conflicts remain (all resolved correctly
+// 4 known, understood shift/reduce conflicts remain (all resolved correctly
 // by bison's default shift-preference for every valid Frust program):
 //  1. `effect NAME` with both params and a return type omitted, immediately
 //     followed by a top-level statement starting with "(" - LALR can't
@@ -22,11 +22,22 @@
 //     there's no position in the grammar where a *complete* type_expr is
 //     ever legitimately followed by "<", so this can't affect a valid
 //     program's parse.
+//  4. `type NAME = type_base` (type_refinement_opt empty so far), followed
+//     directly by "[" with no separator - could be the start of
+//     type_refinement_opt's own `"[" compare_op signed_num "]"`/
+//     `"[" a..b "]"` suffix continuing this same type_expr, or (since
+//     type_alias_decl needs no trailing ";" and a new decl/stmt can start
+//     right after) the "[" of an unrelated array_literal (Vec<N>
+//     construction) as the next top-level statement. Only reachable by a
+//     type alias with an empty refinement immediately followed, with zero
+//     separator, by a bare array-literal statement - not a shape any real
+//     Frust program has a reason to write. Resolves via shift (attaches to
+//     the refinement) same as every other conflict here.
 // This number is a checked invariant, not a shrug: if a grammar change
 // makes it move, that's a signal to go re-diagnose with `--report=all`
 // (see the diagnosis notes in this file's git history), not to bump it
 // without looking.
-%expect 3
+%expect 4
 
 %code requires {
     #include <cstdint>
@@ -149,7 +160,7 @@
 %type <std::vector<std::string>> ident_path
 %type <frust::Expr*> expr postfix_expr primary_expr literal
 %type <frust::Expr*> stmt trailing_stmt_opt block_expr build_time_expr quote_expr handle_expr struct_literal if_expr while_expr
-%type <frust::Expr*> loop_expr for_expr break_expr continue_expr
+%type <frust::Expr*> loop_expr for_expr break_expr continue_expr array_literal
 %type <std::vector<frust::Expr*>> semi_stmt_list arg_list_opt arg_list
 %type <std::vector<frust::StructFieldInit>> struct_field_init_list_opt struct_field_init_list
 %type <frust::StructFieldInit> struct_field_init
@@ -594,6 +605,19 @@ for_expr:
 break_expr:    "break"    { $$ = arena.NewExpr(ExprKind::Break, ToSourceLoc(@1)); } ;
 continue_expr: "continue" { $$ = arena.NewExpr(ExprKind::Continue, ToSourceLoc(@1)); } ;
 
+// `[e1, e2, ..., eN]` - constructs a fixed-size Vec<N> (N = element count).
+// Reuses arg_list_opt (already used by Call's argument list) rather than a
+// new comma-list production. Conflict-free by the same precedent "(" already
+// sets: "(" plays two roles (parenthesized-expr as a primary_expr
+// alternative vs. Call's own "(" one level up in postfix_expr) without
+// ambiguity, and this "[" sits in a fresh-primary_expr parser state distinct
+// from postfix_expr "[" expr "]" (Index), which only fires after a
+// postfix_expr has already reduced.
+array_literal: "[" arg_list_opt "]" {
+    $$ = arena.NewExpr(ExprKind::ArrayLiteral, ToSourceLoc(@1));
+    $$->args = std::move($2);
+} ;
+
 handle_expr:
     "handle" expr "with" "{" handle_case_list_opt "}" {
         $$ = arena.NewExpr(ExprKind::Handle, ToSourceLoc(@1)); $$->lhs = $2; $$->handleCases = std::move($5);
@@ -634,6 +658,7 @@ primary_expr:
   | for_expr        { $$ = $1; }
   | break_expr      { $$ = $1; }
   | continue_expr   { $$ = $1; }
+  | array_literal   { $$ = $1; }
   // "self" is a reserved keyword, not folded into IDENT, so it needs its
   // own alternative here rather than going through ident_path - but once
   // tokenized this makes it behave exactly like any other identifier, so

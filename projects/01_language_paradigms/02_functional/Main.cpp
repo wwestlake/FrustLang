@@ -9,6 +9,7 @@
 // JITDylib-wide symbol per binding or a persistent module, which is a
 // follow-up, not part of this first JIT pass.
 
+#include <cstdio>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -46,6 +47,29 @@ frust::Program* ParseSource(std::istream& input, AstArena& arena, std::vector<st
     parseErrors.insert(parseErrors.end(), lexer.errors.begin(), lexer.errors.end());
     if (result) ResolveImports(result, arena, parseErrors);
     return result;
+}
+
+// Parses every file in `paths` into the same arena and merges their
+// top-level decls into one Program - this is what lets a single pod's
+// source live in multiple named files (math.fr, console_io.fr, ...)
+// instead of one big lib.fr; they're compiled together as one unit, same
+// as if it had all been one file. Collects parse errors across every file
+// before the caller checks `!parseErrors.empty()`, rather than stopping
+// at the first failing file, so a multi-file error report shows everything
+// wrong in one pass.
+frust::Program* ParseAndMergeFiles(const std::vector<std::string>& paths, AstArena& arena, std::vector<std::string>& parseErrors) {
+    Program* merged = arena.NewProgram();
+    for (const auto& path : paths) {
+        std::ifstream file(path);
+        if (!file) {
+            parseErrors.push_back("frust: cannot open '" + path + "'");
+            continue;
+        }
+        Program* prog = ParseSource(file, arena, parseErrors);
+        if (!prog) continue;
+        merged->decls.insert(merged->decls.end(), prog->decls.begin(), prog->decls.end());
+    }
+    return merged;
 }
 
 std::string SmartPtrKindName(SmartPtrKind kind) {
@@ -289,9 +313,79 @@ void CallAndPrint(const FunctionDecl& fn, void* addr) {
     }
 }
 
-// Export a basic print function for FFI testing
-extern "C" __declspec(dllexport) void frust_print_f64(double val) {
+// Runtime backing for the frust-library `core` pod (extern-declared there,
+// matching these exact signatures/names). Exported from this process's own
+// image so LLVM ORC JIT's default
+// DynamicLibrarySearchGenerator::GetForCurrentProcess() resolves them at
+// JIT time - works for `frust_compiler <file>` and the IDE's REPL (which
+// needs the identical set exported from ITS OWN process image too, see
+// projects/02_juce_language_host/Source/Main.cpp - keep both in sync).
+//
+// NOT yet usable from a `frate build`-produced standalone linked
+// executable - that needs an actual runtime .lib for the linker to pull
+// these symbols from, which doesn't exist yet (AOT/"hard iron mode"
+// compilation is explicitly deferred, same as FRATE_SPEC.md already notes
+// for frate build in general).
+//
+// __declspec(dllexport) is MSVC-only - GCC/Clang don't recognize it at
+// all (a hard compile error, not a harmless no-op). FRUST_RUNTIME_EXPORT
+// is the portable equivalent: dllexport on Windows, explicit default
+// visibility on Linux (matches ELF's default for extern "C" symbols
+// anyway, but stated explicitly so it stays correct even if this file is
+// ever built with -fvisibility=hidden).
+#if defined(_WIN32)
+#define FRUST_RUNTIME_EXPORT extern "C" __declspec(dllexport)
+#else
+#define FRUST_RUNTIME_EXPORT extern "C" __attribute__((visibility("default")))
+#endif
+
+FRUST_RUNTIME_EXPORT void frust_print_f64(double val) {
     std::cout << val << "\n";
+}
+FRUST_RUNTIME_EXPORT void frust_print_str(const char* val) {
+    std::cout << val << "\n";
+}
+
+// Formatting backs core's format_*/concat functions, which println_i64/
+// f64/bool are themselves built from (format -> String, then
+// println_str) rather than each having their own direct-print C export.
+// Frust has no string ownership/allocation of its own yet, so these hand
+// back a pointer into a small rotating pool of static buffers rather than
+// a heap allocation - good enough for "format a couple of values and
+// concat/print them in one expression," NOT safe to stash a returned
+// String past a handful of further format/concat calls (same class of
+// caveat as C's strtok/ctime). kFormatBufferCount is comfortably more than
+// any realistic single expression's nesting depth.
+namespace {
+constexpr int kFormatBufferCount = 16;
+constexpr size_t kFormatBufferSize = 64;
+thread_local char formatBufferPool[kFormatBufferCount][kFormatBufferSize];
+thread_local int formatBufferIndex = 0;
+
+char* nextFormatBuffer() {
+    char* buf = formatBufferPool[formatBufferIndex];
+    formatBufferIndex = (formatBufferIndex + 1) % kFormatBufferCount;
+    return buf;
+}
+} // namespace
+
+FRUST_RUNTIME_EXPORT const char* frust_format_i64(int64_t val) {
+    char* buf = nextFormatBuffer();
+    std::snprintf(buf, kFormatBufferSize, "%lld", static_cast<long long>(val));
+    return buf;
+}
+FRUST_RUNTIME_EXPORT const char* frust_format_f64(double val) {
+    char* buf = nextFormatBuffer();
+    std::snprintf(buf, kFormatBufferSize, "%g", val);
+    return buf;
+}
+FRUST_RUNTIME_EXPORT const char* frust_format_bool(bool val) {
+    return val ? "true" : "false"; // static literals - always valid, no pool slot needed
+}
+FRUST_RUNTIME_EXPORT const char* frust_str_concat(const char* a, const char* b) {
+    char* buf = nextFormatBuffer();
+    std::snprintf(buf, kFormatBufferSize, "%s%s", a, b);
+    return buf;
 }
 
 void optimizeModule(llvm::Module& M) {
@@ -359,16 +453,10 @@ void RunViaJit(std::unique_ptr<llvm::LLVMContext> context, std::unique_ptr<llvm:
     onFound(sym->toPtr<void*>());
 }
 
-void RunFile(const std::string& path) {
-    std::ifstream file(path);
-    if (!file) {
-        std::cerr << "frust: cannot open '" << path << "'\n";
-        return;
-    }
-
+void RunFile(const std::vector<std::string>& paths) {
     AstArena arena;
     std::vector<std::string> parseErrors;
-    Program* prog = ParseSource(file, arena, parseErrors);
+    Program* prog = ParseAndMergeFiles(paths, arena, parseErrors);
 
     if (!parseErrors.empty() || !prog) {
         std::cerr << "frust: " << parseErrors.size() << " error(s), aborting\n";
@@ -410,16 +498,10 @@ void RunFile(const std::string& path) {
     });
 }
 
-void CompileToObject(const std::string& path, const std::string& outputPath) {
-    std::ifstream file(path);
-    if (!file) {
-        std::cerr << "frust: cannot open '" << path << "'\n";
-        return;
-    }
-
+void CompileToObject(const std::vector<std::string>& paths, const std::string& outputPath) {
     AstArena arena;
     std::vector<std::string> parseErrors;
-    Program* prog = ParseSource(file, arena, parseErrors);
+    Program* prog = ParseAndMergeFiles(paths, arena, parseErrors);
 
     if (!parseErrors.empty() || !prog) {
         std::cerr << "frust: " << parseErrors.size() << " error(s), aborting\n";
@@ -521,12 +603,19 @@ int main(int argc, char** argv) {
     llvm::InitializeNativeTargetAsmPrinter();
     llvm::InitializeNativeTargetAsmParser();
 
+    // --emit-obj takes the output path first (always exactly one) followed
+    // by one or more input .fr files, which get parsed and merged into a
+    // single compiled unit - this is what lets a pod's source span
+    // multiple named files (math.fr, console_io.fr, ...) instead of one
+    // big lib.fr. Plain-run mode (no --emit-obj) takes the same "one or
+    // more input files" shape, just without an output path.
     if (argc >= 4 && std::string(argv[1]) == "--emit-obj") {
-        std::string inputFile = argv[2];
-        std::string outputFile = argv[3];
-        frust::CompileToObject(inputFile, outputFile);
+        std::string outputFile = argv[2];
+        std::vector<std::string> inputFiles(argv + 3, argv + argc);
+        frust::CompileToObject(inputFiles, outputFile);
     } else if (argc >= 2) {
-        frust::RunFile(argv[1]);
+        std::vector<std::string> inputFiles(argv + 1, argv + argc);
+        frust::RunFile(inputFiles);
     } else {
         frust::RunRepl();
     }

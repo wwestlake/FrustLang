@@ -5,13 +5,17 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # ------------------------------------------------------------------------------
-# Locate JUCE Framework
+# Locate JUCE Framework - via JUCE_PATH (env var or -DJUCE_PATH=...), not a
+# hardcoded machine-specific path. Set per-platform in CMakePresets.json
+# (see the frust compiler's presets) or export JUCE_PATH in the shell.
 # ------------------------------------------------------------------------------
 if(NOT TARGET juce::juce_core)
-    if(EXISTS "D:/JUCE/CMakeLists.txt")
-        add_subdirectory("D:/JUCE" juce_build)
-    elseif(EXISTS "$ENV{JUCE_PATH}")
+    if(DEFINED JUCE_PATH AND EXISTS "${JUCE_PATH}/CMakeLists.txt")
+        add_subdirectory("${JUCE_PATH}" juce_build)
+    elseif(DEFINED ENV{JUCE_PATH} AND EXISTS "$ENV{JUCE_PATH}/CMakeLists.txt")
         add_subdirectory("$ENV{JUCE_PATH}" juce_build)
+    else()
+        message(FATAL_ERROR "JUCE not found - set JUCE_PATH (cache var or env var) to a JUCE checkout.")
     endif()
 endif()
 
@@ -66,6 +70,17 @@ target_include_directories(frate_lib PUBLIC
 target_link_libraries(frate_lib PUBLIC
     juce::juce_core
 )
+
+# On Linux, juce_core's HTTP support (used by FrateRegistryClient) compiles
+# against libcurl's headers (found via pkg-config above) but JUCE's own
+# CMake doesn't propagate the actual link dependency to consumers - link it
+# explicitly here or every consumer hits "undefined reference to curl_*" at
+# link time despite compiling cleanly. Not needed on Windows (JUCE uses
+# WinHTTP there instead).
+if(UNIX AND NOT APPLE)
+    find_package(CURL REQUIRED)
+    target_link_libraries(frate_lib PUBLIC CURL::libcurl)
+endif()
 
 # ------------------------------------------------------------------------------
 # Add frate Executable Target

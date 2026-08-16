@@ -1,0 +1,40 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 23, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "windows-vcpkg",
+      "displayName": "Windows (vcpkg LLVM 18.1.6 + WinFlexBison)",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/build",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "D:/000 Creation Suite/apps/CreationEngine/vcpkg_installed/x64-windows/share/llvm",
+        "FLEX_EXECUTABLE": "D:/tools/winflexbison/win_flex.exe",
+        "BISON_EXECUTABLE": "D:/tools/winflexbison/win_bison.exe",
+        "FRUST_WINFLEXBISON_DIR": "D:/tools/winflexbison",
+        "JUCE_PATH": "D:/JUCE"
+      }
+    },
+    {
+      "name": "linux",
+      "displayName": "Linux (system flex/bison, LLVM/JUCE via env vars)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-linux",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_PREFIX_PATH": "$env{FRUST_LLVM_PREFIX}",
+        "JUCE_PATH": "$env{JUCE_PATH}"
+      }
+    }
+  ]
+}

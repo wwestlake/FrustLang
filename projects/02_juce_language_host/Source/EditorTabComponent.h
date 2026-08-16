@@ -4,7 +4,8 @@
 #include "FrustTokeniser.h"
 
 class CodeEditorTab : public juce::Component,
-                      private juce::CodeDocument::Listener
+                      private juce::CodeDocument::Listener,
+                      private juce::Timer
 {
 public:
     explicit CodeEditorTab(const juce::File& file);
@@ -24,11 +25,22 @@ private:
     void codeDocumentTextInserted(const juce::String&, int) override;
     void codeDocumentTextDeleted(int, int) override;
 
+    // juce::Timer - polls for external changes (a file edited outside the
+    // IDE, e.g. by another tool) and reloads automatically. Skipped
+    // whenever this tab has unsaved local edits, so an external change
+    // never silently clobbers in-progress work - the one guard kept on
+    // top of "just reload it," everything else about that choice is
+    // exactly as plain as asked for (no prompt, no manual revert action).
+    void timerCallback() override;
+
     juce::File targetFile;
     juce::CodeDocument document;
     FrustTokeniser tokeniser;
     juce::CodeEditorComponent editor { document, &tokeniser };
     juce::Label statusBar;
+    juce::Time lastKnownModTime;
+    bool isDirty = false;
+    bool suppressDirtyTracking = false; // true only while WE are the ones changing document content (load/reload), not the user typing
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(CodeEditorTab)
 };

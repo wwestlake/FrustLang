@@ -16,6 +16,7 @@
 #include "AST.h"
 
 #include <llvm/IR/Constants.h>
+#include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/LLVMContext.h>
@@ -217,6 +218,25 @@ private:
         if (n == "f32") return llvm::Type::getFloatTy(context);
         if (n == "f64") return llvm::Type::getDoubleTy(context);
         if (n == "bool") return llvm::Type::getInt1Ty(context);
+        if (n == "String") return llvm::PointerType::getUnqual(context); // null-terminated i8*, matching FRUST_LANG_SPEC.md's `effect Log(msg: String)`
+
+        // Vec<N> - a fixed-size, compile-time-N f32 vector (linear algebra,
+        // not the unimplemented growable-collection `Vector<T>` from the
+        // spec doc - deliberately different name to avoid confusion).
+        // Represented as a genuine LLVM vector type, not a pointer - unlike
+        // structs/String, a Vec<N> value's own LLVM type is directly
+        // inspectable via getType()->isVectorTy() even under opaque
+        // pointers (opaque pointers only erase pointee info for pointers;
+        // a vector type isn't a pointer at all), so no namedValueStructType-
+        // style side table is needed for it.
+        if (n == "Vec" && type->genericArgs.size() == 1 && type->genericArgs[0].isIntConst) {
+            int64_t count = type->genericArgs[0].intConst;
+            if (count <= 0) {
+                std::cerr << "frust: codegen error: Vec<" << count << "> - size must be a positive integer\n";
+                return llvm::Type::getInt64Ty(context);
+            }
+            return llvm::FixedVectorType::get(llvm::Type::getFloatTy(context), static_cast<unsigned>(count));
+        }
 
         auto structIt = structTypes.find(n);
         if (structIt != structTypes.end()) return llvm::PointerType::getUnqual(context); // structs are always passed/held by pointer
@@ -264,6 +284,16 @@ private:
             case ExprKind::BoolLiteral:
                 return llvm::ConstantInt::get(context, llvm::APInt(1, expr->boolValue ? 1u : 0u));
 
+            // A null-terminated i8* global constant - the `String` type
+            // (see resolveType) is exactly this pointer, nothing richer
+            // (no length-prefixed/owned string type exists yet).
+            case ExprKind::StringLiteral: {
+                llvm::Constant* strConst = llvm::ConstantDataArray::getString(context, expr->text);
+                auto* global = new llvm::GlobalVariable(module, strConst->getType(), true,
+                    llvm::GlobalValue::PrivateLinkage, strConst, ".str");
+                return builder.CreatePointerCast(global, llvm::PointerType::getUnqual(context));
+            }
+
             case ExprKind::Identifier: {
                 auto it = namedValues.find(expr->text);
                 if (it == namedValues.end()) {
@@ -295,6 +325,7 @@ private:
             }
 
             case ExprKind::Binary: return compileBinary(*expr);
+            case ExprKind::Unary: return compileUnary(*expr);
             case ExprKind::Call: return compileCall(*expr);
             case ExprKind::If: return compileIf(*expr);
             case ExprKind::While: return compileWhile(*expr);
@@ -303,6 +334,8 @@ private:
             case ExprKind::Break: return compileBreak(*expr);
             case ExprKind::Continue: return compileContinue(*expr);
             case ExprKind::StructLiteral: return compileStructLiteral(*expr);
+            case ExprKind::ArrayLiteral: return compileArrayLiteral(*expr);
+            case ExprKind::Index: return compileIndex(*expr);
             case ExprKind::Member: return compileMember(*expr);
             case ExprKind::Assign: return compileAssign(*expr);
 
@@ -362,10 +395,62 @@ private:
         }
     }
 
+    // Vec<N> operands - handled here, before compileBinary's scalar isFloat
+    // check, since isFloatingPointTy() returns false for <N x float> (it
+    // only recognizes scalar FP kinds); left unguarded, two Vec<N> operands
+    // would fall into compileBinary's integer branch and crash calling
+    // getIntegerBitWidth() on a vector type.
+    llvm::Value* compileVectorBinary(const Expr& expr, llvm::Value* lhs, llvm::Value* rhs) {
+        bool lhsVec = lhs->getType()->isVectorTy();
+        bool rhsVec = rhs->getType()->isVectorTy();
+
+        if (expr.binaryOp == BinaryOp::Add || expr.binaryOp == BinaryOp::Sub) {
+            if (!lhsVec || !rhsVec) {
+                std::cerr << "frust: codegen error: '+'/'-' needs two Vec<N> operands of the same size (vector-scalar +/- isn't supported)\n";
+                return nullptr;
+            }
+            unsigned lw = llvm::cast<llvm::FixedVectorType>(lhs->getType())->getNumElements();
+            unsigned rw = llvm::cast<llvm::FixedVectorType>(rhs->getType())->getNumElements();
+            if (lw != rw) {
+                std::cerr << "frust: codegen error: Vec<" << lw << "> and Vec<" << rw << "> have different sizes\n";
+                return nullptr;
+            }
+            return expr.binaryOp == BinaryOp::Add
+                ? builder.CreateFAdd(lhs, rhs, "vaddtmp")
+                : builder.CreateFSub(lhs, rhs, "vsubtmp");
+        }
+
+        if (expr.binaryOp == BinaryOp::Mul || expr.binaryOp == BinaryOp::Div) {
+            if (lhsVec && rhsVec) {
+                std::cerr << "frust: codegen error: '*'/'/ ' between two vectors is ambiguous - use dot(a, b) for a dot product\n";
+                return nullptr;
+            }
+            if (expr.binaryOp == BinaryOp::Div && !lhsVec) {
+                std::cerr << "frust: codegen error: scalar / Vec<N> is not supported - only Vec<N> / scalar\n";
+                return nullptr;
+            }
+            llvm::Value* vec = lhsVec ? lhs : rhs;
+            llvm::Value* scalar = lhsVec ? rhs : lhs;
+            scalar = coerceToType(scalar, llvm::Type::getFloatTy(context));
+            unsigned count = llvm::cast<llvm::FixedVectorType>(vec->getType())->getNumElements();
+            llvm::Value* splat = builder.CreateVectorSplat(count, scalar);
+            return expr.binaryOp == BinaryOp::Mul
+                ? builder.CreateFMul(vec, splat, "vmultmp")
+                : builder.CreateFDiv(vec, splat, "vdivtmp");
+        }
+
+        std::cerr << "frust: codegen does not support this operator on Vec<N> yet\n";
+        return nullptr;
+    }
+
     llvm::Value* compileBinary(const Expr& expr) {
         auto* lhs = compileExpr(expr.lhs);
         auto* rhs = compileExpr(expr.rhs);
         if (!lhs || !rhs) return nullptr;
+
+        if (lhs->getType()->isVectorTy() || rhs->getType()->isVectorTy()) {
+            return compileVectorBinary(expr, lhs, rhs);
+        }
 
         bool isFloat = lhs->getType()->isFloatingPointTy() || rhs->getType()->isFloatingPointTy();
 
@@ -392,6 +477,28 @@ private:
             case BinaryOp::Gt:  return isFloat ? builder.CreateFCmpOGT(lhs, rhs, "gttmp") : builder.CreateICmpSGT(lhs, rhs, "gttmp");
             case BinaryOp::Le:  return isFloat ? builder.CreateFCmpOLE(lhs, rhs, "letmp") : builder.CreateICmpSLE(lhs, rhs, "letmp");
             case BinaryOp::Ge:  return isFloat ? builder.CreateFCmpOGE(lhs, rhs, "getmp") : builder.CreateICmpSGE(lhs, rhs, "getmp");
+        }
+        return nullptr;
+    }
+
+    // Deref (`*expr`, for `raw* T`) isn't handled here - out of scope for
+    // now (same "not yet" status as most of the smart-pointer system),
+    // falls through to the same "unsupported expression kind" signal as
+    // before this existed rather than silently misbehaving.
+    llvm::Value* compileUnary(const Expr& expr) {
+        auto* operand = compileExpr(expr.lhs);
+        if (!operand) return nullptr;
+
+        switch (expr.unaryOp) {
+            case UnaryOp::Neg:
+                return operand->getType()->isFloatingPointTy()
+                    ? builder.CreateFNeg(operand, "negtmp")
+                    : builder.CreateNeg(operand, "negtmp");
+            case UnaryOp::Not:
+                return builder.CreateNot(operand, "nottmp");
+            case UnaryOp::Deref:
+                std::cerr << "frust: codegen does not support pointer dereference yet\n";
+                return nullptr;
         }
         return nullptr;
     }
@@ -442,6 +549,55 @@ private:
         val = coerceToType(val, llvm::cast<llvm::AllocaInst>(it->second)->getAllocatedType());
         builder.CreateStore(val, it->second);
         return val;
+    }
+
+    // `[e1, e2, ..., eN]` -> Vec<N>. A genuine SSA vector value (see
+    // resolveType's Vec<N> comment) - no alloca needed, unlike struct
+    // literals right below this.
+    llvm::Value* compileArrayLiteral(const Expr& expr) {
+        if (expr.args.empty()) {
+            std::cerr << "frust: codegen error: array literal must have at least one element\n";
+            return nullptr;
+        }
+
+        llvm::Type* elemTy = llvm::Type::getFloatTy(context);
+        llvm::Type* vecTy = llvm::FixedVectorType::get(elemTy, static_cast<unsigned>(expr.args.size()));
+        llvm::Value* acc = llvm::UndefValue::get(vecTy);
+
+        for (size_t i = 0; i < expr.args.size(); ++i) {
+            auto* val = compileExpr(expr.args[i]);
+            if (!val) return nullptr;
+            val = coerceToType(val, elemTy);
+            acc = builder.CreateInsertElement(acc, val, static_cast<uint64_t>(i));
+        }
+        return acc;
+    }
+
+    // v[i] - only vector indexing exists so far (Vec<N>). A compile-time-
+    // constant index gets a real bounds check (N is known statically from
+    // the vector's LLVM type); a runtime-variable index is not bounds-
+    // checked yet - that needs real bounds-check codegen, out of scope here.
+    llvm::Value* compileIndex(const Expr& expr) {
+        auto* base = compileExpr(expr.lhs);
+        if (!base) return nullptr;
+
+        if (!base->getType()->isVectorTy()) {
+            std::cerr << "frust: codegen does not support indexing this expression yet\n";
+            return nullptr;
+        }
+
+        unsigned count = llvm::cast<llvm::FixedVectorType>(base->getType())->getNumElements();
+        if (expr.rhs->kind == ExprKind::IntLiteral) {
+            int64_t idx = expr.rhs->intValue;
+            if (idx < 0 || static_cast<uint64_t>(idx) >= count) {
+                std::cerr << "frust: codegen error: index " << idx << " out of range for Vec<" << count << ">\n";
+                return nullptr;
+            }
+        }
+
+        auto* indexVal = compileExpr(expr.rhs);
+        if (!indexVal) return nullptr;
+        return builder.CreateExtractElement(base, indexVal);
     }
 
     llvm::Value* compileStructLiteral(const Expr& expr) {
@@ -555,12 +711,86 @@ private:
         return builder.CreateCall(callee, args, callee->getReturnType()->isVoidTy() ? "" : "calltmp");
     }
 
+    // Assumes a/b are already-verified same-size vector values.
+    llvm::Value* vecDotProduct(llvm::Value* a, llvm::Value* b) {
+        unsigned n = llvm::cast<llvm::FixedVectorType>(a->getType())->getNumElements();
+        llvm::Value* prod = builder.CreateFMul(a, b);
+        llvm::Value* sum = builder.CreateExtractElement(prod, static_cast<uint64_t>(0));
+        for (unsigned i = 1; i < n; ++i) {
+            sum = builder.CreateFAdd(sum, builder.CreateExtractElement(prod, static_cast<uint64_t>(i)));
+        }
+        return sum;
+    }
+
+    // Assumes v is already a verified vector value.
+    llvm::Value* vecLength(llvm::Value* v) {
+        llvm::Value* sq = vecDotProduct(v, v);
+        llvm::Function* sqrtFn = llvm::Intrinsic::getDeclaration(&module, llvm::Intrinsic::sqrt, {llvm::Type::getFloatTy(context)});
+        return builder.CreateCall(sqrtFn, {sq});
+    }
+
+    // dot/length/normalize are unconditionally reserved builtin names in
+    // v1 (checked here, before the ordinary module.getFunction lookup) -
+    // a user-defined function with one of these names is permanently
+    // shadowed. Documented tradeoff, not a silent trap.
+    llvm::Value* compileVecBuiltinCall(const std::string& name, const Expr& expr) {
+        if (name == "dot") {
+            if (expr.args.size() != 2) {
+                std::cerr << "frust: codegen error: dot() expects exactly 2 Vec<N> arguments\n";
+                return nullptr;
+            }
+            auto* a = compileExpr(expr.args[0]);
+            auto* b = compileExpr(expr.args[1]);
+            if (!a || !b) return nullptr;
+            if (!a->getType()->isVectorTy() || !b->getType()->isVectorTy()) {
+                std::cerr << "frust: codegen error: dot() expects two Vec<N> arguments\n";
+                return nullptr;
+            }
+            unsigned na = llvm::cast<llvm::FixedVectorType>(a->getType())->getNumElements();
+            unsigned nb = llvm::cast<llvm::FixedVectorType>(b->getType())->getNumElements();
+            if (na != nb) {
+                std::cerr << "frust: codegen error: dot() between Vec<" << na << "> and Vec<" << nb << "> - sizes must match\n";
+                return nullptr;
+            }
+            return vecDotProduct(a, b);
+        }
+        if (name == "length") {
+            if (expr.args.size() != 1) {
+                std::cerr << "frust: codegen error: length() expects exactly 1 Vec<N> argument\n";
+                return nullptr;
+            }
+            auto* v = compileExpr(expr.args[0]);
+            if (!v || !v->getType()->isVectorTy()) {
+                std::cerr << "frust: codegen error: length() expects a Vec<N> argument\n";
+                return nullptr;
+            }
+            return vecLength(v);
+        }
+        // name == "normalize"
+        if (expr.args.size() != 1) {
+            std::cerr << "frust: codegen error: normalize() expects exactly 1 Vec<N> argument\n";
+            return nullptr;
+        }
+        auto* v = compileExpr(expr.args[0]);
+        if (!v || !v->getType()->isVectorTy()) {
+            std::cerr << "frust: codegen error: normalize() expects a Vec<N> argument\n";
+            return nullptr;
+        }
+        llvm::Value* len = vecLength(v);
+        unsigned n = llvm::cast<llvm::FixedVectorType>(v->getType())->getNumElements();
+        llvm::Value* splat = builder.CreateVectorSplat(n, len);
+        return builder.CreateFDiv(v, splat, "normalizetmp");
+    }
+
     llvm::Value* compileCall(const Expr& expr) {
         if (expr.lhs->kind == ExprKind::Member) return compileMethodCall(expr);
 
         std::string targetName;
         if (expr.lhs->kind == ExprKind::Identifier) {
             targetName = expr.lhs->text;
+            if (targetName == "dot" || targetName == "length" || targetName == "normalize") {
+                return compileVecBuiltinCall(targetName, expr);
+            }
         } else if (expr.lhs->kind == ExprKind::Path) {
             targetName = expr.lhs->pathSegments.front();
             for (size_t i = 1; i < expr.lhs->pathSegments.size(); ++i) targetName += "::" + expr.lhs->pathSegments[i];

@@ -98,7 +98,11 @@ bool FrateRegistryClient::publishPod(const PodMetadata& metadata, const juce::St
     auto* obj = new juce::DynamicObject();
     obj->setProperty("description", juce::String(metadata.description));
     obj->setProperty("s3Key", s3Key);
-    obj->setProperty("sizeBytes", sizeBytes);
+    // int64_t is `long` on Linux/AArch64 but `long long` on Windows - only
+    // the latter matches juce::var's juce::int64 (always `long long`)
+    // overload unambiguously, so explicitly cast rather than relying on
+    // int64_t to always mean the same thing as juce::int64.
+    obj->setProperty("sizeBytes", static_cast<juce::int64>(sizeBytes));
     obj->setProperty("license", license);
     
     juce::Array<juce::var> exportsArray;
