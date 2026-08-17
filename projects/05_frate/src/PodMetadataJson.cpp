@@ -20,6 +20,10 @@ PodMetadata PodMetadataJson::fromJson(const juce::var& jsonVar) {
         if (obj->hasProperty("description")) {
             metadata.description = obj->getProperty("description").toString().toStdString();
         }
+
+        if (obj->hasProperty("namespace")) {
+            metadata.namespacePath = obj->getProperty("namespace").toString().toStdString();
+        }
         
         if (obj->hasProperty("exports") && obj->getProperty("exports").isArray()) {
             auto* exportsArray = obj->getProperty("exports").getArray();
@@ -75,6 +79,10 @@ juce::var PodMetadataJson::toJson(const PodMetadata& metadata) {
     
     if (!metadata.description.empty()) {
         obj->setProperty("description", juce::String(metadata.description));
+    }
+
+    if (!metadata.namespacePath.empty()) {
+        obj->setProperty("namespace", juce::String(metadata.namespacePath));
     }
     
     juce::Array<juce::var> exportsArray;

@@ -18,6 +18,16 @@ struct PodMetadata {
     std::string description;
     std::vector<std::string> exports;
     std::vector<PodDependency> dependencies;
+
+    // Optional `::`-separated qualification path a consumer's imported
+    // declarations get prefixed with (e.g. "frust::core"), instead of
+    // the bare pod name (`name` above stays filesystem-safe - it's used
+    // directly as a cache directory name, so it can never contain `::`
+    // itself; this field is the decoupled in-language identity). Empty
+    // by default, meaning "just use `name`" - the reserved `frust`
+    // namespace root is something a pod opts into, not automatic, so
+    // ordinary third-party pods are unaffected.
+    std::string namespacePath;
     
     // Workspace support
     bool isWorkspace = false;
