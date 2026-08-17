@@ -99,6 +99,41 @@ bool linkExecutable(const std::vector<juce::String>& objFiles, const juce::File&
     return false;
 }
 
+// A pod's source files are exactly its entry file plus every sibling file
+// named by a `use self::X;` line in that entry file, in the order those
+// lines appear - explicit, developer-controlled, no directory scanning.
+// A pod with no such lines just compiles its single entry file.
+static bool collectSelfUseFiles(const juce::File& entryFile, juce::Array<juce::File>& sourceFiles, juce::String& errorOut) {
+    sourceFiles.add(entryFile);
+
+    juce::StringArray lines = juce::StringArray::fromLines(entryFile.loadFileAsString());
+    for (const auto& rawLine : lines) {
+        // Strip a trailing `//` comment before matching - directives are
+        // commonly annotated inline (`use self::math; // trig, abs, ...`).
+        juce::String line = rawLine.upToFirstOccurrenceOf("//", false, false).trim();
+        if (!line.startsWith("use self::")) continue;
+
+        if (!line.endsWith(";")) {
+            errorOut = "Malformed 'use self::' directive (missing ';'): " + rawLine.trim();
+            return false;
+        }
+
+        juce::String moduleName = line.substring(juce::String("use self::").length(), line.length() - 1).trim();
+        if (moduleName.isEmpty() || moduleName.containsAnyOf(" \t:")) {
+            errorOut = "Malformed 'use self::' directive: " + rawLine.trim();
+            return false;
+        }
+
+        juce::File modFile = entryFile.getParentDirectory().getChildFile(moduleName + ".fr");
+        if (!modFile.existsAsFile()) {
+            errorOut = "use self::" + moduleName + " - file not found: " + modFile.getFullPathName();
+            return false;
+        }
+        sourceFiles.add(modFile);
+    }
+    return true;
+}
+
 bool buildPod(const juce::File& podDir, bool isRun, const std::map<std::string, juce::File>& localWorkspaceMap, std::vector<juce::String>& workspaceObjFiles) {
     juce::File frateJson = podDir.getChildFile("frate.json");
     if (!frateJson.existsAsFile()) {
@@ -158,19 +193,33 @@ bool buildPod(const juce::File& podDir, bool isRun, const std::map<std::string, 
         workspaceObjFiles.push_back(depObj.getFullPathName());
     }
     
+    // A pod's source isn't limited to its single entry file - sibling
+    // files (math.fr, console_io.fr, ...) get compiled together as one
+    // unit via frust_compiler's multi-file support (--emit-obj <output>
+    // <input...>), but which files those are is controlled entirely by
+    // `use self::X;` lines in the entry file - not a directory scan. A
+    // pod with files sitting in src/ that nothing `use self::`s just
+    // doesn't compile them; that's the point (explicit, not assumed).
+    juce::Array<juce::File> sourceFiles;
+    juce::String collectError;
+    if (!collectSelfUseFiles(entryFile, sourceFiles, collectError)) {
+        std::cerr << "Error: " << collectError << "\n";
+        return false;
+    }
+
     juce::File buildDir = podDir.getChildFile("build");
     buildDir.createDirectory();
-    
+
     juce::File mainObj = buildDir.getChildFile(juce::String(meta.name) + ".o");
-    
-    std::cout << "Compiling " << meta.name << "...\n";
+
+    std::cout << "Compiling " << meta.name << " (" << sourceFiles.size() << " source file(s))...\n";
     juce::ChildProcess compiler;
     juce::StringArray args;
     args.add("frust_compiler");
     args.add("--emit-obj");
-    args.add(entryFile.getFullPathName());
     args.add(mainObj.getFullPathName());
-    
+    for (const auto& f : sourceFiles) args.add(f.getFullPathName());
+
     if (compiler.start(args)) {
         juce::String output = compiler.readAllProcessOutput();
         if (compiler.getExitCode() != 0) {

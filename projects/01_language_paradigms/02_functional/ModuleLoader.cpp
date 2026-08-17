@@ -28,10 +28,13 @@ bool ResolveImports(Program* prog, AstArena& arena, std::vector<std::string>& er
     config.load(juce::File::getCurrentWorkingDirectory().getChildFile("frate.json"));
     bool success = true;
 
-    // Collect pods to import.
+    // Collect pods to import. `use self::X;` is a build-inclusion marker
+    // for frate, not an import - the referenced file's declarations
+    // arrive in this same Program some other way (frate passes it as a
+    // separate frust_compiler argument), so it's a deliberate no-op here.
     std::vector<std::string> podsToImport;
     for (auto* decl : prog->decls) {
-        if (decl->kind == DeclKind::Use) {
+        if (decl->kind == DeclKind::Use && !decl->useDecl->isSelfUse) {
             if (!decl->useDecl->pathSegments.empty()) {
                 podsToImport.push_back(decl->useDecl->pathSegments.front());
             }

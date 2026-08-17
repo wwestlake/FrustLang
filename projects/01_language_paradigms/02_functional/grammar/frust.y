@@ -335,6 +335,18 @@ use_decl:
         $$->pathSegments = std::move($2);
         $$->loc = ToSourceLoc(@1);
     }
+  | "use" "self" "::" IDENT ";" {
+        // `use self::math;` - names a sibling file (src/math.fr) frate
+        // should compile into this pod alongside this file. "self" is the
+        // reserved SELF token (used for method self-params), not a plain
+        // IDENT, so it needs this dedicated alternative rather than being
+        // foldable into ident_path (which would make "self" a valid path
+        // segment everywhere, not just here).
+        $$ = arena.NewUseDecl();
+        $$->isSelfUse = true;
+        $$->pathSegments.push_back($4);
+        $$->loc = ToSourceLoc(@1);
+    }
 ;
 
 // Ports (`in`/`out`) always precede wiring statements (`o = s * f`)

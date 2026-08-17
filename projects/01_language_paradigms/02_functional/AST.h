@@ -204,6 +204,14 @@ struct ComponentDecl {
 
 struct UseDecl {
     std::vector<std::string> pathSegments; // e.g. ["dsp_utils", "Gain"]
+    // `use self::math;` - names a sibling file (src/math.fr) frate should
+    // compile alongside this one, in the order these appear. Purely a
+    // build-inclusion marker: ModuleLoader::ResolveImports treats
+    // isSelfUse as a no-op (the referenced file's declarations arrive via
+    // frate passing it as a separate frust_compiler argument, same
+    // compilation unit either way) - it does NOT namespace-qualify
+    // anything. pathSegments holds just the one file/module name.
+    bool isSelfUse = false;
     SourceLoc loc;
 };
 
