@@ -61,6 +61,13 @@ juce_add_gui_app(LagDaemonResearchIDE
     VERSION 0.1.0
 )
 
+# juce_add_gui_app names the output binary after PRODUCT_NAME by default
+# (fine for a double-click desktop app, unusable from a shell - spaces
+# need quoting every time). Same OUTPUT_NAME override pattern frate_cli
+# already uses - PRODUCT_NAME stays as the pretty display name (window
+# title, About dialog), the actual binary gets a short CLI-friendly name.
+set_target_properties(LagDaemonResearchIDE PROPERTIES OUTPUT_NAME "frust_ide")
+
 target_sources(LagDaemonResearchIDE PRIVATE
     Source/Main.cpp
     Source/WorkbenchComponent.h
