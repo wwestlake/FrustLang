@@ -68,7 +68,10 @@ void DesktopAuthSession::saveToDisk() const
 
     juce::ValueTree tree("DesktopAuthSession");
     tree.setProperty("token", session.token, nullptr);
-    tree.setProperty("expiresAt", session.expiresAt, nullptr);
+    // int64_t is `long` on Linux/AArch64 but `long long` on Windows - only
+    // the latter matches juce::var's juce::int64 (always `long long`)
+    // overload unambiguously (see FrateRegistryClient.cpp for the same fix).
+    tree.setProperty("expiresAt", static_cast<juce::int64>(session.expiresAt), nullptr);
     tree.setProperty("email", session.user.email, nullptr);
     tree.setProperty("displayName", session.user.displayName, nullptr);
     tree.setProperty("role", session.user.role, nullptr);
@@ -723,7 +726,11 @@ void DesktopAuthSession::loadSessionFromValueTree(const juce::ValueTree& tree)
 {
     juce::ScopedLock lock(sessionLock);
     session.token = tree.getProperty("token").toString();
-    session.expiresAt = static_cast<std::int64_t>(tree.getProperty("expiresAt", 0));
+    // Same ambiguity as the write side above - go through juce::int64
+    // explicitly first (var has a direct operator for it), then let that
+    // convert to int64_t normally rather than asking static_cast to pick
+    // an overload straight from var to int64_t itself.
+    session.expiresAt = static_cast<std::int64_t>(static_cast<juce::int64>(tree.getProperty("expiresAt", 0)));
     session.user.email = tree.getProperty("email").toString();
     session.user.displayName = tree.getProperty("displayName").toString();
     session.user.role = tree.getProperty("role").toString();
