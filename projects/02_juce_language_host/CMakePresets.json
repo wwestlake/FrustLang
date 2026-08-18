@@ -4,7 +4,7 @@
   "configurePresets": [
     {
       "name": "windows-vcpkg",
-      "displayName": "Windows (vcpkg LLVM 18.1.6 + WinFlexBison)",
+      "displayName": "Windows (JUCE local checkout)",
       "generator": "Visual Studio 17 2022",
       "binaryDir": "${sourceDir}/build",
       "condition": {

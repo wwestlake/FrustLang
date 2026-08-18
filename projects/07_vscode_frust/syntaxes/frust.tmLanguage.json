@@ -1,0 +1,155 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Frust",
+  "scopeName": "source.frust",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    { "include": "#storage-modifiers" },
+    { "include": "#control-keywords" },
+    { "include": "#smart-pointer-keywords" },
+    { "include": "#types" },
+    { "include": "#function-declaration" },
+    { "include": "#self-use" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.frust",
+          "match": "//.*$"
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.frust",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.frust",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.frust",
+          "match": "\\b[0-9]+\\.[0-9]+\\b"
+        },
+        {
+          "name": "constant.numeric.integer.frust",
+          "match": "\\b[0-9]+\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.frust",
+          "match": "\\b(true|false)\\b"
+        },
+        {
+          "name": "variable.language.self.frust",
+          "match": "\\bself\\b"
+        },
+        {
+          "name": "keyword.other.frust",
+          "match": "\\b(let|mut|return|struct|type|impl|effect|perform|handle|resume|with|component|as|entry|use|in|out|build_time|quote|unquote)\\b"
+        }
+      ]
+    },
+    "storage-modifiers": {
+      "patterns": [
+        {
+          "name": "storage.modifier.frust",
+          "match": "\\b(pub|unsafe|extern)\\b"
+        }
+      ]
+    },
+    "control-keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.frust",
+          "match": "\\b(if|else|while|loop|for|break|continue)\\b"
+        }
+      ]
+    },
+    "smart-pointer-keywords": {
+      "patterns": [
+        {
+          "name": "storage.modifier.smartptr.frust",
+          "match": "\\b(own|shared|weak|raw)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.primitive.frust",
+          "match": "\\b(i8|u8|i16|u16|i32|u32|i64|u64|usize|isize|f32|f64|bool|String)\\b"
+        },
+        {
+          "name": "support.type.generic.frust",
+          "match": "\\bVec(?=<)"
+        },
+        {
+          "name": "entity.name.type.frust",
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+    "function-declaration": {
+      "patterns": [
+        {
+          "match": "\\b(fn)\\s+([a-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.other.fn.frust" },
+            "2": { "name": "entity.name.function.frust" }
+          }
+        }
+      ]
+    },
+    "self-use": {
+      "patterns": [
+        {
+          "match": "\\b(use)\\s+(self)\\s*(::)\\s*([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.other.frust" },
+            "2": { "name": "variable.language.self.frust" },
+            "3": { "name": "punctuation.accessor.frust" },
+            "4": { "name": "entity.name.namespace.frust" }
+          }
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.arrow.frust",
+          "match": "->|=>"
+        },
+        {
+          "name": "keyword.operator.comparison.frust",
+          "match": "==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.assignment.frust",
+          "match": "="
+        },
+        {
+          "name": "keyword.operator.arithmetic.frust",
+          "match": "\\+|-|\\*|/|%"
+        },
+        {
+          "name": "punctuation.separator.namespace.frust",
+          "match": "::"
+        }
+      ]
+    }
+  }
+}

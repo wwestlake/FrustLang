@@ -22,6 +22,19 @@ struct SourceLoc {
     int col = 0;
 };
 
+// A single parser syntax error with a real position - for consumers that
+// need structured {line, col} (frust_lsp's diagnostics) rather than the
+// pre-formatted human-readable strings the existing `parseErrors`
+// std::vector<std::string> carries. Deliberately separate: parseErrors
+// also holds position-less errors (file-not-found, import-resolution
+// failures), so repurposing it would force every one of those to fake a
+// location instead of just not having one.
+struct ParseError {
+    int line = 0;
+    int col = 0;
+    std::string message;
+};
+
 enum class SmartPtrKind { None, Own, Shared, Weak, Raw, Ref };
 
 // How a method's first parameter binds the receiver - `self` / `&self` /

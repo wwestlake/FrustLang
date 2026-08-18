@@ -99,9 +99,10 @@ std::string ReplSession::evaluate(const std::string& line) {
 
     Lexer lexer(&input);
     Program* prog = nullptr;
-    Parser parser(lexer, arena, parseErrors, prog);
+    std::vector<ParseError> structuredErrors; // unused here - frust_lsp has its own ParseSource that reads these
+    Parser parser(lexer, arena, parseErrors, prog, structuredErrors);
     parser.parse();
-    
+
     parseErrors.insert(parseErrors.end(), lexer.errors.begin(), lexer.errors.end());
 
     if (prog) {
@@ -140,9 +141,10 @@ std::vector<std::string> ReplSession::runScript(const std::string& source) {
 
     Lexer lexer(&input);
     Program* prog = nullptr;
-    Parser parser(lexer, arena, parseErrors, prog);
+    std::vector<ParseError> structuredErrors; // unused here - frust_lsp has its own ParseSource that reads these
+    Parser parser(lexer, arena, parseErrors, prog, structuredErrors);
     parser.parse();
-    
+
     parseErrors.insert(parseErrors.end(), lexer.errors.begin(), lexer.errors.end());
 
     if (prog) {

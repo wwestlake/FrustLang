@@ -50,3 +50,12 @@ target_include_directories(ai_provider PUBLIC
 target_link_libraries(ai_provider PUBLIC
     juce::juce_core
 )
+
+# Same gap as frate_lib (see its CMakeLists.txt for the full explanation):
+# OpenAiProvider's juce::URL HTTP calls compile against libcurl's headers
+# via JUCE's pkg-config detection, but JUCE doesn't propagate the actual
+# link dependency to consumers on Linux.
+if(UNIX AND NOT APPLE)
+    find_package(CURL REQUIRED)
+    target_link_libraries(ai_provider PUBLIC CURL::libcurl)
+endif()

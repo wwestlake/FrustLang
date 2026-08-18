@@ -73,6 +73,7 @@
 %parse-param { frust::AstArena& arena }
 %parse-param { std::vector<std::string>& parseErrors }
 %parse-param { frust::Program*& result }
+%parse-param { std::vector<frust::ParseError>& structuredErrors }
 
 %code {
     #include "Lexer.h"
@@ -701,8 +702,9 @@ primary_expr:
 namespace frust {
 
 void Parser::error(const location_type& loc, const std::string& msg) {
-    parseErrors.push_back("frust: syntax error at line " + std::to_string(loc.begin.line) + 
+    parseErrors.push_back("frust: syntax error at line " + std::to_string(loc.begin.line) +
                           ", col " + std::to_string(loc.begin.column) + ": " + msg);
+    structuredErrors.push_back({loc.begin.line, loc.begin.column, msg});
 }
 
 } // namespace frust

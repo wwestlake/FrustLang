@@ -5,32 +5,41 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # ------------------------------------------------------------------------------
-# Locate Local JUCE Installation & juce_docking Library
+# Locate JUCE - via JUCE_PATH (cache var or env var), not a hardcoded
+# machine-specific path (same pattern as frate/juce_docking/ai_provider's
+# CMakeLists.txt). Sibling projects below are referenced by relative path
+# instead - they live in this same repo on every platform, so there's
+# nothing machine-specific to resolve there at all.
 # ------------------------------------------------------------------------------
-if(EXISTS "D:/JUCE/CMakeLists.txt")
-    message(STATUS "LagDaemonResearchIDE: Using local JUCE installation at D:/JUCE")
-    add_subdirectory("D:/JUCE" juce_build)
+if(NOT TARGET juce::juce_core)
+    if(DEFINED JUCE_PATH AND EXISTS "${JUCE_PATH}/CMakeLists.txt")
+        add_subdirectory("${JUCE_PATH}" juce_build)
+    elseif(DEFINED ENV{JUCE_PATH} AND EXISTS "$ENV{JUCE_PATH}/CMakeLists.txt")
+        add_subdirectory("$ENV{JUCE_PATH}" juce_build)
+    else()
+        message(FATAL_ERROR "JUCE not found - set JUCE_PATH (cache var or env var) to a JUCE checkout.")
+    endif()
 endif()
 
-if(EXISTS "D:/000 Tech Research/projects/03_juce_docking_system/CMakeLists.txt")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../03_juce_docking_system/CMakeLists.txt")
     message(STATUS "LagDaemonResearchIDE: Adding juce_docking library")
-    add_subdirectory("D:/000 Tech Research/projects/03_juce_docking_system" juce_docking_build)
+    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../03_juce_docking_system" juce_docking_build)
 endif()
 
-if(EXISTS "D:/000 Tech Research/projects/01_language_paradigms/02_functional/CMakeLists.txt")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../01_language_paradigms/02_functional/CMakeLists.txt")
     message(STATUS "LagDaemonResearchIDE: Adding frust_lang library")
-    add_subdirectory("D:/000 Tech Research/projects/01_language_paradigms/02_functional" frust_lang_build)
+    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../01_language_paradigms/02_functional" frust_lang_build)
 endif()
 
-if(EXISTS "D:/000 Tech Research/projects/04_ai_provider/CMakeLists.txt")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../04_ai_provider/CMakeLists.txt")
     message(STATUS "LagDaemonResearchIDE: Adding ai_provider library")
-    add_subdirectory("D:/000 Tech Research/projects/04_ai_provider" ai_provider_build)
+    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../04_ai_provider" ai_provider_build)
 endif()
 
-if(EXISTS "D:/000 Tech Research/projects/05_frate/CMakeLists.txt")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../05_frate/CMakeLists.txt")
     if(NOT TARGET frate_lib)
         message(STATUS "LagDaemonResearchIDE: Adding frate_lib library")
-        add_subdirectory("D:/000 Tech Research/projects/05_frate" frate_build)
+        add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../05_frate" frate_build)
     endif()
 endif()
 
@@ -99,5 +108,14 @@ target_link_libraries(LagDaemonResearchIDE PRIVATE
     juce::juce_gui_basics
     juce::juce_gui_extra
 )
+
+# See juce_docking's CMakeLists.txt for the full explanation - this target
+# also compiles juce_gui_extra.cpp itself (JUCE recompiles each module per
+# linking target on Linux) and needs the same GTK3 include path.
+if(UNIX AND NOT APPLE)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
+    target_include_directories(LagDaemonResearchIDE PRIVATE ${GTK3_INCLUDE_DIRS})
+endif()
 
 juce_generate_juce_header(LagDaemonResearchIDE)

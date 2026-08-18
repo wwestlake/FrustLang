@@ -162,3 +162,14 @@ if(WIN32)
     target_compile_definitions(frust_compiler PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 target_link_libraries(frust_compiler PRIVATE frust_lang ${FRUST_LLVM_LIBS})
+
+# ------------------------------------------------------------------------------
+# Install - on Linux, CMAKE_INSTALL_PREFIX is set by the "linux" preset to
+# the shared drive (/mnt/dev/common/user), so `ninja install` (or
+# `cmake --build --target install`) puts frust_compiler on every Pi's PATH
+# via one shared copy, no per-machine build needed. RUNTIME/ARCHIVE are the
+# standard CMake install-component names - RUNTIME is executables (-> bin),
+# ARCHIVE is static libs (-> lib).
+# ------------------------------------------------------------------------------
+install(TARGETS frust_compiler RUNTIME DESTINATION bin)
+install(TARGETS frust_lang ARCHIVE DESTINATION lib)

@@ -14,7 +14,8 @@ namespace frust {
 static Program* ParseSource(std::istream& input, AstArena& arena, std::vector<std::string>& parseErrors) {
     Lexer lexer(&input);
     Program* result = nullptr;
-    Parser parser(lexer, arena, parseErrors, result);
+    std::vector<ParseError> structuredErrors; // unused here - frust_lsp has its own ParseSource that reads these
+    Parser parser(lexer, arena, parseErrors, result, structuredErrors);
     parser.parse();
     parseErrors.insert(parseErrors.end(), lexer.errors.begin(), lexer.errors.end());
     return result;

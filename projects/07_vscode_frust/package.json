@@ -1,0 +1,61 @@
+{
+  "name": "frust-language-support",
+  "displayName": "Frust Language Support",
+  "description": "Syntax highlighting and language server support for the Frust language.",
+  "version": "0.1.0",
+  "publisher": "lagdaemon",
+  "icon": "images/icon.png",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": ["Programming Languages"],
+  "activationEvents": [
+    "onLanguage:frust"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "frust",
+        "aliases": ["Frust", "frust"],
+        "extensions": [".fr", ".frust"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "frust",
+        "scopeName": "source.frust",
+        "path": "./syntaxes/frust.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "frust",
+        "path": "./snippets/frust.json"
+      }
+    ],
+    "configuration": {
+      "title": "Frust",
+      "properties": {
+        "frust.languageServerPath": {
+          "type": "string",
+          "default": "frust_lsp",
+          "description": "Path to the frust_lsp executable. Defaults to \"frust_lsp\", relying on it being on PATH."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "tsc -p .",
+    "compile": "tsc -p ."
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.75.0",
+    "typescript": "^5.4.0"
+  }
+}

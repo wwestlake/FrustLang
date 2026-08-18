@@ -10,10 +10,19 @@
 // JIT-executes Frust code inside THIS process, so it needs its own copy of
 // these exported symbols; nothing in the CLI executable's image is visible
 // here. Keep both copies in sync if the set changes.
-extern "C" __declspec(dllexport) void frust_print_f64(double val) {
+//
+// __declspec(dllexport) is MSVC-only - see frust_compiler's Main.cpp for
+// the full explanation of FRUST_RUNTIME_EXPORT.
+#if defined(_WIN32)
+#define FRUST_RUNTIME_EXPORT extern "C" __declspec(dllexport)
+#else
+#define FRUST_RUNTIME_EXPORT extern "C" __attribute__((visibility("default")))
+#endif
+
+FRUST_RUNTIME_EXPORT void frust_print_f64(double val) {
     std::cout << val << "\n";
 }
-extern "C" __declspec(dllexport) void frust_print_str(const char* val) {
+FRUST_RUNTIME_EXPORT void frust_print_str(const char* val) {
     std::cout << val << "\n";
 }
 
@@ -30,20 +39,20 @@ char* nextFormatBuffer() {
 }
 } // namespace
 
-extern "C" __declspec(dllexport) const char* frust_format_i64(int64_t val) {
+FRUST_RUNTIME_EXPORT const char* frust_format_i64(int64_t val) {
     char* buf = nextFormatBuffer();
     std::snprintf(buf, kFormatBufferSize, "%lld", static_cast<long long>(val));
     return buf;
 }
-extern "C" __declspec(dllexport) const char* frust_format_f64(double val) {
+FRUST_RUNTIME_EXPORT const char* frust_format_f64(double val) {
     char* buf = nextFormatBuffer();
     std::snprintf(buf, kFormatBufferSize, "%g", val);
     return buf;
 }
-extern "C" __declspec(dllexport) const char* frust_format_bool(bool val) {
+FRUST_RUNTIME_EXPORT const char* frust_format_bool(bool val) {
     return val ? "true" : "false";
 }
-extern "C" __declspec(dllexport) const char* frust_str_concat(const char* a, const char* b) {
+FRUST_RUNTIME_EXPORT const char* frust_str_concat(const char* a, const char* b) {
     char* buf = nextFormatBuffer();
     std::snprintf(buf, kFormatBufferSize, "%s%s", a, b);
     return buf;

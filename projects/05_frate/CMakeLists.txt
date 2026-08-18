@@ -93,3 +93,8 @@ set_target_properties(frate_cli PROPERTIES OUTPUT_NAME "frate")
 target_link_libraries(frate_cli PRIVATE
     frate_lib
 )
+
+# See the frust compiler's CMakeLists.txt for what CMAKE_INSTALL_PREFIX
+# actually resolves to (the shared drive, on Linux).
+install(TARGETS frate_cli RUNTIME DESTINATION bin)
+install(TARGETS frate_lib ARCHIVE DESTINATION lib)
