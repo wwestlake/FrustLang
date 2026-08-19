@@ -295,8 +295,41 @@ private:
             }
 
             case ExprKind::Identifier: {
+                // `null` - a null pointer constant, same `ptr` representation
+                // as String/any struct/any function value here. Recognized
+                // as a magic identifier rather than a real keyword/grammar
+                // token: mem.fr and file_io.fr already document needing this
+                // exact thing ("no way to pass a null String literal") for
+                // things like a caller-optional buffer or (as of this
+                // change) CreateThread/pthread_create's optional out-params.
+                // No Frust-level way to *test* a value against null yet
+                // (no pointer-equality comparison implemented) - this only
+                // covers producing one to pass outward, not consuming one
+                // back.
+                if (expr->text == "null") {
+                    return llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(context));
+                }
                 auto it = namedValues.find(expr->text);
                 if (it == namedValues.end()) {
+                    // Not a local/param - if it names a known top-level
+                    // function and we're not the callee of an immediate
+                    // Call (compileCall handles that path itself, straight
+                    // to a `call` instruction), treat the bare name as a
+                    // C-style function-to-pointer decay: the function's own
+                    // address, exactly the same `ptr` representation String
+                    // already uses (see resolveType's String case) - so it
+                    // can be stored into a String-typed local, passed to an
+                    // extern fn expecting one, or held in a struct field,
+                    // with zero new type-system surface. Frust code can't
+                    // yet call this value back indirectly (no ExprKind for
+                    // an indirect call) - that's a real, separate feature,
+                    // not implemented by this change. This exists to let a
+                    // Frust function's address reach a C API that invokes
+                    // it itself, e.g. CreateThread/pthread_create's start
+                    // routine.
+                    if (llvm::Function* fn = module.getFunction(expr->text)) {
+                        return fn;
+                    }
                     std::cerr << "frust: codegen error: unknown identifier '" << expr->text << "'\n";
                     return nullptr;
                 }
