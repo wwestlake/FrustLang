@@ -58,6 +58,24 @@ FRUST_RUNTIME_EXPORT const char* frust_str_concat(const char* a, const char* b) 
     return buf;
 }
 
+// Kept identical to frust_compiler's Main.cpp - see that file's comment
+// for the full rationale (indexed scalar read/write into a raw buffer,
+// the one primitive Frust's own codegen is still missing).
+FRUST_RUNTIME_EXPORT int64_t frust_buf_get_i64(const int64_t* base, int64_t idx) {
+    return base[idx];
+}
+FRUST_RUNTIME_EXPORT void frust_buf_set_i64(int64_t* base, int64_t idx, int64_t val) {
+    base[idx] = val;
+}
+
+// Kept identical to frust_compiler's Main.cpp - see that file's comment.
+FRUST_RUNTIME_EXPORT void* frust_buf_get_ptr(void* const* base, int64_t idx) {
+    return base[idx];
+}
+FRUST_RUNTIME_EXPORT void frust_buf_set_ptr(void** base, int64_t idx, void* val) {
+    base[idx] = val;
+}
+
 class LagDaemonIDEApplication  : public juce::JUCEApplication
 {
 public:

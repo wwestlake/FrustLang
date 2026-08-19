@@ -389,6 +389,36 @@ FRUST_RUNTIME_EXPORT const char* frust_str_concat(const char* a, const char* b) 
     return buf;
 }
 
+// Indexed scalar read/write into an arbitrary buffer (e.g. one returned
+// by mem.fr's alloc()). This is the one primitive Frust's own codegen is
+// still missing (no pointer-dereference/indexed-write support - see
+// UnaryOp::Deref's "not supported yet" branch in Codegen.h, and
+// compileAssign only handling struct-field LHS, not Index), so it's
+// exposed the same way frust_format_*/frust_print_str already are: a
+// small fixed-arity C helper a Frust `extern fn` can call directly.
+// idx is an element index (not a byte offset) - matches core/mem.fr's
+// existing alloc()-returns-a-buffer convention. No bounds checking, same
+// "caller's problem" stance as raw C pointer arithmetic.
+FRUST_RUNTIME_EXPORT int64_t frust_buf_get_i64(const int64_t* base, int64_t idx) {
+    return base[idx];
+}
+FRUST_RUNTIME_EXPORT void frust_buf_set_i64(int64_t* base, int64_t idx, int64_t val) {
+    base[idx] = val;
+}
+
+// Pointer-slot sibling of the above - lets a Frust buffer hold other
+// pointers (another buffer's address, a struct's address, etc.) without
+// needing a pointer<->i64 cast Frust's coerceToType doesn't implement.
+// Exists specifically so a struct constructed in one function's stack
+// frame can be safely handed off to a spawned thread that outlives that
+// frame: pack its would-be fields into a heap buffer via this instead.
+FRUST_RUNTIME_EXPORT void* frust_buf_get_ptr(void* const* base, int64_t idx) {
+    return base[idx];
+}
+FRUST_RUNTIME_EXPORT void frust_buf_set_ptr(void** base, int64_t idx, void* val) {
+    base[idx] = val;
+}
+
 void optimizeModule(llvm::Module& M) {
     llvm::LoopAnalysisManager LAM;
     llvm::FunctionAnalysisManager FAM;
