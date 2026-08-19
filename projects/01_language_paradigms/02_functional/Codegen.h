@@ -828,12 +828,22 @@ private:
             targetName = expr.lhs->pathSegments.front();
             for (size_t i = 1; i < expr.lhs->pathSegments.size(); ++i) targetName += "::" + expr.lhs->pathSegments[i];
         } else {
-            std::cerr << "frust: codegen only supports calling a plain function name or path right now\n";
-            return nullptr;
+            // Not a bare name/path - the callee is some other expression
+            // (e.g. a local holding a function value received as a
+            // parameter or loaded from a buffer). Try it as an indirect
+            // call rather than rejecting outright.
+            return compileIndirectCall(expr);
         }
 
         llvm::Function* callee = module.getFunction(targetName);
         if (!callee) {
+            // Not a known top-level function - if it's a local/param
+            // (e.g. a String-typed variable holding a function's address,
+            // via the ExprKind::Identifier address-of-decay above), try an
+            // indirect call before giving up.
+            if (namedValues.count(targetName)) {
+                return compileIndirectCall(expr);
+            }
             std::cerr << "frust: codegen error: unknown function '" << targetName << "'\n";
             return nullptr;
         }
@@ -852,6 +862,38 @@ private:
             ++argTypeIt;
         }
         return builder.CreateCall(callee, args, callee->getReturnType()->isVoidTy() ? "" : "calltmp");
+    }
+
+    // Calling a function VALUE (not a statically-known name) - the
+    // companion to ExprKind::Identifier's address-of decay, which lets a
+    // Frust function's address be stored/passed around but not, until
+    // this, called back. LLVM's opaque pointers carry no signature info,
+    // so there's no way to recover the real callee's exact parameter/
+    // return types from the pointer alone - this builds a FunctionType
+    // from what's actually known at the call site (each argument's own
+    // compiled type) and a fixed v1 convention for the part that isn't
+    // knowable: an indirectly-called function always returns i64. That's
+    // not arbitrary - every worker-style function in this pod (task.fr,
+    // thread.fr's spawn target convention) already returns i64 for
+    // exactly this reason. A indirect call to something that returns
+    // f64/bool/void will read/interpret garbage; real return-type
+    // tracking through a value would need actual function types in
+    // Frust's type system, out of scope for this pass.
+    llvm::Value* compileIndirectCall(const Expr& expr) {
+        llvm::Value* calleeVal = compileExpr(expr.lhs);
+        if (!calleeVal) return nullptr;
+
+        std::vector<llvm::Value*> args;
+        std::vector<llvm::Type*> argTypes;
+        for (auto* a : expr.args) {
+            auto* v = compileExpr(a);
+            if (!v) return nullptr;
+            args.push_back(v);
+            argTypes.push_back(v->getType());
+        }
+
+        llvm::FunctionType* fnTy = llvm::FunctionType::get(llvm::Type::getInt64Ty(context), argTypes, false);
+        return builder.CreateCall(fnTy, calleeVal, args, "indirectcalltmp");
     }
 
     llvm::Value* compileIf(const Expr& expr) {
