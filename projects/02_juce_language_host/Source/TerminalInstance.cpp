@@ -60,11 +60,15 @@ void TerminalInstance::updatePromptText()
     juce::String dirName = currentWorkingDirectory.getFileName();
     if (dirName.isEmpty()) dirName = currentWorkingDirectory.getFullPathName();
     
+#if JUCE_WINDOWS
     if (currentShell == "powershell") {
         promptText = "PS [" + dirName + "]> ";
     } else {
         promptText = "wsl [" + dirName + "]$ ";
     }
+#else
+    promptText = "bash [" + dirName + "]$ ";
+#endif
 }
 
 void TerminalInstance::executeCommand()
@@ -125,12 +129,17 @@ void TerminalInstance::executeCommand()
     }
 
     juce::StringArray args;
+#if JUCE_WINDOWS
     if (currentShell == "powershell") {
         args.add("powershell");
         args.add("-NoProfile");
         args.add("-Command");
         args.add("Push-Location -LiteralPath '" + currentWorkingDirectory.getFullPathName() + "'; " + input);
     } else {
+        // "wsl" shell option: shells out through WSL to reach bash - a
+        // Windows-only mechanism, so this whole branch only exists under
+        // JUCE_WINDOWS. Native Linux (see #else below) runs bash directly,
+        // no WSL involved, since it isn't a WSL guest to begin with.
         juce::String wslPath = currentWorkingDirectory.getFullPathName().replace("\\", "/");
         if (wslPath.length() >= 2 && wslPath[1] == ':') {
             juce::String drive = wslPath.substring(0, 1).toLowerCase();
@@ -143,6 +152,15 @@ void TerminalInstance::executeCommand()
         args.add("-c");
         args.add("cd '" + wslPath + "'; " + input);
     }
+#else
+    // Linux (and any other non-Windows target): there's no WSL/PowerShell
+    // concept here - just run bash directly against the real path, no
+    // translation needed since it's already a native Unix path.
+    juce::ignoreUnused(currentShell);
+    args.add("/bin/bash");
+    args.add("-c");
+    args.add("cd '" + currentWorkingDirectory.getFullPathName() + "'; " + input);
+#endif
 
     activeProcess = std::make_unique<juce::ChildProcess>();
     
