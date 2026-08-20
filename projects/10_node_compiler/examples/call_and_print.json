@@ -1,0 +1,9 @@
+{
+    "functionName": "compute",
+    "params": [ {"name": "x", "type": "i64"} ],
+    "output": "call_result",
+    "nodes": [
+        {"id": "call_result", "type": "call", "function": "host_add_ten", "returnType": "i64", "paramTypes": ["i64"], "inputs": [{"param": "x"}]},
+        {"id": "show", "type": "print", "valueType": "i64", "inputs": [{"ref": "call_result"}]}
+    ]
+}
