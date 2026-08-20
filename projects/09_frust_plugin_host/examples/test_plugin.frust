@@ -1,0 +1,9 @@
+extern fn host_add_ten(x: i64) -> i64;
+
+pub fn plugin_double(x: i64) -> i64 = {
+    x * 2
+}
+
+pub fn plugin_call_host(x: i64) -> i64 = {
+    host_add_ten(x)
+}

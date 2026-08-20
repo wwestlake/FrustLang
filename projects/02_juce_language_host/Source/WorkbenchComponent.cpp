@@ -12,7 +12,7 @@ WorkbenchComponent::WorkbenchComponent()
 
     authSession = std::make_unique<DesktopAuthSession>("ide");
 
-    dockManager = std::make_unique<juce_docking::DockManager>(*this);
+    dockManager = std::make_unique<CreationDock::DockManager>(*this);
     addAndMakeVisible(*dockManager);
     
     // Application properties for saving state
@@ -58,14 +58,14 @@ WorkbenchComponent::WorkbenchComponent()
 
     auto aiChat = std::make_unique<AiChatPanel>();
 
-    dockManager->registerPanel("explorer", "Project Explorer", std::move(fileTree), juce_docking::DockTargetZone::Left);
-    dockManager->registerPanel("editor", "Code Editor", std::move(editor), juce_docking::DockTargetZone::CenterTab);
-    dockManager->registerPanel("metadata", "AST & Metadata Inspector", std::move(metadata), juce_docking::DockTargetZone::Right);
-    dockManager->registerPanel("context", "Frust Context", std::move(context), juce_docking::DockTargetZone::Right);
-    dockManager->registerPanel("frate", "Frate Package Manager", std::move(frate), juce_docking::DockTargetZone::Right);
-    dockManager->registerPanel("ai", "AI Assistant", std::move(aiChat), juce_docking::DockTargetZone::Right);
-    dockManager->registerPanel("console", "Console & Output REPL", std::move(console), juce_docking::DockTargetZone::Bottom);
-    dockManager->registerPanel("terminal", "OS Terminal", std::move(terminal), juce_docking::DockTargetZone::Bottom);
+    dockManager->registerPanel("explorer", "Project Explorer", std::move(fileTree), CreationDock::DockTargetZone::Left);
+    dockManager->registerPanel("editor", "Code Editor", std::move(editor), CreationDock::DockTargetZone::CenterTab);
+    dockManager->registerPanel("metadata", "AST & Metadata Inspector", std::move(metadata), CreationDock::DockTargetZone::Right);
+    dockManager->registerPanel("context", "Frust Context", std::move(context), CreationDock::DockTargetZone::Right);
+    dockManager->registerPanel("frate", "Frate Package Manager", std::move(frate), CreationDock::DockTargetZone::Right);
+    dockManager->registerPanel("ai", "AI Assistant", std::move(aiChat), CreationDock::DockTargetZone::Right);
+    dockManager->registerPanel("console", "Console & Output REPL", std::move(console), CreationDock::DockTargetZone::Bottom);
+    dockManager->registerPanel("terminal", "OS Terminal", std::move(terminal), CreationDock::DockTargetZone::Bottom);
 
     dockManager->loadLayoutFromFile(getLayoutFile());
     

@@ -1,0 +1,96 @@
+cmake_minimum_required(VERSION 3.22)
+project(FrustPluginHost VERSION 0.1.0 LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# ------------------------------------------------------------------------------
+# Locate LLVM - frust_lang links its own LLVM component libs PRIVATEly (see
+# its CMakeLists.txt), so they don't propagate to us via target_link_libraries
+# even though we link frust_lang - same reason frust_compiler's own
+# CMakeLists.txt does this exact find_package/llvm_map_components_to_libnames
+# call itself instead of trying to reuse frust_lang's. FRUST_LLVM_LIBS is
+# also a plain (non-CACHE) variable scoped to frust_lang's own CMakeLists.txt
+# - add_subdirectory() below doesn't make it visible here either.
+# ------------------------------------------------------------------------------
+find_package(LLVM CONFIG REQUIRED)
+message(STATUS "FrustPluginHost: Found LLVM ${LLVM_PACKAGE_VERSION} at ${LLVM_DIR}")
+
+list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
+include(AddLLVM)
+add_definitions(${LLVM_DEFINITIONS})
+include_directories(${LLVM_INCLUDE_DIRS})
+
+llvm_map_components_to_libnames(FRUST_PLUGIN_HOST_LLVM_LIBS
+    Core
+    ExecutionEngine
+    OrcJIT
+    Support
+    native
+    nativecodegen
+)
+
+# ------------------------------------------------------------------------------
+# frust_plugin_host links frust_lang directly (Lexer/Parser/AstArena/AST.h/
+# Codegen.h) - same pattern as frust_compiler/frust_lsp.
+# ------------------------------------------------------------------------------
+if(NOT TARGET frust_lang)
+    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../01_language_paradigms/02_functional" frust_lang_build)
+endif()
+
+# ------------------------------------------------------------------------------
+# Route Build Output to the Top-Level /lib Folder (Debug & Release)
+# ------------------------------------------------------------------------------
+get_filename_component(REPO_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUG   "${REPO_ROOT_DIR}/lib/Debug")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE "${REPO_ROOT_DIR}/lib/Release")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG   "${REPO_ROOT_DIR}/lib/Debug")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE "${REPO_ROOT_DIR}/lib/Release")
+
+# ------------------------------------------------------------------------------
+# frust_plugin_host: embed Frust in any C/C++ app - load/unload/hot-reload
+# .frust source as isolated JIT-compiled plugins, or just use it as a
+# general hosted scripting language. See FrustPluginHost.h for the full
+# design writeup.
+# ------------------------------------------------------------------------------
+add_library(frust_plugin_host STATIC
+    include/frust_plugin_host/FrustPluginHost.h
+    src/FrustPluginHost.cpp
+)
+
+target_include_directories(frust_plugin_host PUBLIC
+    include
+)
+
+target_include_directories(frust_plugin_host PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../01_language_paradigms/02_functional"
+    # parser.hpp is generated into frust_lang's own binary dir - see
+    # frust_lsp's CMakeLists.txt for the full explanation of this path
+    # (must match the binary-dir name given to add_subdirectory() above).
+    "${CMAKE_CURRENT_BINARY_DIR}/frust_lang_build/generated"
+    "${FRUST_FLEXLEXER_INCLUDE_DIR}"
+)
+
+if(WIN32)
+    target_compile_definitions(frust_plugin_host PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+
+target_link_libraries(frust_plugin_host PUBLIC frust_lang PRIVATE ${FRUST_PLUGIN_HOST_LLVM_LIBS})
+
+install(TARGETS frust_plugin_host ARCHIVE DESTINATION lib)
+install(DIRECTORY include/ DESTINATION include)
+
+# ------------------------------------------------------------------------------
+# A real end-to-end usage example, doubling as the verification harness
+# for this library - see examples/host_example.cpp for what it actually
+# checks (host->plugin calls, plugin->host extern calls, unload, and a
+# genuine hot-reload where the plugin source changes on disk between
+# calls).
+# ------------------------------------------------------------------------------
+add_executable(frust_plugin_host_example examples/host_example.cpp)
+target_link_libraries(frust_plugin_host_example PRIVATE frust_plugin_host)
+set_target_properties(frust_plugin_host_example PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
+)

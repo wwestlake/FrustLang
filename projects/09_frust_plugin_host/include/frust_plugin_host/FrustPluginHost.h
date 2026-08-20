@@ -1,0 +1,97 @@
+// frust_plugin_host - embed Frust in any C/C++ application, either as a
+// live-reloadable plugin system or as a general hosted scripting
+// language. Same underlying mechanism either way: this library JIT-
+// compiles .frust source into the host process, with each load() call
+// getting its own isolated LLVM ORC JITDylib - that isolation is what
+// makes unload()/reload() real (tear down just that plugin's compiled
+// code and symbols, not the whole process).
+//
+// Deliberately a plain C ABI, not a C++ class - so this is callable from
+// any host toolchain (a different compiler/STL, C#/P-Invoke, Python via
+// ctypes, ...), not just a C++ app built with the exact same compiler as
+// this library. FrustPluginHandle is an opaque pointer; nothing about
+// Frust's/LLVM's internal types leaks into this header.
+//
+// -----------------------------------------------------------------------
+// Two directions of data flow, both supported:
+// -----------------------------------------------------------------------
+//
+// 1. HOST calls INTO a loaded plugin - frust_plugin_get_fn() resolves a
+//    `pub fn` (or plain top-level fn) by name to a raw function pointer.
+//    The host already knows what signature to expect (whatever contract
+//    it defines for its own plugins - this library doesn't enforce one),
+//    so it casts the returned pointer itself, e.g.:
+//
+//      auto fn = (int64_t(*)(int64_t))frust_plugin_get_fn(h, "on_event");
+//      int64_t result = fn(42);
+//
+// 2. Frust code calls OUT to a HOST-provided native function via
+//    `extern fn` - two ways to make that resolve:
+//    a) Free: if the host process already exports the symbol (dllexport
+//       on Windows / default visibility on Linux), it resolves
+//       automatically - the same DynamicLibrarySearchGenerator mechanism
+//       frust_compiler's own JIT already uses for frust_print_str etc.
+//       Nothing to call here for this case.
+//    b) Explicit: frust_plugin_register_host_function() registers a
+//       name -> function-pointer mapping directly, for cases where
+//       relying on whole-process symbol export isn't practical (a
+//       lambda, a class-method trampoline, a symbol you don't want
+//       globally exported). Call this before load()ing any plugin that
+//       needs it - the registry is process-wide and consulted for every
+//       plugin's JITDylib.
+// -----------------------------------------------------------------------
+
+#pragma once
+
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#if defined(_WIN32)
+#define FRUST_PLUGIN_HOST_API __declspec(dllexport)
+#else
+#define FRUST_PLUGIN_HOST_API __attribute__((visibility("default")))
+#endif
+
+typedef struct FrustPluginHandleImpl* FrustPluginHandle;
+
+// Parses, codegens, and JITs the .frust file at `path` into a fresh,
+// isolated JITDylib. Returns NULL on any parse/codegen error (details go
+// to stderr, matching frust_compiler's own error reporting - no separate
+// error-string API in v1).
+FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_load(const char* path);
+
+// Tears down this plugin's JITDylib - frees its compiled code, removes
+// its symbols. Any function pointers previously returned by
+// frust_plugin_get_fn() for this handle become invalid; the host must
+// not call them after this.
+FRUST_PLUGIN_HOST_API void frust_plugin_unload(FrustPluginHandle handle);
+
+// The actual hot-reload operation: unloads `handle`, re-parses/re-JITs
+// the same source path fresh, returns a new handle. NULL on failure (the
+// old handle is still torn down either way - a failed reload doesn't
+// leave the stale version running). Every function pointer obtained from
+// the OLD handle is invalid after this call, even on failure - re-fetch
+// from the new handle.
+FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_reload(FrustPluginHandle handle);
+
+// Resolves a top-level function by name within this plugin to a raw
+// function pointer, or NULL if no such symbol exists. The host is
+// responsible for casting it to the correct signature - this library has
+// no way to know what one to expect.
+FRUST_PLUGIN_HOST_API void* frust_plugin_get_fn(FrustPluginHandle handle, const char* name);
+
+// Registers a host-provided native function under `name`, so any
+// plugin's `extern fn <name>(...)` resolves to it even if the host
+// process doesn't export that symbol globally. Process-wide (not
+// per-plugin) - call before loading any plugin that needs it. Safe to
+// call again with a new function pointer for the same name (last call
+// wins for plugins loaded after that point; already-loaded plugins keep
+// whatever was registered when they loaded).
+FRUST_PLUGIN_HOST_API void frust_plugin_register_host_function(const char* name, void* fn_ptr);
+
+#ifdef __cplusplus
+}
+#endif

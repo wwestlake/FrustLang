@@ -1,7 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include <juce_docking/DockManager.h>
+#include <CreationDock/DockManager.h>
 #include "FileTreePanel.h"
 #include "EditorTabComponent.h"
 #include "MetadataPanel.h"
@@ -34,7 +34,7 @@ private:
     juce::TextButton runButton { "Run" };
     std::unique_ptr<juce::ApplicationProperties> appProperties;
     std::unique_ptr<DesktopAuthSession> authSession;
-    std::unique_ptr<juce_docking::DockManager> dockManager;
+    std::unique_ptr<CreationDock::DockManager> dockManager;
     FileTreePanel* fileTreePanel = nullptr;
     EditorTabComponent* editorTabComponent = nullptr;
     ConsolePanel* consolePanel = nullptr;

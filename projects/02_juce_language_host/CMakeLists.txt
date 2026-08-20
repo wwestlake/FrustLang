@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # ------------------------------------------------------------------------------
 # Locate JUCE - via JUCE_PATH (cache var or env var), not a hardcoded
-# machine-specific path (same pattern as frate/juce_docking/ai_provider's
+# machine-specific path (same pattern as frate/CreationDock/ai_provider's
 # CMakeLists.txt). Sibling projects below are referenced by relative path
 # instead - they live in this same repo on every platform, so there's
 # nothing machine-specific to resolve there at all.
@@ -21,9 +21,9 @@ if(NOT TARGET juce::juce_core)
     endif()
 endif()
 
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../03_juce_docking_system/CMakeLists.txt")
-    message(STATUS "LagDaemonResearchIDE: Adding juce_docking library")
-    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../03_juce_docking_system" juce_docking_build)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../03_creation_dock/CMakeLists.txt")
+    message(STATUS "LagDaemonResearchIDE: Adding CreationDock library")
+    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../03_creation_dock" creation_dock_build)
 endif()
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../01_language_paradigms/02_functional/CMakeLists.txt")
@@ -45,7 +45,7 @@ endif()
 
 # ------------------------------------------------------------------------------
 # Route Build Output to the Top-Level /bin Folder (Debug & Release)
-# Placed after the JUCE / juce_docking subdirectories so their own internal
+# Placed after the JUCE / CreationDock subdirectories so their own internal
 # tool targets (e.g. juceaide) are unaffected and stay in the build tree.
 # ------------------------------------------------------------------------------
 get_filename_component(REPO_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
@@ -104,7 +104,7 @@ target_compile_definitions(LagDaemonResearchIDE PRIVATE
 )
 
 target_link_libraries(LagDaemonResearchIDE PRIVATE
-    juce_docking
+    CreationDock
     frust_lang
     ai_provider
     frate_lib
@@ -116,7 +116,7 @@ target_link_libraries(LagDaemonResearchIDE PRIVATE
     juce::juce_gui_extra
 )
 
-# See juce_docking's CMakeLists.txt for the full explanation - this target
+# See CreationDock's CMakeLists.txt for the full explanation - this target
 # also compiles juce_gui_extra.cpp itself (JUCE recompiles each module per
 # linking target on Linux) and needs the same GTK3 include path.
 if(UNIX AND NOT APPLE)
