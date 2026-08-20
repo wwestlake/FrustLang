@@ -1,0 +1,11 @@
+pub fn on_init() -> i64 = {
+    111
+}
+
+pub fn on_event(id: i64, arg: i64) -> i64 = {
+    id + arg
+}
+
+pub fn on_unload() -> i64 = {
+    222
+}

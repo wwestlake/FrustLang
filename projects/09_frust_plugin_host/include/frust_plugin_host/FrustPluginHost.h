@@ -92,6 +92,29 @@ FRUST_PLUGIN_HOST_API void* frust_plugin_get_fn(FrustPluginHandle handle, const 
 // whatever was registered when they loaded).
 FRUST_PLUGIN_HOST_API void frust_plugin_register_host_function(const char* name, void* fn_ptr);
 
+// -----------------------------------------------------------------------
+// Lifecycle convenience wrappers - a RECOMMENDED, NOT ENFORCED, naming
+// convention for plugins that want one: `on_init() -> i64`,
+// `on_event(id: i64, arg: i64) -> i64`, `on_unload() -> i64`. This
+// library stays contract-agnostic at its core (frust_plugin_get_fn
+// works with any function name a host chooses) - Frust has no
+// interfaces/traits to enforce a contract at compile time, so nothing
+// here requires a plugin to implement any of these. These three
+// functions just save a host that DOES follow the convention from
+// hand-rolling get_fn + a function-pointer cast every time.
+//
+// A plugin missing the corresponding function is not an error: these
+// return 0 and do nothing, so an optional lifecycle hook a plugin
+// doesn't implement is simply a no-op for the host, not a failure it
+// has to handle specially.
+// -----------------------------------------------------------------------
+FRUST_PLUGIN_HOST_API int64_t frust_plugin_call_on_init(FrustPluginHandle handle);
+FRUST_PLUGIN_HOST_API int64_t frust_plugin_call_on_event(FrustPluginHandle handle, int64_t id, int64_t arg);
+// Convention only - does NOT call frust_plugin_unload() itself. Call
+// this first (if you want the plugin's own cleanup to run), then
+// frust_plugin_unload() separately.
+FRUST_PLUGIN_HOST_API int64_t frust_plugin_call_on_unload(FrustPluginHandle handle);
+
 #ifdef __cplusplus
 }
 #endif

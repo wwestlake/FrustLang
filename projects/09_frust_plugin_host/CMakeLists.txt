@@ -57,6 +57,8 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE "${REPO_ROOT_DIR}/lib/Release")
 add_library(frust_plugin_host STATIC
     include/frust_plugin_host/FrustPluginHost.h
     src/FrustPluginHost.cpp
+    include/frust_plugin_host/FrustPluginManifest.h
+    src/FrustPluginManifest.cpp
 )
 
 target_include_directories(frust_plugin_host PUBLIC
@@ -76,7 +78,11 @@ if(WIN32)
     target_compile_definitions(frust_plugin_host PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 
-target_link_libraries(frust_plugin_host PUBLIC frust_lang PRIVATE ${FRUST_PLUGIN_HOST_LLVM_LIBS})
+# frust_lang links juce_core PRIVATEly (via frate_lib), so it doesn't
+# propagate here - FrustPluginManifest.cpp uses juce::var/juce::JSON
+# directly for plugin.json (same reasoning/pattern as frust_lsp's
+# CMakeLists.txt for its LSP JSON-RPC messages).
+target_link_libraries(frust_plugin_host PUBLIC frust_lang PRIVATE ${FRUST_PLUGIN_HOST_LLVM_LIBS} juce::juce_core)
 
 install(TARGETS frust_plugin_host ARCHIVE DESTINATION lib)
 install(DIRECTORY include/ DESTINATION include)
@@ -91,6 +97,15 @@ install(DIRECTORY include/ DESTINATION include)
 add_executable(frust_plugin_host_example examples/host_example.cpp)
 target_link_libraries(frust_plugin_host_example PRIVATE frust_plugin_host)
 set_target_properties(frust_plugin_host_example PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
+)
+
+# Phase 2 verification harness - plugin manifest + lifecycle convenience
+# wrappers. See lifecycle_example.cpp/lifecycle_plugin.frust/.json.
+add_executable(frust_plugin_host_lifecycle_example examples/lifecycle_example.cpp)
+target_link_libraries(frust_plugin_host_lifecycle_example PRIVATE frust_plugin_host)
+set_target_properties(frust_plugin_host_lifecycle_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
 )

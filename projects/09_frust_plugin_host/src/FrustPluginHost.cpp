@@ -212,4 +212,19 @@ FRUST_PLUGIN_HOST_API void frust_plugin_register_host_function(const char* name,
     }
 }
 
+FRUST_PLUGIN_HOST_API int64_t frust_plugin_call_on_init(FrustPluginHandle handle) {
+    auto* fn = reinterpret_cast<int64_t(*)()>(frust_plugin_get_fn(handle, "on_init"));
+    return fn ? fn() : 0;
+}
+
+FRUST_PLUGIN_HOST_API int64_t frust_plugin_call_on_event(FrustPluginHandle handle, int64_t id, int64_t arg) {
+    auto* fn = reinterpret_cast<int64_t(*)(int64_t, int64_t)>(frust_plugin_get_fn(handle, "on_event"));
+    return fn ? fn(id, arg) : 0;
+}
+
+FRUST_PLUGIN_HOST_API int64_t frust_plugin_call_on_unload(FrustPluginHandle handle) {
+    auto* fn = reinterpret_cast<int64_t(*)()>(frust_plugin_get_fn(handle, "on_unload"));
+    return fn ? fn() : 0;
+}
+
 } // extern "C"

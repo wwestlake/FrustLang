@@ -34,11 +34,43 @@ host-provided function called from a plugin, plugin function called from
 the host, unload, and a genuine hot-reload (the plugin source changes on
 disk between calls, and the new behavior is what actually runs).
 
+## Manifest
+
+A `plugin.json` sitting next to the `.frust` source, modeled directly on
+`frate`'s existing pod-metadata format:
+
+```json
+{
+    "name": "my_plugin",
+    "version": "0.1.0",
+    "description": "...",
+    "entryPoints": ["on_init", "on_event", "on_unload"],
+    "requiredHostApiVersion": "0.1.0"
+}
+```
+
+Read via `frust_plugin_manifest_load()`
+([`FrustPluginManifest.h`](include/frust_plugin_host/FrustPluginManifest.h)) -
+purely metadata about a plugin (name/version/what it claims to export),
+independent of actually loading/running it.
+
+## Lifecycle convention (recommended, not enforced)
+
+`frust_plugin_call_on_init(handle)` / `frust_plugin_call_on_event(handle,
+id, arg)` / `frust_plugin_call_on_unload(handle)` - thin convenience
+wrappers around `frust_plugin_get_fn()` for a plugin that implements
+`on_init() -> i64` / `on_event(id: i64, arg: i64) -> i64` /
+`on_unload() -> i64`. A plugin missing one of these is not an error -
+the wrapper no-ops to `0` rather than requiring every plugin to
+implement every hook. See `examples/lifecycle_example.cpp` +
+`lifecycle_plugin.frust`/`.json` for a full verified round trip.
+
 ## Status
 
 v1. `.frust` plugin files are single-file only (no `use self::` module
 splitting yet - each plugin is one source file). No contract/lifecycle is
-enforced by this library (no required `on_init`/`on_unload` functions) -
-Frust has no interfaces/traits to enforce one at compile time anyway, so
-each host application defines its own convention for what its plugins
-must export.
+*enforced* by this library (the lifecycle wrappers above are optional
+convenience, not a requirement) - Frust has no interfaces/traits to
+enforce one at compile time anyway. Plugin discovery (scanning a
+directory for available plugins/manifests) isn't implemented yet - real
+v2 work once there's an actual multi-plugin host to build it against.
