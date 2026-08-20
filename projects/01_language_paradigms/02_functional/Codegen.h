@@ -510,6 +510,28 @@ private:
             case BinaryOp::Gt:  return isFloat ? builder.CreateFCmpOGT(lhs, rhs, "gttmp") : builder.CreateICmpSGT(lhs, rhs, "gttmp");
             case BinaryOp::Le:  return isFloat ? builder.CreateFCmpOLE(lhs, rhs, "letmp") : builder.CreateICmpSLE(lhs, rhs, "letmp");
             case BinaryOp::Ge:  return isFloat ? builder.CreateFCmpOGE(lhs, rhs, "getmp") : builder.CreateICmpSGE(lhs, rhs, "getmp");
+            // Bitwise ops are integer-only - no meaningful bit pattern to
+            // AND/OR/XOR/shift for a float, so these error rather than
+            // silently reinterpreting bits (same "explicit, not implicit"
+            // stance as the rest of this codegen). Shr uses an arithmetic
+            // (sign-preserving) shift, matching how C/Rust's `>>` behaves
+            // on a signed integer by default - Frust's integers are signed
+            // throughout (see compileBinary's existing SExt/ICmpS* usage).
+            case BinaryOp::BitOr:
+                if (isFloat) { std::cerr << "frust: codegen error: '|' is not defined for float operands\n"; return nullptr; }
+                return builder.CreateOr(lhs, rhs, "ortmp");
+            case BinaryOp::BitXor:
+                if (isFloat) { std::cerr << "frust: codegen error: '^' is not defined for float operands\n"; return nullptr; }
+                return builder.CreateXor(lhs, rhs, "xortmp");
+            case BinaryOp::BitAnd:
+                if (isFloat) { std::cerr << "frust: codegen error: '&' is not defined for float operands\n"; return nullptr; }
+                return builder.CreateAnd(lhs, rhs, "andtmp");
+            case BinaryOp::Shl:
+                if (isFloat) { std::cerr << "frust: codegen error: '<<' is not defined for float operands\n"; return nullptr; }
+                return builder.CreateShl(lhs, rhs, "shltmp");
+            case BinaryOp::Shr:
+                if (isFloat) { std::cerr << "frust: codegen error: '>>' is not defined for float operands\n"; return nullptr; }
+                return builder.CreateAShr(lhs, rhs, "shrtmp");
         }
         return nullptr;
     }
@@ -565,6 +587,44 @@ private:
             val = coerceToType(val, structTy->getElementType(fieldIt->second));
             llvm::Value* fieldPtr = builder.CreateStructGEP(structTy, basePtr, fieldIt->second);
             builder.CreateStore(val, fieldPtr);
+            return val;
+        }
+
+        if (expr.lhs->kind == ExprKind::Index) {
+            // `v[i] = x` for a `mut` Vec<N> variable. Vec<N> values are
+            // genuine SSA vector values (see compileArrayLiteral), not
+            // pointer-backed - there's no address to GEP into and store
+            // through the way struct-field assignment does above.
+            // Instead: load the current vector out of v's alloca,
+            // CreateInsertElement to produce a NEW vector with index i
+            // replaced, store that back - the standard LLVM pattern for
+            // "mutating" one lane of an SSA vector value.
+            const Expr& indexExpr = *expr.lhs;
+            if (indexExpr.lhs->kind != ExprKind::Identifier) {
+                std::cerr << "frust: codegen error: indexed assignment only supports a plain variable base (v[i] = x, not expr[i] = x)\n";
+                return nullptr;
+            }
+            auto vecIt = namedValues.find(indexExpr.lhs->text);
+            if (vecIt == namedValues.end() || !llvm::isa<llvm::AllocaInst>(vecIt->second)) {
+                std::cerr << "frust: codegen error: cannot assign into an element of immutable or unknown variable '" << indexExpr.lhs->text << "'\n";
+                return nullptr;
+            }
+            auto* vecAlloca = llvm::cast<llvm::AllocaInst>(vecIt->second);
+            if (!vecAlloca->getAllocatedType()->isVectorTy()) {
+                std::cerr << "frust: codegen error: indexed assignment is only supported for Vec<N> variables\n";
+                return nullptr;
+            }
+
+            auto* idxVal = compileExpr(indexExpr.rhs);
+            if (!idxVal) return nullptr;
+            auto* val = compileExpr(expr.rhs);
+            if (!val) return nullptr;
+
+            llvm::Value* current = builder.CreateLoad(vecAlloca->getAllocatedType(), vecAlloca);
+            llvm::Type* elemTy = llvm::cast<llvm::VectorType>(vecAlloca->getAllocatedType())->getElementType();
+            val = coerceToType(val, elemTy);
+            llvm::Value* updated = builder.CreateInsertElement(current, val, idxVal);
+            builder.CreateStore(updated, vecAlloca);
             return val;
         }
 
@@ -824,6 +884,9 @@ private:
             if (targetName == "dot" || targetName == "length" || targetName == "normalize") {
                 return compileVecBuiltinCall(targetName, expr);
             }
+            if (targetName == "call_i64" || targetName == "call_f64" || targetName == "call_bool" || targetName == "call_str") {
+                return compileTypedIndirectCall(targetName, expr);
+            }
         } else if (expr.lhs->kind == ExprKind::Path) {
             targetName = expr.lhs->pathSegments.front();
             for (size_t i = 1; i < expr.lhs->pathSegments.size(); ++i) targetName += "::" + expr.lhs->pathSegments[i];
@@ -872,13 +935,20 @@ private:
     // return types from the pointer alone - this builds a FunctionType
     // from what's actually known at the call site (each argument's own
     // compiled type) and a fixed v1 convention for the part that isn't
-    // knowable: an indirectly-called function always returns i64. That's
-    // not arbitrary - every worker-style function in this pod (task.fr,
-    // thread.fr's spawn target convention) already returns i64 for
-    // exactly this reason. A indirect call to something that returns
-    // f64/bool/void will read/interpret garbage; real return-type
-    // tracking through a value would need actual function types in
-    // Frust's type system, out of scope for this pass.
+    // knowable: an indirectly-called function via bare `f(args)` syntax
+    // always returns i64. That's not arbitrary - every worker-style
+    // function in this pod (task.fr, thread.fr's spawn target
+    // convention) already returns i64 for exactly this reason. A bare
+    // indirect call to something that returns f64/bool/String will
+    // read/interpret garbage - for that, use the explicit
+    // call_f64/call_bool/call_str forms below instead. Real return-type
+    // *inference* through a value (e.g. from a `let x: f64 = ...`
+    // binding's declared type) would need threading an expected-type
+    // hint through compileExpr's Block/Let/If/Return cases broadly -
+    // deliberately not done: explicit call_TYPE forms are lower-risk
+    // (purely additive, zero chance of changing what already-verified
+    // code compiles to) and match this language's existing "nothing is
+    // inferred, everything explicit" character.
     llvm::Value* compileIndirectCall(const Expr& expr) {
         llvm::Value* calleeVal = compileExpr(expr.lhs);
         if (!calleeVal) return nullptr;
@@ -894,6 +964,37 @@ private:
 
         llvm::FunctionType* fnTy = llvm::FunctionType::get(llvm::Type::getInt64Ty(context), argTypes, false);
         return builder.CreateCall(fnTy, calleeVal, args, "indirectcalltmp");
+    }
+
+    // The explicit, typed sibling of compileIndirectCall - opt in with
+    // call_i64/call_f64/call_bool/call_str(fn_value, args...) when the
+    // callee doesn't return i64. expr.args[0] is the function value;
+    // the rest are the real arguments passed through to it.
+    llvm::Value* compileTypedIndirectCall(const std::string& builtinName, const Expr& expr) {
+        if (expr.args.empty()) {
+            std::cerr << "frust: codegen error: " << builtinName << "() needs a function value as its first argument\n";
+            return nullptr;
+        }
+        llvm::Value* calleeVal = compileExpr(expr.args[0]);
+        if (!calleeVal) return nullptr;
+
+        std::vector<llvm::Value*> args;
+        std::vector<llvm::Type*> argTypes;
+        for (size_t i = 1; i < expr.args.size(); ++i) {
+            auto* v = compileExpr(expr.args[i]);
+            if (!v) return nullptr;
+            args.push_back(v);
+            argTypes.push_back(v->getType());
+        }
+
+        llvm::Type* retTy;
+        if (builtinName == "call_f64") retTy = llvm::Type::getDoubleTy(context);
+        else if (builtinName == "call_bool") retTy = llvm::Type::getInt1Ty(context);
+        else if (builtinName == "call_str") retTy = llvm::PointerType::getUnqual(context);
+        else retTy = llvm::Type::getInt64Ty(context); // call_i64
+
+        llvm::FunctionType* fnTy = llvm::FunctionType::get(retTy, argTypes, false);
+        return builder.CreateCall(fnTy, calleeVal, args, "typedindirectcalltmp");
     }
 
     llvm::Value* compileIf(const Expr& expr) {

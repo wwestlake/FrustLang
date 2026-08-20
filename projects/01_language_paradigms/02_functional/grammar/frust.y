@@ -103,6 +103,7 @@
     ARROW "->" FATARROW "=>" EQUAL "="
     EQEQ "==" NEQ "!=" LT "<" GT ">" LE "<=" GE ">="
     PLUS "+" MINUS "-" STAR "*" SLASH "/" PERCENT "%" BANG "!" AMP "&"
+    PIPE "|" CARET "^" SHL "<<" SHR ">>"
 ;
 
 %token <int64_t> INT_LITERAL
@@ -116,8 +117,12 @@
 // reducing early), rather than relying on grammar nesting to do it, which
 // is the more fragile approach for a grammar this size.
 %right "="
+%left "|"
+%left "^"
+%left "&"
 %left "==" "!="
 %left "<" ">" "<=" ">="
+%left "<<" ">>"
 %left "+" "-"
 %left "*" "/" "%"
 %precedence "as"
@@ -511,6 +516,11 @@ expr:
   | expr "*" expr  { $$ = arena.NewExpr(ExprKind::Binary, ToSourceLoc(@1)); $$->binaryOp = BinaryOp::Mul; $$->lhs = $1; $$->rhs = $3; }
   | expr "/" expr  { $$ = arena.NewExpr(ExprKind::Binary, ToSourceLoc(@1)); $$->binaryOp = BinaryOp::Div; $$->lhs = $1; $$->rhs = $3; }
   | expr "%" expr  { $$ = arena.NewExpr(ExprKind::Binary, ToSourceLoc(@1)); $$->binaryOp = BinaryOp::Mod; $$->lhs = $1; $$->rhs = $3; }
+  | expr "|" expr  { $$ = arena.NewExpr(ExprKind::Binary, ToSourceLoc(@1)); $$->binaryOp = BinaryOp::BitOr;  $$->lhs = $1; $$->rhs = $3; }
+  | expr "^" expr  { $$ = arena.NewExpr(ExprKind::Binary, ToSourceLoc(@1)); $$->binaryOp = BinaryOp::BitXor; $$->lhs = $1; $$->rhs = $3; }
+  | expr "&" expr  { $$ = arena.NewExpr(ExprKind::Binary, ToSourceLoc(@1)); $$->binaryOp = BinaryOp::BitAnd; $$->lhs = $1; $$->rhs = $3; }
+  | expr "<<" expr { $$ = arena.NewExpr(ExprKind::Binary, ToSourceLoc(@1)); $$->binaryOp = BinaryOp::Shl;    $$->lhs = $1; $$->rhs = $3; }
+  | expr ">>" expr { $$ = arena.NewExpr(ExprKind::Binary, ToSourceLoc(@1)); $$->binaryOp = BinaryOp::Shr;    $$->lhs = $1; $$->rhs = $3; }
   | expr "as" type_expr { $$ = arena.NewExpr(ExprKind::Cast, ToSourceLoc(@1)); $$->lhs = $1; $$->typeAnnotation = $3; }
   | "-" expr %prec UNARY_PREC { $$ = arena.NewExpr(ExprKind::Unary, ToSourceLoc(@1)); $$->unaryOp = UnaryOp::Neg;   $$->lhs = $2; }
   | "!" expr %prec UNARY_PREC { $$ = arena.NewExpr(ExprKind::Unary, ToSourceLoc(@1)); $$->unaryOp = UnaryOp::Not;   $$->lhs = $2; }

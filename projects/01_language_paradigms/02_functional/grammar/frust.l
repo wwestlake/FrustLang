@@ -105,6 +105,8 @@ ID     {IDCHAR}({IDCHAR}|{DIGIT})*
 "!="  { return Parser::make_NEQ(loc_); }
 "<="  { return Parser::make_LE(loc_); }
 ">="  { return Parser::make_GE(loc_); }
+"<<"  { return Parser::make_SHL(loc_); }
+">>"  { return Parser::make_SHR(loc_); }
 
 "{"  { return Parser::make_LBRACE(loc_); }
 "}"  { return Parser::make_RBRACE(loc_); }
@@ -126,6 +128,8 @@ ID     {IDCHAR}({IDCHAR}|{DIGIT})*
 "%"  { return Parser::make_PERCENT(loc_); }
 "!"  { return Parser::make_BANG(loc_); }
 "&"  { return Parser::make_AMP(loc_); }
+"|"  { return Parser::make_PIPE(loc_); }
+"^"  { return Parser::make_CARET(loc_); }
 
 .  {
     errors.push_back("frust: invalid character '" + std::string(yytext, yyleng) + "' at line " + std::to_string(loc_.begin.line));

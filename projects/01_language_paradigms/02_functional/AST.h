@@ -81,7 +81,7 @@ struct TypeExpr {
 // ---------------------------------------------------------------------
 
 enum class UnaryOp { Neg, Not, Deref };
-enum class BinaryOp { Add, Sub, Mul, Div, Mod, Eq, Neq, Lt, Gt, Le, Ge };
+enum class BinaryOp { Add, Sub, Mul, Div, Mod, Eq, Neq, Lt, Gt, Le, Ge, BitOr, BitXor, BitAnd, Shl, Shr };
 
 enum class ExprKind {
     IntLiteral, FloatLiteral, BoolLiteral, StringLiteral,
