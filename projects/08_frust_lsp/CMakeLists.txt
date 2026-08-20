@@ -40,13 +40,15 @@ add_executable(frust_lsp Main.cpp)
 
 target_include_directories(frust_lsp PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../01_language_paradigms/02_functional"
-    # parser.hpp is generated into frust_lang's own binary dir at configure/
-    # build time - "frust_lang_build" here must match the binary-dir name
-    # given to add_subdirectory() above. FRUST_GEN_DIR itself (the variable
-    # 02_functional/CMakeLists.txt uses internally) is a plain scoped
-    # variable, not a CACHE variable, so it isn't visible here - this is
-    # the actual reliable path, not a guess.
-    "${CMAKE_CURRENT_BINARY_DIR}/frust_lang_build/generated"
+    # FRUST_GEN_DIR is now a real CACHE variable (02_functional/
+    # CMakeLists.txt) holding wherever frust_lang's generated parser.hpp
+    # actually lives - was previously reconstructed by assuming this
+    # file's own CMAKE_CURRENT_BINARY_DIR/frust_lang_build/generated,
+    # which broke as soon as a THIRD project (node_compiler) started
+    # pulling in both frust_lang and a consumer of it at different
+    # nesting levels. Fixed at the source (a real CACHE var) rather than
+    # patched per-consumer.
+    "${FRUST_GEN_DIR}"
     "${FRUST_FLEXLEXER_INCLUDE_DIR}"
 )
 

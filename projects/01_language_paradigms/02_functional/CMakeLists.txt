@@ -68,7 +68,17 @@ endif()
 # ------------------------------------------------------------------------------
 # Generate the lexer/parser from grammar/frust.l and grammar/frust.y
 # ------------------------------------------------------------------------------
-set(FRUST_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+# CACHE (not a plain variable) so consumers pulled in via
+# add_subdirectory() from a DIFFERENT parent than expected (e.g.
+# node_compiler's CMakeLists.txt adds both frust_lang and
+# frust_plugin_host directly - frust_plugin_host can no longer assume
+# its own CMAKE_CURRENT_BINARY_DIR/frust_lang_build/generated is where
+# the real generated parser lives, since that add_subdirectory call
+# happened at node_compiler's level, not frust_plugin_host's) can just
+# reference ${FRUST_GEN_DIR} directly instead of reconstructing this
+# path from an assumed binary-dir name - real, reproduced bug fixed
+# here rather than patched around per-consumer.
+set(FRUST_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated" CACHE PATH "Directory holding frust_lang's generated parser.hpp/lexer.cpp" FORCE)
 file(MAKE_DIRECTORY "${FRUST_GEN_DIR}")
 
 set(FRUST_PARSER_CPP "${FRUST_GEN_DIR}/parser.cpp")

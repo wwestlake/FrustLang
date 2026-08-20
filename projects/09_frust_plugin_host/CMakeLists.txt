@@ -67,10 +67,13 @@ target_include_directories(frust_plugin_host PUBLIC
 
 target_include_directories(frust_plugin_host PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../01_language_paradigms/02_functional"
-    # parser.hpp is generated into frust_lang's own binary dir - see
-    # frust_lsp's CMakeLists.txt for the full explanation of this path
-    # (must match the binary-dir name given to add_subdirectory() above).
-    "${CMAKE_CURRENT_BINARY_DIR}/frust_lang_build/generated"
+    # FRUST_GEN_DIR is a real CACHE variable (02_functional/CMakeLists.txt)
+    # holding wherever frust_lang's generated parser.hpp actually lives -
+    # NOT necessarily a subdirectory of this file's own
+    # CMAKE_CURRENT_BINARY_DIR (a real, reproduced bug when this library
+    # is pulled in via add_subdirectory() from node_compiler, which adds
+    # frust_lang itself first at ITS OWN level).
+    "${FRUST_GEN_DIR}"
     "${FRUST_FLEXLEXER_INCLUDE_DIR}"
 )
 
