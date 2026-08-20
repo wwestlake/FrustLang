@@ -16,6 +16,10 @@
 #include <sstream>
 #include <string>
 
+#if defined(_WIN32)
+#include <io.h>
+#endif
+
 #include "Codegen.h"
 #include "Lexer.h"
 #include "ModuleLoader.h"
@@ -38,6 +42,15 @@
 
 namespace frust {
 namespace {
+
+bool canUseStdinForRepl() {
+#if defined(_WIN32)
+    const auto fd = _fileno(stdin);
+    return fd >= 0;
+#else
+    return true;
+#endif
+}
 
 frust::Program* ParseSource(std::istream& input, AstArena& arena, std::vector<std::string>& parseErrors) {
     Lexer lexer(&input);
@@ -359,7 +372,13 @@ FRUST_RUNTIME_EXPORT void frust_print_str(const char* val) {
 // any realistic single expression's nesting depth.
 namespace {
 constexpr int kFormatBufferCount = 16;
-constexpr size_t kFormatBufferSize = 64;
+// Was 64 - too small for realistic use (a real absolute Windows path
+// alone silently truncated inside frust_str_concat's snprintf, causing
+// a downstream "cannot open" on the truncated path during
+// process_task.fr's multiprocessing work). 512 gives real headroom for
+// paths/messages while staying a trivial per-slot cost (16 slots * 512
+// bytes = 8KB thread_local, negligible).
+constexpr size_t kFormatBufferSize = 512;
 thread_local char formatBufferPool[kFormatBufferCount][kFormatBufferSize];
 thread_local int formatBufferIndex = 0;
 
@@ -648,6 +667,10 @@ int main(int argc, char** argv) {
         std::vector<std::string> inputFiles(argv + 1, argv + argc);
         frust::RunFile(inputFiles);
     } else {
+        if (!frust::canUseStdinForRepl()) {
+            std::cerr << "frust: no input files were provided, and stdin is not available for REPL mode\n";
+            return 1;
+        }
         frust::RunRepl();
     }
     return 0;
