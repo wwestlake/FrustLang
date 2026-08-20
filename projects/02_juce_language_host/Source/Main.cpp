@@ -28,7 +28,9 @@ FRUST_RUNTIME_EXPORT void frust_print_str(const char* val) {
 
 namespace {
 constexpr int kFormatBufferCount = 16;
-constexpr size_t kFormatBufferSize = 64;
+// Kept identical to frust_compiler's Main.cpp - see that file's comment
+// (a real absolute path silently truncated at 64 bytes).
+constexpr size_t kFormatBufferSize = 512;
 thread_local char formatBufferPool[kFormatBufferCount][kFormatBufferSize];
 thread_local int formatBufferIndex = 0;
 
