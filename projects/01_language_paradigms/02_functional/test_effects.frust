@@ -1,5 +1,7 @@
 extern fn frust_print_f64(val: f64) -> f64;
 
+effect Write(val: f64)
+
 fn do_io() -> f64 = {
     perform Write(123.456);
     perform Write(789.012);

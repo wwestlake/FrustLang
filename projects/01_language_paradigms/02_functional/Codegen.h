@@ -15,6 +15,8 @@
 
 #include "AST.h"
 
+#include <map>
+
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
@@ -78,6 +80,8 @@ public:
         llvm::Value* formatPtr = printBuilder.CreatePointerCast(formatVar, llvm::PointerType::getUnqual(context));
         printBuilder.CreateCall(printfFunc, {formatPtr, printF64Func->getArg(0)});
         printBuilder.CreateRetVoid();
+
+        indexEffectDecls(prog);
 
         // Pass 1: declare every function/method *signature* up front, so
         // calls resolve regardless of textual order - module.getFunction()
@@ -144,11 +148,35 @@ private:
     llvm::Value* currentActiveHandleForResume = nullptr;
     llvm::Value* currentActivePromiseForResume = nullptr;
 
+    // Populated by indexEffectDecls() before any perform/handle codegen
+    // - real declared param types for each `effect Name(...)`, needed so
+    // compilePerform/compileHandle can pack/unpack more than one
+    // argument, of the actual declared type, instead of always assuming
+    // "exactly one f64." Without this, `effect Log(msg: String)` (the
+    // spec's own example) can't work - a String silently truncated
+    // through a double-typed slot.
+    std::map<std::string, EffectDecl*> effectDecls;
+
+    void indexEffectDecls(const Program& prog) {
+        for (auto* decl : prog.decls) {
+            if (decl->kind == DeclKind::Effect) {
+                effectDecls[decl->effectDecl->name] = decl->effectDecl;
+            }
+        }
+    }
+
     llvm::StructType* getPromiseType() {
-        // { i32 effect_id, f64 yield_val, f64 resume_val, f64 return_val }
+        // { i32 effect_id, ptr arg_buffer, f64 resume_val, f64 return_val }
+        // arg_buffer points to a malloc'd buffer holding one 8-byte slot
+        // per performed argument, each slot storing that argument's own
+        // real type (not forced through f64) - see compilePerform/
+        // compileHandle. Null when the effect takes no arguments.
+        // resume_val/return_val stay f64-only for this pass - not
+        // needed by the spec's own effect examples, which only need the
+        // *argument* side to carry a real type.
         return llvm::StructType::get(context, {
             llvm::Type::getInt32Ty(context),
-            llvm::Type::getDoubleTy(context),
+            llvm::PointerType::getUnqual(context),
             llvm::Type::getDoubleTy(context),
             llvm::Type::getDoubleTy(context)
         });
@@ -270,6 +298,17 @@ private:
             return builder.CreateFPCast(value, target);
         if (target->isIntegerTy() && value->getType()->isIntegerTy())
             return builder.CreateIntCast(value, target, /*isSigned=*/true);
+        // Was missing entirely - a float value coerced toward an integer
+        // target (e.g. `let x: i64 = <f64 expr>;`) fell through to
+        // `return value` completely unconverted, silently leaving a
+        // float-typed value where an integer was declared. Usually
+        // invisible until the mismatched value reaches a strict boundary
+        // (a function's declared return type), where LLVM's IR verifier
+        // finally rejects it outright - confirmed directly with `let
+        // as_i64: i64 = <f64 result>; as_i64` as a function's tail
+        // expression.
+        if (target->isIntegerTy() && value->getType()->isFloatingPointTy())
+            return builder.CreateFPToSI(value, target);
         return value;
     }
 
@@ -1245,27 +1284,68 @@ private:
         return llvm::ConstantFP::get(context, llvm::APFloat(0.0));
     }
 
+    // A tiny raw-heap-buffer helper, mirroring buffer.fr's own runtime-
+    // helper pattern (8-byte slots, store/load whatever type actually
+    // belongs there - opaque pointers carry no type info, so this needs
+    // no bitcast) but implemented directly in codegen since this is
+    // compiler-internal plumbing, not something Frust source calls.
+    llvm::Value* mallocRaw(uint64_t sizeBytes) {
+        llvm::FunctionCallee mallocFn = module.getOrInsertFunction("malloc",
+            llvm::FunctionType::get(llvm::PointerType::getUnqual(context), {llvm::Type::getInt64Ty(context)}, false));
+        return builder.CreateCall(mallocFn, {builder.getInt64(sizeBytes)});
+    }
+    llvm::Value* slotAddr(llvm::Value* basePtr, int index) {
+        return builder.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(context), basePtr, index * 8);
+    }
+
     llvm::Value* compilePerform(const Expr& expr) {
         if (!currentCoroHandle) {
             std::cerr << "frust: perform used outside of a coroutine function\n";
             return nullptr;
         }
 
+        // Real declared param types come from the matching `effect`
+        // declaration - without this, every performed argument was
+        // silently forced through a single f64 slot (a String argument,
+        // e.g. the spec's own `effect Log(msg: String)`, would corrupt
+        // the pointer through a double reinterpretation), and only
+        // args[0] was ever sent at all - extra arguments were silently
+        // dropped, no error.
+        auto declIt = effectDecls.find(expr.text);
+        if (declIt == effectDecls.end()) {
+            std::cerr << "frust: codegen error: unknown effect '" << expr.text << "' - no matching 'effect' declaration\n";
+            return nullptr;
+        }
+        EffectDecl* decl = declIt->second;
+        if (expr.args.size() != decl->params.size()) {
+            std::cerr << "frust: codegen error: effect '" << expr.text << "' expects " << decl->params.size()
+                       << " argument(s), got " << expr.args.size() << "\n";
+            return nullptr;
+        }
+
         int effectId = std::hash<std::string>{}(expr.text) & 0x7FFFFFFF;
         llvm::Value* effectIdVal = builder.getInt32(effectId);
-        
-        llvm::Value* yieldVal = llvm::ConstantFP::get(context, llvm::APFloat(0.0));
-        if (!expr.args.empty()) {
-            llvm::Value* argVal = compileExpr(expr.args[0]);
-            if (argVal) yieldVal = coerceToType(argVal, llvm::Type::getDoubleTy(context));
+
+        llvm::Value* argBufPtr;
+        if (expr.args.empty()) {
+            argBufPtr = llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(context));
+        } else {
+            argBufPtr = mallocRaw(8 * expr.args.size());
+            for (size_t i = 0; i < expr.args.size(); ++i) {
+                llvm::Value* argVal = compileExpr(expr.args[i]);
+                if (!argVal) return nullptr;
+                llvm::Type* declaredTy = resolveType(decl->params[i].type);
+                argVal = coerceToType(argVal, declaredTy);
+                builder.CreateStore(argVal, slotAddr(argBufPtr, static_cast<int>(i)));
+            }
         }
-        
+
         llvm::Value* idPtr = builder.CreateStructGEP(getPromiseType(), currentPromiseAlloc, 0);
         builder.CreateStore(effectIdVal, idPtr);
-        
+
         llvm::Value* argPtr = builder.CreateStructGEP(getPromiseType(), currentPromiseAlloc, 1);
-        builder.CreateStore(yieldVal, argPtr);
-        
+        builder.CreateStore(argBufPtr, argPtr);
+
         llvm::Function* coroSaveFn = llvm::Intrinsic::getDeclaration(&module, llvm::Intrinsic::coro_save);
         llvm::Function* coroSuspendFn = llvm::Intrinsic::getDeclaration(&module, llvm::Intrinsic::coro_suspend);
         
@@ -1323,27 +1403,52 @@ private:
             sw->addCase(builder.getInt32(eId), caseBB);
             
             builder.SetInsertPoint(caseBB);
-            
-            llvm::Value* oldParam = nullptr;
-            if (!hc.params.empty()) {
-                const std::string& pName = hc.params[0].name;
-                if (namedValues.count(pName)) oldParam = namedValues[pName];
-                
-                llvm::Value* argPtr = builder.CreateStructGEP(getPromiseType(), promisePtr, 1);
-                llvm::Value* argVal = builder.CreateLoad(llvm::Type::getDoubleTy(context), argPtr);
-                namedValues[pName] = argVal;
+
+            // Bind EVERY handler param (not just params[0] - the original
+            // code silently dropped any effect argument past the first),
+            // each to its own real declared type from the matching
+            // `effect` decl, unpacked from compilePerform's arg buffer.
+            // Also actually restores whatever the name was bound to
+            // before, or removes the binding entirely if it wasn't bound
+            // at all - the original code saved oldParam but never
+            // restored it, so a handler param that shadowed an outer
+            // local permanently corrupted that local for the rest of the
+            // function.
+            auto declIt = effectDecls.find(hc.effectName);
+            EffectDecl* decl = (declIt != effectDecls.end()) ? declIt->second : nullptr;
+
+            std::vector<std::pair<std::string, llvm::Value*>> savedParams;
+            llvm::Value* argBufPtrLoaded = nullptr;
+            if (!hc.params.empty() && decl && !decl->params.empty()) {
+                llvm::Value* argPtrSlot = builder.CreateStructGEP(getPromiseType(), promisePtr, 1);
+                argBufPtrLoaded = builder.CreateLoad(llvm::PointerType::getUnqual(context), argPtrSlot);
             }
-            
+            for (size_t i = 0; i < hc.params.size(); ++i) {
+                const std::string& pName = hc.params[i].name;
+                savedParams.push_back({ pName, namedValues.count(pName) ? namedValues[pName] : nullptr });
+
+                if (decl && i < decl->params.size() && argBufPtrLoaded) {
+                    llvm::Type* declaredTy = resolveType(decl->params[i].type);
+                    llvm::Value* argVal = builder.CreateLoad(declaredTy, slotAddr(argBufPtrLoaded, static_cast<int>(i)));
+                    namedValues[pName] = argVal;
+                }
+            }
+
             llvm::Value* oldHandleForResume = currentActiveHandleForResume;
             llvm::Value* oldPromiseForResume = currentActivePromiseForResume;
             currentActiveHandleForResume = coroHandle;
             currentActivePromiseForResume = promisePtr;
-            
+
             compileExpr(hc.body);
-            
+
             currentActiveHandleForResume = oldHandleForResume;
             currentActivePromiseForResume = oldPromiseForResume;
-            
+
+            for (auto& saved : savedParams) {
+                if (saved.second) namedValues[saved.first] = saved.second;
+                else namedValues.erase(saved.first);
+            }
+
             if (!blockTerminated) {
                 // After executing the handler (which should include a resume()), loop back to check if it yielded another effect or finished.
                 builder.CreateBr(loopBB);
