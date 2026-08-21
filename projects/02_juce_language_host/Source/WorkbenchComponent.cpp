@@ -57,6 +57,7 @@ WorkbenchComponent::WorkbenchComponent()
     };
 
     auto aiChat = std::make_unique<AiChatPanel>();
+    auto plugins = std::make_unique<PluginsPanel>();
 
     dockManager->registerPanel("explorer", "Project Explorer", std::move(fileTree), CreationDock::DockTargetZone::Left);
     dockManager->registerPanel("editor", "Code Editor", std::move(editor), CreationDock::DockTargetZone::CenterTab);
@@ -64,6 +65,7 @@ WorkbenchComponent::WorkbenchComponent()
     dockManager->registerPanel("context", "Frust Context", std::move(context), CreationDock::DockTargetZone::Right);
     dockManager->registerPanel("frate", "Frate Package Manager", std::move(frate), CreationDock::DockTargetZone::Right);
     dockManager->registerPanel("ai", "AI Assistant", std::move(aiChat), CreationDock::DockTargetZone::Right);
+    dockManager->registerPanel("plugins", "Plugins", std::move(plugins), CreationDock::DockTargetZone::Right);
     dockManager->registerPanel("console", "Console & Output REPL", std::move(console), CreationDock::DockTargetZone::Bottom);
     dockManager->registerPanel("terminal", "OS Terminal", std::move(terminal), CreationDock::DockTargetZone::Bottom);
 

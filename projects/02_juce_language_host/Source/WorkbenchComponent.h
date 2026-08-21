@@ -9,6 +9,7 @@
 #include "ContextPanel.h"
 #include "AiChatPanel.h"
 #include "FratePanel.h"
+#include "PluginsPanel.h"
 #include "TerminalPanel.h"
 #include "Auth/DesktopAuthSession.h"
 

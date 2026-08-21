@@ -31,6 +31,13 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../01_language_paradigms/02_functional/CM
     add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../01_language_paradigms/02_functional" frust_lang_build)
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../09_frust_plugin_host/CMakeLists.txt")
+    if(NOT TARGET frust_plugin_host)
+        message(STATUS "LagDaemonResearchIDE: Adding frust_plugin_host library")
+        add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../09_frust_plugin_host" frust_plugin_host_build)
+    endif()
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../04_ai_provider/CMakeLists.txt")
     message(STATUS "LagDaemonResearchIDE: Adding ai_provider library")
     add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../04_ai_provider" ai_provider_build)
@@ -94,6 +101,8 @@ target_sources(LagDaemonResearchIDE PRIVATE
     Source/AiChatPanel.cpp
     Source/FratePanel.h
     Source/FratePanel.cpp
+    Source/PluginsPanel.h
+    Source/PluginsPanel.cpp
     Source/CustomSplitterBar.h
 )
 
@@ -106,6 +115,7 @@ target_compile_definitions(LagDaemonResearchIDE PRIVATE
 target_link_libraries(LagDaemonResearchIDE PRIVATE
     CreationDock
     frust_lang
+    frust_plugin_host
     ai_provider
     frate_lib
     juce::juce_core
