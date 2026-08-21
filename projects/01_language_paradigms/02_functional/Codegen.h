@@ -492,10 +492,20 @@ private:
             if (!rhs->getType()->isFloatingPointTy()) rhs = builder.CreateSIToFP(rhs, lhs->getType());
             if (lhs->getType() != rhs->getType()) rhs = builder.CreateFPCast(rhs, lhs->getType());
         } else if (lhs->getType() != rhs->getType()) {
+            // A `bool` (i1) widened via SIGN extension is a real bug, not
+            // just a style choice: SExt treats a 1-bit value's only bit as
+            // the sign bit, so `true` (bit pattern 1) becomes -1 (all bits
+            // set) instead of 1. Every other integer width in this
+            // language is genuinely signed, so SExt is correct there -
+            // bool is the one exception, and needs zero extension instead
+            // (true -> 1, false -> 0, regardless of target width).
             unsigned lw = lhs->getType()->getIntegerBitWidth();
             unsigned rw = rhs->getType()->getIntegerBitWidth();
-            if (lw < rw) lhs = builder.CreateSExt(lhs, rhs->getType());
-            else rhs = builder.CreateSExt(rhs, lhs->getType());
+            if (lw < rw) {
+                lhs = lhs->getType()->isIntegerTy(1) ? builder.CreateZExt(lhs, rhs->getType()) : builder.CreateSExt(lhs, rhs->getType());
+            } else {
+                rhs = rhs->getType()->isIntegerTy(1) ? builder.CreateZExt(rhs, lhs->getType()) : builder.CreateSExt(rhs, lhs->getType());
+            }
         }
 
         switch (expr.binaryOp) {
@@ -1401,7 +1411,12 @@ public:
 
         llvm::FunctionType* ft = llvm::FunctionType::get(retType, paramTypes, false);
         llvm::Function* llvmFn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, llvmName, module);
-        llvmFn->setPresplitCoroutine();
+        // Was unconditional - marked every function as a presplit
+        // coroutine to LLVM's coroutine-splitting pass regardless of
+        // whether it actually contains a `perform` (isCoro, computed
+        // above). An ordinary function that never suspends has no
+        // business being run through coroutine lowering.
+        if (isCoro) llvmFn->setPresplitCoroutine();
 
         if (fn.isMethod) methods[llvmName] = &fn;
         return llvmFn;

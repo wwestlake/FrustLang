@@ -72,8 +72,15 @@ bool ResolveImports(Program* prog, AstArena& arena, std::vector<std::string>& er
             continue;
         }
 
+        // errors is the SHARED, ACCUMULATED vector across every pod this
+        // whole ResolveImports call processes - checking !errors.empty()
+        // here was checking whether ANY pod ever failed, not whether THIS
+        // one did. One early pod's failure permanently poisoned every
+        // pod after it in the same loop, even ones that parsed cleanly.
+        // Compare the count before/after this specific call instead.
+        size_t errorsBefore = errors.size();
         Program* podProg = ParseSource(file, arena, errors);
-        if (!podProg || !errors.empty()) {
+        if (!podProg || errors.size() > errorsBefore) {
             errors.push_back("ModuleLoader: Failed to parse lib.fr for pod '" + podName + "'");
             success = false;
             continue;
