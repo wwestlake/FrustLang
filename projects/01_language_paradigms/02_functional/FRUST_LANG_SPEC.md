@@ -10,6 +10,7 @@ This is the single spec document for the language. The grammar itself (flex/biso
 1. [Advanced Language Features](#1-advanced-language-features)
 2. [Smart Pointers & Memory](#2-smart-pointers--memory)
 3. [REPL & Dynamic JIT Driver](#3-repl--dynamic-jit-driver)
+4. [The Automation Layer](#4-the-automation-layer)
 
 ---
 
@@ -245,3 +246,82 @@ entry:
 ### 3.5 JUCE Host Integration
 
 The REPL driver is embedded directly into the JUCE Desktop Host (`projects/02_juce_language_host`), letting developers write, evaluate, and hot-swap Frust components in real time inside the running JUCE desktop application.
+
+---
+
+## 4. The Automation Layer
+
+Frust's host-interop stack has three layers, from raw to ergonomic:
+
+1. **Raw host interface.** A host process registers native functions
+   (`frust_plugin_register_host_function`, `projects/09_frust_plugin_host`);
+   loaded Frust code calls them via ordinary `extern fn`. No structure, no
+   contract-checking - the host just promises the symbols exist.
+2. **Formal contract** (`interface` / `impl X for Y`, below). A host or
+   library declares a named capability contract; a concrete type declares
+   it implements that contract. Checked at compile time, not hoped for.
+3. **The automation layer.** A real standard library, written in Frust
+   itself, of stateful objects (structs + `impl`) that wrap layers 1/2's
+   raw calls into something worth using directly - the Frust equivalent
+   of a managed framework's base class library, but functional-flavored:
+   an object earns its existence by holding real state worth managing (a
+   handle, a buffer, a phase), not as a namespace for stateless verbs -
+   plain functions already cover stateless behavior better.
+
+### 4.1 Interfaces (`interface`, `impl X for Y`)
+
+```frust
+interface Automation {
+    fn tick(&mut self, delta_time: f32) -> f32
+}
+
+struct RampAutomation {
+    phase: f32,
+    rate: f32
+}
+
+impl Automation for RampAutomation {
+    pub fn tick(&mut self, delta_time: f32) -> f32 = {
+        self.phase = self.phase + delta_time * self.rate;
+        self.phase
+    }
+}
+```
+
+An `interface` declares a set of method signatures with no bodies - a
+checked contract. `impl InterfaceName for TypeName { ... }` (alongside
+the existing plain `impl TypeName { ... }` for inherent methods) makes a
+concrete type satisfy that contract; the compiler rejects the block if
+any declared method is missing.
+
+A value of an interface type is a genuine fat pointer - `{ data, vtable }`
+- not a plain struct pointer. Assigning a concrete struct value to an
+interface-typed `let` builds that fat pointer once, using a vtable
+generated per `(interface, concrete type)` pair. Calling a method on an
+interface-typed value dispatches through the vtable at runtime (a real
+indirect call, not a name lookup) - the same call site correctly runs
+different code depending on which concrete type is actually behind the
+value:
+
+```frust
+let a: Automation = RampAutomation { phase: 0.0, rate: 2.0 };
+a.tick(1.0)  // dispatches to RampAutomation::tick
+```
+
+### 4.2 The `Automation` interface
+
+The first, foundational automation-layer interface (`projects/06_frust_library/core/src/automation.fr`):
+a host that wants to drive *something* over time - a game engine moving
+an object, a DAW automating a parameter, a robot's motor curve - loads
+any `Automation`-typed value and calls `.tick(delta_time)` once per
+frame/step, without knowing or caring which concrete implementation is
+behind it. Frust never needs to know what the returned value means; that
+meaning belongs entirely to the host. Two reference implementations ship
+in `automation.fr`: `RampAutomation` (linear accumulation) and
+`DecayAutomation` (multiplicative decay) - structurally different update
+rules, verified through the same `.tick()` call site to prove real
+dynamic dispatch, not just that one interface implementation compiles.
+
+Domain-specific automations (audio parameters, engine transforms) are a
+separate, later concern layered on top of this - `Automation` itself is
+deliberately host-agnostic.

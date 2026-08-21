@@ -199,6 +199,27 @@ struct EffectDecl {
     SourceLoc loc;
 };
 
+// One method signature inside an `interface { ... }` block - no body, just
+// the contract. `self` is implicit (every interface method takes one,
+// matching FunctionDecl's own convention) so it isn't in `params`.
+struct InterfaceMethodSig {
+    std::string name;
+    std::vector<Param> params;
+    TypeExpr* returnType = nullptr; // null => unit
+    SourceLoc loc;
+};
+
+// `interface Name { fn method(&mut self, ...) -> T ... }` - a named,
+// checked capability contract. Concrete types satisfy it via
+// `impl Name for TypeName { ... }` (ImplDecl.interfaceName below), and a
+// value of this type at runtime is a fat pointer (data + vtable) - see
+// Codegen.h's interfaceDecls/resolveType handling.
+struct InterfaceDecl {
+    std::string name;
+    std::vector<InterfaceMethodSig> methods;
+    SourceLoc loc;
+};
+
 struct PortDecl {
     bool isOutput = false;
     std::string name;
@@ -236,6 +257,13 @@ struct ImplDecl {
     std::string typeName; // the struct this impl block adds methods to
     std::vector<FunctionDecl*> methods;
     SourceLoc loc;
+
+    // Empty => a plain inherent impl (today's only form, unchanged).
+    // Non-empty => `impl <interfaceName> for <typeName> { ... }` - this
+    // block also satisfies that interface's contract; Codegen.h emits a
+    // vtable for the (interfaceName, typeName) pair once these methods
+    // are compiled.
+    std::string interfaceName;
 };
 
 // TopLevelStmt exists because the REPL accepts bare statements directly
@@ -243,7 +271,7 @@ struct ImplDecl {
 // section) with no enclosing `fn`. Folding it into DeclKind rather than
 // giving Program a second, separately-ordered list keeps top-level ordering
 // uniform between files (all decls) and REPL input (all statements).
-enum class DeclKind { Function, Struct, TypeAlias, Effect, Component, Use, TopLevelStmt, Impl };
+enum class DeclKind { Function, Struct, TypeAlias, Effect, Component, Use, TopLevelStmt, Impl, Interface };
 
 struct Decl {
     DeclKind kind;
@@ -255,6 +283,7 @@ struct Decl {
     UseDecl* useDecl = nullptr;
     Expr* topLevelStmt = nullptr;
     ImplDecl* implDecl = nullptr;
+    InterfaceDecl* interfaceDecl = nullptr;
 };
 
 struct Program {
@@ -317,6 +346,11 @@ public:
         return implDecls_.back().get();
     }
 
+    InterfaceDecl* NewInterfaceDecl() {
+        interfaceDecls_.push_back(std::make_unique<InterfaceDecl>());
+        return interfaceDecls_.back().get();
+    }
+
     Decl* NewDecl(DeclKind kind) {
         decls_.push_back(std::make_unique<Decl>());
         decls_.back()->kind = kind;
@@ -338,6 +372,7 @@ private:
     std::vector<std::unique_ptr<ComponentDecl>> componentDecls_;
     std::vector<std::unique_ptr<UseDecl>> useDecls_;
     std::vector<std::unique_ptr<ImplDecl>> implDecls_;
+    std::vector<std::unique_ptr<InterfaceDecl>> interfaceDecls_;
     std::vector<std::unique_ptr<Decl>> decls_;
     std::vector<std::unique_ptr<Program>> programs_; // always exactly one in practice; vector keeps ownership uniform.
 };

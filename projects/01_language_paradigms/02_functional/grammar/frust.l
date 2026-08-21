@@ -59,6 +59,7 @@ ID     {IDCHAR}({IDCHAR}|{DIGIT})*
 "break"      { return Parser::make_BREAK(loc_); }
 "continue"   { return Parser::make_CONTINUE(loc_); }
 "impl"       { return Parser::make_IMPL(loc_); }
+"interface"  { return Parser::make_INTERFACE(loc_); }
 "self"       { return Parser::make_SELF(loc_); }
 "pub"        { return Parser::make_PUB(loc_); }
 "unsafe"     { return Parser::make_UNSAFE(loc_); }

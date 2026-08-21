@@ -92,7 +92,7 @@
 %token
     FN "fn" PUB "pub" UNSAFE "unsafe" EXTERN "extern" ENTRY "entry" USE "use" LET "let" MUT "mut" RETURN "return"
     IF "if" ELSE "else" WHILE "while" LOOP "loop" FOR "for" BREAK "break" CONTINUE "continue"
-    IMPL "impl" SELF "self"
+    IMPL "impl" SELF "self" INTERFACE "interface"
     STRUCT "struct" TYPE "type" EFFECT "effect" PERFORM "perform"
     HANDLE "handle" RESUME "resume" WITH "with" COMPONENT "component"
     IN "in" OUT "out" BUILD_TIME "build_time" QUOTE "quote" UNQUOTE "unquote"
@@ -142,6 +142,9 @@
 %type <std::vector<frust::FunctionDecl*>> method_decl_list
 %type <frust::SelfKind> self_param
 %type <std::vector<frust::Param>> method_param_list_opt
+%type <frust::InterfaceDecl*> interface_decl
+%type <frust::InterfaceMethodSig> interface_method_sig
+%type <std::vector<frust::InterfaceMethodSig>> interface_method_sig_list
 
 %type <bool> pub_opt unsafe_opt extern_opt entry_opt
 %type <frust::TypeExpr*> return_type_opt type_expr type_base type_annot_opt
@@ -208,6 +211,7 @@ decl:
   | component_decl  { $$ = arena.NewDecl(DeclKind::Component); $$->componentDecl = $1; }
   | use_decl        { $$ = arena.NewDecl(DeclKind::Use); $$->useDecl = $1; }
   | impl_decl       { $$ = arena.NewDecl(DeclKind::Impl); $$->implDecl = $1; }
+  | interface_decl  { $$ = arena.NewDecl(DeclKind::Interface); $$->interfaceDecl = $1; }
   // Bare top-level statements - the REPL types `let dist = 100.0 * Meter`,
   // `dist / time`, etc. directly with no enclosing `fn` (FRUST_LANG_SPEC.md
   // REPL section). Requires a trailing ";" when more than one appears in the
@@ -282,6 +286,14 @@ impl_decl:
         // stamped onto each FunctionDecl here instead.
         for (auto* m : $$->methods) m->selfTypeName = $2;
     }
+  // `impl InterfaceName for TypeName { ... }` - this block also satisfies
+  // InterfaceName's contract (Codegen.h emits a vtable for the pair).
+  // Reuses "for" (already a token, for-loops) rather than a new keyword.
+  | "impl" IDENT "for" IDENT "{" method_decl_list "}" {
+        $$ = arena.NewImplDecl();
+        $$->interfaceName = $2; $$->typeName = $4; $$->methods = std::move($6); $$->loc = ToSourceLoc(@1);
+        for (auto* m : $$->methods) m->selfTypeName = $4;
+    }
 ;
 method_decl_list:
     %empty                        { $$ = {}; }
@@ -301,6 +313,29 @@ self_param:
   | "self"             { $$ = SelfKind::ByValue; }
 ;
 method_param_list_opt: %empty { $$ = {}; } | "," param_list { $$ = std::move($2); } ;
+
+// -----------------------------------------------------------------------
+// Interfaces: `interface Name { fn method(&mut self, ...) -> T ... }` -
+// a named, checked capability contract, no bodies. Reuses self_param/
+// method_param_list_opt/return_type_opt exactly like method_decl does -
+// the only difference is no "=" expr body.
+// -----------------------------------------------------------------------
+
+interface_decl:
+    "interface" IDENT "{" interface_method_sig_list "}" {
+        $$ = arena.NewInterfaceDecl();
+        $$->name = $2; $$->methods = std::move($4); $$->loc = ToSourceLoc(@1);
+    }
+;
+interface_method_sig_list:
+    %empty                                          { $$ = {}; }
+  | interface_method_sig_list interface_method_sig  { $$ = std::move($1); $$.push_back($2); }
+;
+interface_method_sig:
+    "fn" IDENT "(" self_param method_param_list_opt ")" return_type_opt {
+        $$ = InterfaceMethodSig{ $2, std::move($5), $7, ToSourceLoc(@1) };
+    }
+;
 
 type_alias_decl:
     "type" IDENT "=" type_expr {

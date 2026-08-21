@@ -82,6 +82,7 @@ public:
         printBuilder.CreateRetVoid();
 
         indexEffectDecls(prog);
+        indexInterfaceDecls(prog);
 
         // Pass 1: declare every function/method *signature* up front, so
         // calls resolve regardless of textual order - module.getFunction()
@@ -96,8 +97,23 @@ public:
             }
         }
 
-        // Pass 2: fill in bodies.
+        // Vtables: needs every method's real llvm::Function to exist as a
+        // DECLARATION (Pass 1, above) - a vtable slot just references that
+        // Function's address, which is stable as soon as it's declared,
+        // not only once its body is filled in. Has to run before Pass 2
+        // (not after): a function body compiled in Pass 2 - e.g.
+        // `let a: Automation = RampAutomation { ... }` inside `start_app`
+        // - needs the vtable to already exist the moment it runs, and
+        // Pass 2 compiles decls in file order with no guarantee an impl
+        // block textually precedes every function that constructs an
+        // interface value from it.
         bool ok = true;
+        for (auto* decl : prog.decls) {
+            if (decl->kind != DeclKind::Impl || decl->implDecl->interfaceName.empty()) continue;
+            if (!buildVtable(*decl->implDecl)) ok = false;
+        }
+
+        // Pass 2: fill in bodies.
         for (auto* decl : prog.decls) {
             if (decl->kind == DeclKind::Function && (decl->functionDecl->body != nullptr || decl->functionDecl->isExtern)) {
                 if (!compileFunction(*decl->functionDecl)) ok = false;
@@ -135,6 +151,39 @@ private:
     // impl-block methods, keyed by the same "TypeName::methodName" scheme
     // compileCall's existing Path handling already produces for lookups.
     std::unordered_map<std::string, const FunctionDecl*> methods;
+
+    // `interface Name { fn method(&mut self, ...) -> T ... }` - a named,
+    // checked capability contract. Populated by indexInterfaceDecls()
+    // before Pass 1, same timing as effectDecls.
+    std::map<std::string, InterfaceDecl*> interfaceDecls;
+
+    // One vtable global per (interfaceName, concreteTypeName) pair that has
+    // a real `impl InterfaceName for TypeName { ... }` block - built in a
+    // Pass 3 after Pass 2 compiles the methods those vtables point at
+    // (needs their real llvm::Function addresses to already exist).
+    // Keyed by mangleMethodName(interfaceName, typeName) - same composite-
+    // key shape already used for methods, just reused for a different pair
+    // of names.
+    std::unordered_map<std::string, llvm::GlobalVariable*> vtables;
+
+    // variable/param name -> interface name, the fat-pointer-typed sibling
+    // of namedValueStructType. A name here holds a genuine 2-word
+    // { ptr data, ptr vtable } value (see resolveType's ASTExpr-adjacent
+    // interface handling), not a plain struct pointer.
+    std::unordered_map<std::string, std::string> namedValueInterfaceType;
+
+    void indexInterfaceDecls(const Program& prog) {
+        for (auto* decl : prog.decls) {
+            if (decl->kind == DeclKind::Interface) {
+                interfaceDecls[decl->interfaceDecl->name] = decl->interfaceDecl;
+            }
+        }
+    }
+
+    llvm::StructType* fatPointerType() {
+        llvm::Type* ptrTy = llvm::PointerType::getUnqual(context);
+        return llvm::StructType::get(context, {ptrTy, ptrTy});
+    }
 
     // (continueTarget, breakTarget) per enclosing loop, innermost last.
     std::vector<std::pair<llvm::BasicBlock*, llvm::BasicBlock*>> loopStack;
@@ -275,6 +324,11 @@ private:
 
         auto structIt = structTypes.find(n);
         if (structIt != structTypes.end()) return llvm::PointerType::getUnqual(context); // structs are always passed/held by pointer
+
+        // A declared `interface Name { ... }` - values of this type are a
+        // fat pointer { data, vtable }, not a plain struct pointer (see
+        // buildVtable/compileMethodCall's interface-dispatch branch).
+        if (interfaceDecls.count(n)) return fatPointerType();
 
         std::cerr << "frust: codegen does not support type '" << n << "' yet - defaulting to i64\n";
         return llvm::Type::getInt64Ty(context);
@@ -584,6 +638,28 @@ private:
             case ExprKind::Let: {
                 auto* val = compileExpr(expr->lhs);
                 if (!val) return nullptr;
+
+                // `let x: SomeInterface = <concrete struct value>;` - wrap
+                // the concrete pointer as a fat pointer for that interface,
+                // using the vtable buildVtable already emitted for this
+                // exact (interface, concrete type) pair. Checked before the
+                // plain-struct path below since an interface-typed let's
+                // initializer is still a concrete struct value at this
+                // point (a SineAutomation, say) - it's the DECLARED type
+                // that says "treat this polymorphically from here on."
+                if (expr->typeAnnotation && interfaceDecls.count(expr->typeAnnotation->name)) {
+                    auto concreteTypeName = inferStructTypeName(expr->lhs);
+                    if (!concreteTypeName) {
+                        std::cerr << "frust: codegen error: '" << expr->text << ": " << expr->typeAnnotation->name
+                                   << "' needs a struct-valued initializer\n";
+                        return nullptr;
+                    }
+                    llvm::Value* fat = wrapAsInterface(val, expr->typeAnnotation->name, *concreteTypeName);
+                    if (!fat) return nullptr;
+                    namedValues[expr->text] = fat;
+                    namedValueInterfaceType[expr->text] = expr->typeAnnotation->name;
+                    return fat;
+                }
 
                 auto structTypeName = inferStructTypeName(expr->lhs);
                 if (structTypeName) {
@@ -1015,6 +1091,20 @@ private:
     // "no such thing as calling a member" error this would otherwise hit.
     llvm::Value* compileMethodCall(const Expr& expr) {
         const Expr& member = *expr.lhs;
+
+        // Interface-typed receiver (a fat pointer, from a `let x:
+        // SomeInterface = ...` binding) - genuine dynamic dispatch through
+        // the vtable buildVtable emitted, not a static name lookup. Checked
+        // first: an interface-typed identifier is never also in
+        // namedValueStructType, so this and the static path below are
+        // mutually exclusive, not competing.
+        if (member.lhs->kind == ExprKind::Identifier) {
+            auto ifaceNameIt = namedValueInterfaceType.find(member.lhs->text);
+            if (ifaceNameIt != namedValueInterfaceType.end()) {
+                return compileInterfaceMethodCall(expr, member, ifaceNameIt->second);
+            }
+        }
+
         auto typeName = inferStructTypeName(member.lhs);
         if (!typeName) {
             std::cerr << "frust: codegen error: cannot call a method on an expression of unknown struct type\n";
@@ -1048,6 +1138,60 @@ private:
             ++argTypeIt;
         }
         return builder.CreateCall(callee, args, callee->getReturnType()->isVoidTy() ? "" : "calltmp");
+    }
+
+    // Genuine dynamic dispatch: `receiver.method(args)` where receiver is a
+    // fat pointer { data, vtable } for `interfaceName`. Extracts both
+    // words, loads the method's function pointer out of the vtable at its
+    // declared index, and calls through it - a real LLVM indirect call
+    // (the callee address is a runtime value, not a compile-time-known
+    // name), same mechanism compileIndirectCall already uses elsewhere in
+    // this file, just with a real, checked FunctionType built from the
+    // interface's own declared signature instead of a guessed one.
+    llvm::Value* compileInterfaceMethodCall(const Expr& expr, const Expr& member, const std::string& interfaceName) {
+        auto ifaceIt = interfaceDecls.find(interfaceName);
+        if (ifaceIt == interfaceDecls.end()) {
+            std::cerr << "frust: codegen internal error: unknown interface '" << interfaceName << "'\n";
+            return nullptr;
+        }
+        InterfaceDecl* iface = ifaceIt->second;
+
+        int methodIndex = -1;
+        const InterfaceMethodSig* sig = nullptr;
+        for (size_t i = 0; i < iface->methods.size(); ++i) {
+            if (iface->methods[i].name == member.text) { methodIndex = static_cast<int>(i); sig = &iface->methods[i]; break; }
+        }
+        if (!sig) {
+            std::cerr << "frust: codegen error: interface '" << interfaceName << "' has no method '" << member.text << "'\n";
+            return nullptr;
+        }
+        if (sig->params.size() != expr.args.size()) {
+            std::cerr << "frust: codegen error: '" << member.text << "' expects " << sig->params.size()
+                       << " argument(s), got " << expr.args.size() << "\n";
+            return nullptr;
+        }
+
+        llvm::Value* fatVal = compileExpr(member.lhs);
+        if (!fatVal) return nullptr;
+        llvm::Value* dataPtr = builder.CreateExtractValue(fatVal, {0});
+        llvm::Value* vtablePtr = builder.CreateExtractValue(fatVal, {1});
+
+        llvm::Type* ptrTy = llvm::PointerType::getUnqual(context);
+        llvm::Value* slotPtr = builder.CreateConstInBoundsGEP1_64(ptrTy, vtablePtr, methodIndex);
+        llvm::Value* fnPtr = builder.CreateLoad(ptrTy, slotPtr);
+
+        llvm::Type* retTy = sig->returnType ? resolveType(sig->returnType) : llvm::Type::getVoidTy(context);
+        std::vector<llvm::Type*> paramTys = {ptrTy}; // self
+        for (auto& p : sig->params) paramTys.push_back(resolveType(p.type));
+        llvm::FunctionType* fnTy = llvm::FunctionType::get(retTy, paramTys, false);
+
+        std::vector<llvm::Value*> args = {dataPtr};
+        for (size_t i = 0; i < expr.args.size(); ++i) {
+            llvm::Value* v = compileExpr(expr.args[i]);
+            if (!v) return nullptr;
+            args.push_back(coerceToType(v, paramTys[i + 1]));
+        }
+        return builder.CreateCall(fnTy, fnPtr, args, retTy->isVoidTy() ? "" : "ifacecalltmp");
     }
 
     // Assumes a/b are already-verified same-size vector values.
@@ -1694,6 +1838,59 @@ private:
     // format as any other qualified call.
     static std::string mangleMethodName(const std::string& typeName, const std::string& methodName) {
         return typeName + "::" + methodName;
+    }
+
+    // Pass-3 step: for one `impl InterfaceName for TypeName { ... }` block
+    // (its methods already compiled to real llvm::Functions by Pass 2),
+    // emit a constant array of function pointers, one slot per interface
+    // method in DECLARATION order, each pointing at this type's compiled
+    // implementation. This is the actual vtable a fat-pointer interface
+    // value's second word points at.
+    bool buildVtable(const ImplDecl& impl) {
+        auto ifaceIt = interfaceDecls.find(impl.interfaceName);
+        if (ifaceIt == interfaceDecls.end()) {
+            std::cerr << "frust: codegen error: '" << impl.typeName << "' implements unknown interface '" << impl.interfaceName << "'\n";
+            return false;
+        }
+        InterfaceDecl* iface = ifaceIt->second;
+
+        std::vector<llvm::Constant*> slots;
+        slots.reserve(iface->methods.size());
+        for (auto& sig : iface->methods) {
+            std::string mangled = mangleMethodName(impl.typeName, sig.name);
+            llvm::Function* fn = module.getFunction(mangled);
+            if (!fn) {
+                std::cerr << "frust: codegen error: '" << impl.typeName << "' does not implement '"
+                           << impl.interfaceName << "::" << sig.name << "' (required by the interface)\n";
+                return false;
+            }
+            slots.push_back(fn);
+        }
+
+        llvm::ArrayType* vtableTy = llvm::ArrayType::get(llvm::PointerType::getUnqual(context), slots.size());
+        llvm::Constant* init = llvm::ConstantArray::get(vtableTy, slots);
+        std::string vtableName = "." + impl.interfaceName + "$" + impl.typeName + ".vtable";
+        auto* global = new llvm::GlobalVariable(module, vtableTy, true, llvm::GlobalValue::PrivateLinkage, init, vtableName);
+        vtables[mangleMethodName(impl.interfaceName, impl.typeName)] = global;
+        return true;
+    }
+
+    // Wraps a concrete struct pointer (already known to be `concreteTypeName`)
+    // as a fat pointer satisfying `interfaceName`, using the vtable
+    // buildVtable already built for that exact pair. Returns nullptr (with
+    // a message already printed) if no such `impl Interface for Type` block
+    // exists - "used a struct where an interface was expected" without ever
+    // implementing it is a real error, not a silent gap.
+    llvm::Value* wrapAsInterface(llvm::Value* concretePtr, const std::string& interfaceName, const std::string& concreteTypeName) {
+        auto it = vtables.find(mangleMethodName(interfaceName, concreteTypeName));
+        if (it == vtables.end()) {
+            std::cerr << "frust: codegen error: '" << concreteTypeName << "' does not implement interface '" << interfaceName << "'\n";
+            return nullptr;
+        }
+        llvm::Value* fat = llvm::UndefValue::get(fatPointerType());
+        fat = builder.CreateInsertValue(fat, concretePtr, {0});
+        fat = builder.CreateInsertValue(fat, it->second, {1});
+        return fat;
     }
 
 public:
