@@ -262,15 +262,25 @@ bool ValidateCompiles(const std::string& source, std::string& err) {
     Program* result = nullptr;
     std::vector<std::string> parseErrors;
     std::vector<ParseError> structuredErrors;
-    // Intentionally leaked (process-lifetime validation call, matches
-    // frust_plugin_host's own load-path pattern) - the SAME arena
-    // instance is reused for both the parse and ResolveImports below,
-    // since AST nodes allocated during parsing live in it.
-    AstArena* arena = new AstArena();
-    Parser parser(lexer, *arena, parseErrors, result, structuredErrors);
+    // Was `new AstArena()`, deliberately never deleted, on the claim this
+    // was a "process-lifetime validation call" - false: ValidateCompiles
+    // runs once per CompileGraphToSource call, and that's the body of
+    // node_compiler_compile(), the library's actual per-request public
+    // API (a live graph editor calls this on every compile, not once at
+    // startup) - confirmed by tracing the call chain, not just an
+    // imprecise comment. Every node ID/type string parsed here also had
+    // nowhere else to live, so the leak grew without bound over a long
+    // editing session. AstArena only needs to outlive this function
+    // (compileProgram fully consumes `result` before returning) - a
+    // stack-local instance is all that was ever needed, matching how
+    // frust_plugin_host's own load path actually does it (the comment's
+    // claim of matching that pattern was itself wrong - that path never
+    // leaked its arena either).
+    AstArena arena;
+    Parser parser(lexer, arena, parseErrors, result, structuredErrors);
     parser.parse();
     parseErrors.insert(parseErrors.end(), lexer.errors.begin(), lexer.errors.end());
-    if (result) ResolveImports(result, *arena, parseErrors);
+    if (result) ResolveImports(result, arena, parseErrors);
 
     if (!parseErrors.empty() || !result) {
         std::ostringstream msg;
