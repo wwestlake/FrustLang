@@ -1,0 +1,3 @@
+pub fn get_value() -> i64 = {
+    return 222
+}

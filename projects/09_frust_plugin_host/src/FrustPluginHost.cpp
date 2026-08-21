@@ -13,6 +13,7 @@
 #include <string>
 
 #include "AST.h"
+#include "ASTHash.h"
 #include "Codegen.h"
 #include "Lexer.h"
 #include "ModuleLoader.h"
@@ -35,6 +36,14 @@ struct HostState {
     llvm::orc::JITDylib* hostDylib = nullptr;
     uint64_t nextPluginId = 0;
     bool initAttempted = false;
+
+    // AST content hash (FRUST_LANG_SPEC.md 1.4) of the last successfully
+    // loaded program for each path - lets frust_plugin_reload skip the
+    // full unload/recompile/relink cycle when a reload is triggered but
+    // nothing structurally changed (a no-op save, a file watcher firing
+    // twice). Called with `mutex` already held, same as everything else
+    // here.
+    std::map<std::string, std::string> lastAstHashByPath;
 
     // Called with `mutex` already held.
     bool ensureInit() {
@@ -127,6 +136,8 @@ FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_load(const char* path) {
         return nullptr;
     }
 
+    std::string astHash = computeAstHash(*prog);
+
     auto context = std::make_unique<llvm::LLVMContext>();
     auto module = std::make_unique<llvm::Module>(path, *context);
 
@@ -156,6 +167,8 @@ FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_load(const char* path) {
         return nullptr;
     }
 
+    s.lastAstHashByPath[path] = astHash;
+
     auto* handle = new FrustPluginHandleImpl();
     handle->path = path;
     handle->dylibName = dylibName;
@@ -179,6 +192,35 @@ FRUST_PLUGIN_HOST_API void frust_plugin_unload(FrustPluginHandle handle) {
 FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_reload(FrustPluginHandle handle) {
     if (!handle) return nullptr;
     std::string path = handle->path; // copy before unload deletes the handle
+
+    // AST content hash check (FRUST_LANG_SPEC.md 1.4): was an unconditional
+    // unload+load on every call - the full LLVM module recompile + JITDylib
+    // teardown/relink cost was paid even when the source hadn't
+    // structurally changed since the last successful load (a no-op save,
+    // an editor/file-watcher firing the reload twice for one real edit).
+    // Parsing here is cheap relative to that; if the freshly-parsed AST
+    // hashes the same as what's already loaded, skip the real work
+    // entirely and hand back the existing handle untouched.
+    {
+        std::ifstream file(path);
+        if (file) {
+            AstArena arena;
+            std::vector<std::string> parseErrors;
+            Program* prog = ParsePluginSource(file, arena, parseErrors);
+            if (prog && parseErrors.empty()) {
+                std::string newHash = computeAstHash(*prog);
+                auto& s = state();
+                std::lock_guard<std::mutex> lock(s.mutex);
+                auto it = s.lastAstHashByPath.find(path);
+                if (it != s.lastAstHashByPath.end() && it->second == newHash) {
+                    return handle; // unchanged - nothing to reload
+                }
+            }
+            // Parse failed or errored: fall through to the real reload path
+            // below, which will report the error the normal way.
+        }
+    }
+
     frust_plugin_unload(handle);
     return frust_plugin_load(path.c_str());
 }

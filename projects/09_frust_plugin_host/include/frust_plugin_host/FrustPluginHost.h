@@ -69,12 +69,24 @@ FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_load(const char* path);
 // not call them after this.
 FRUST_PLUGIN_HOST_API void frust_plugin_unload(FrustPluginHandle handle);
 
-// The actual hot-reload operation: unloads `handle`, re-parses/re-JITs
-// the same source path fresh, returns a new handle. NULL on failure (the
-// old handle is still torn down either way - a failed reload doesn't
-// leave the stale version running). Every function pointer obtained from
-// the OLD handle is invalid after this call, even on failure - re-fetch
-// from the new handle.
+// The actual hot-reload operation. Re-parses the source at `handle`'s
+// path and compares its AST content hash (FRUST_LANG_SPEC.md 1.4)
+// against what's already loaded:
+//   - Unchanged: the SAME handle is returned untouched - no unload, no
+//     recompile, no relink. Every function pointer already obtained from
+//     `handle` stays valid. This is the zero-latency path, for the
+//     common case of a reload trigger firing with no real edit behind it
+//     (a no-op save, a duplicate file-watcher event).
+//   - Changed (or the path can no longer be parsed cleanly - errors go
+//     to stderr the normal way): `handle` is unloaded and the source is
+//     re-parsed/re-JITed fresh into a NEW handle. NULL on failure (the
+//     old handle is still torn down either way - a failed reload doesn't
+//     leave the stale version running). Every function pointer obtained
+//     from the OLD handle is invalid after this call, even on failure -
+//     re-fetch from the new handle.
+// Since which of these two happens isn't known until the content is
+// compared, a caller that must tell them apart should compare the
+// returned handle pointer against the one it passed in.
 FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_reload(FrustPluginHandle handle);
 
 // Resolves a top-level function by name within this plugin to a raw

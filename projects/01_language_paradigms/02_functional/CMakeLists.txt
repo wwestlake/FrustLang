@@ -118,6 +118,7 @@ add_custom_command(
 # ------------------------------------------------------------------------------
 add_library(frust_lang STATIC
     AST.h
+    ASTHash.h
     Lexer.h
     Codegen.h
     ReplSession.h
