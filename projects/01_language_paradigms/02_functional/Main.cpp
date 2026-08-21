@@ -9,6 +9,7 @@
 // JITDylib-wide symbol per binding or a persistent module, which is a
 // follow-up, not part of this first JIT pass.
 
+#include <atomic>
 #include <cstdio>
 #include <fstream>
 #include <functional>
@@ -436,6 +437,137 @@ FRUST_RUNTIME_EXPORT void* frust_buf_get_ptr(void* const* base, int64_t idx) {
 }
 FRUST_RUNTIME_EXPORT void frust_buf_set_ptr(void** base, int64_t idx, void* val) {
     base[idx] = val;
+}
+
+// ---------------------------------------------------------------------
+// Live AST metaprogramming runtime (FRUST_LANG_SPEC.md 1.1: `quote`/
+// `unquote`/`build_time`). Codegen.h's buildQuoteTree() compiles a
+// `quote { ... }` block into calls to the frust_ast_* functions below -
+// so when a running Frust program actually executes a quote block, it
+// builds a REAL frust::Expr tree, live, using whatever values are live
+// at that moment (unquote's operand is ordinary compiled code, not
+// something resolved ahead of time). frust_jit_eval_f32 is the "run it
+// now" primitive: wraps that tree as a one-parameter function, hands it
+// to the SAME Codegen/LLJIT pipeline RunViaJit already uses, and calls
+// the result - the whole generate-compile-run loop happening inside the
+// already-running process, no rebuild, no restart.
+namespace {
+
+// Backs every runtime-constructed quote-tree node for the life of the
+// process. Deliberately never freed - v1 scope, same as several other
+// process-lifetime runtime structures here. Revisit with a real
+// reclaim/arena-per-call strategy if a program ends up calling this in
+// a hot loop; for the "generate a specialized function occasionally, in
+// response to something changing" use case this is built for, the
+// volume is inherently bounded.
+AstArena& quoteRuntimeArena() {
+    static AstArena arena;
+    return arena;
+}
+
+std::atomic<uint64_t> jitEvalCounter{0};
+
+} // namespace
+
+FRUST_RUNTIME_EXPORT void* frust_ast_lit_f64(double val) {
+    Expr* e = quoteRuntimeArena().NewExpr(ExprKind::FloatLiteral, SourceLoc{});
+    e->floatValue = val;
+    return e;
+}
+
+FRUST_RUNTIME_EXPORT void* frust_ast_param(const char* name) {
+    Expr* e = quoteRuntimeArena().NewExpr(ExprKind::Identifier, SourceLoc{});
+    e->text = name ? name : "";
+    return e;
+}
+
+FRUST_RUNTIME_EXPORT void* frust_ast_binary(int32_t opCode, void* lhs, void* rhs) {
+    Expr* e = quoteRuntimeArena().NewExpr(ExprKind::Binary, SourceLoc{});
+    e->binaryOp = static_cast<BinaryOp>(opCode);
+    e->lhs = reinterpret_cast<Expr*>(lhs);
+    e->rhs = reinterpret_cast<Expr*>(rhs);
+    return e;
+}
+
+FRUST_RUNTIME_EXPORT void* frust_ast_unary(int32_t opCode, void* operand) {
+    Expr* e = quoteRuntimeArena().NewExpr(ExprKind::Unary, SourceLoc{});
+    e->unaryOp = static_cast<UnaryOp>(opCode);
+    e->lhs = reinterpret_cast<Expr*>(operand);
+    return e;
+}
+
+// The "run it now" primitive. `astPtr` is a tree already fully built by
+// the calls above (built bottom-up, so by the time this runs every
+// node's children are already populated) - wraps it as the body of a
+// synthesized one-f32-parameter function named "x" (the spec's own
+// example's convention - see the plan's stated v1 scope: full generality
+// needs function-pointer/closure support Frust doesn't have yet, so this
+// makes the actual call itself, in C++, with a fixed signature), compiles
+// and JITs it fresh, and calls it immediately.
+FRUST_RUNTIME_EXPORT float frust_jit_eval_f32(void* astPtr, float x) {
+    if (!astPtr) {
+        std::cerr << "frust: frust_jit_eval_f32 called with a null ASTExpr\n";
+        return 0.0f;
+    }
+    Expr* treeRoot = reinterpret_cast<Expr*>(astPtr);
+
+    AstArena& arena = quoteRuntimeArena();
+    SourceLoc loc;
+
+    TypeExpr* f32Type = arena.NewType(loc);
+    f32Type->name = "f32";
+
+    Param xParam;
+    xParam.name = "x";
+    xParam.type = f32Type;
+    xParam.loc = loc;
+
+    FunctionDecl* fn = arena.NewFunctionDecl();
+    fn->name = "__frust_jit_gen_" + std::to_string(jitEvalCounter.fetch_add(1));
+    fn->isPub = true;
+    fn->params.push_back(xParam);
+    fn->returnType = f32Type;
+    fn->body = treeRoot;
+
+    Decl* decl = arena.NewDecl(DeclKind::Function);
+    decl->functionDecl = fn;
+
+    Program* prog = arena.NewProgram();
+    prog->decls.push_back(decl);
+
+    auto genContext = std::make_unique<llvm::LLVMContext>();
+    auto genModule = std::make_unique<llvm::Module>("frust_jit_eval", *genContext);
+
+    Codegen codegen(*genContext, *genModule);
+    if (!codegen.compileProgram(*prog)) {
+        std::cerr << "frust: frust_jit_eval_f32: generated code failed codegen\n";
+        return 0.0f;
+    }
+
+    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    if (!jitOrErr) {
+        std::cerr << "frust: frust_jit_eval_f32: JIT init failed: " << llvm::toString(jitOrErr.takeError()) << "\n";
+        return 0.0f;
+    }
+    auto jit = std::move(*jitOrErr);
+
+    auto generator = llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(jit->getDataLayout().getGlobalPrefix());
+    if (generator) jit->getMainJITDylib().addGenerator(std::move(*generator));
+
+    llvm::orc::ThreadSafeModule tsm(std::move(genModule), std::move(genContext));
+    if (auto err = jit->addIRModule(std::move(tsm))) {
+        std::cerr << "frust: frust_jit_eval_f32: JIT module load failed: " << llvm::toString(std::move(err)) << "\n";
+        return 0.0f;
+    }
+
+    auto sym = jit->lookup(fn->name);
+    if (!sym) {
+        std::cerr << "frust: frust_jit_eval_f32: JIT lookup failed: " << llvm::toString(sym.takeError()) << "\n";
+        return 0.0f;
+    }
+
+    auto fnPtr = sym->toPtr<float(*)(float)>();
+    return fnPtr(x);
 }
 
 void optimizeModule(llvm::Module& M) {

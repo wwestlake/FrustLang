@@ -248,6 +248,12 @@ private:
         if (n == "f64") return llvm::Type::getDoubleTy(context);
         if (n == "bool") return llvm::Type::getInt1Ty(context);
         if (n == "String") return llvm::PointerType::getUnqual(context); // null-terminated i8*, matching FRUST_LANG_SPEC.md's `effect Log(msg: String)`
+        // Opaque handle to a runtime-constructed AST node (FRUST_LANG_SPEC.md
+        // 1.1's `quote`/`unquote`/`build_time`) - see buildQuoteTree below.
+        // Under the hood it's just a frust::Expr* built live by the
+        // frust_ast_* runtime functions, but Frust code never dereferences
+        // it directly, so an opaque pointer is all callers need.
+        if (n == "ASTExpr") return llvm::PointerType::getUnqual(context);
 
         // Vec<N> - a fixed-size, compile-time-N f32 vector (linear algebra,
         // not the unimplemented growable-collection `Vector<T>` from the
@@ -393,6 +399,87 @@ private:
         builder.CreateUnreachable();
 
         builder.SetInsertPoint(okBB);
+    }
+
+    // Live AST metaprogramming (FRUST_LANG_SPEC.md 1.1: `quote`/`unquote`/
+    // `build_time`) - had zero codegen before this. Rather than a separate
+    // compile-time interpreter, this compiles `quote { ... }` into REAL
+    // runtime code: when the surrounding function is actually CALLED, it
+    // builds a genuine AST node tree on the spot (via the frust_ast_*
+    // runtime functions in Main.cpp), using whatever real values are live
+    // at that call - `unquote(expr)` compiles `expr` the ordinary way and
+    // splices its real runtime value in as a literal node. The result is
+    // an opaque ASTExpr handle a program can hand to frust_jit_eval_f32 to
+    // compile-and-run it immediately, live, no rebuild. Deliberately
+    // scoped to what the spec's own polynomial example needs - literals,
+    // a free identifier (a parameter reference like `x`), binary/unary
+    // ops, and unquote; anything else inside a quote block is a named
+    // compile error, not a silent miscompile.
+    llvm::Value* buildQuoteTree(const Expr* node) {
+        if (!node) {
+            std::cerr << "frust: codegen error: empty quote block\n";
+            return nullptr;
+        }
+
+        llvm::Type* ptrTy = llvm::PointerType::getUnqual(context);
+
+        switch (node->kind) {
+            case ExprKind::Block: {
+                if (node->statements.empty()) {
+                    std::cerr << "frust: codegen error: quote { } has no template expression\n";
+                    return nullptr;
+                }
+                return buildQuoteTree(node->statements.back());
+            }
+
+            case ExprKind::IntLiteral:
+            case ExprKind::FloatLiteral: {
+                double v = (node->kind == ExprKind::IntLiteral) ? static_cast<double>(node->intValue) : node->floatValue;
+                llvm::FunctionCallee fn = module.getOrInsertFunction("frust_ast_lit_f64",
+                    llvm::FunctionType::get(ptrTy, {llvm::Type::getDoubleTy(context)}, false));
+                return builder.CreateCall(fn, {llvm::ConstantFP::get(llvm::Type::getDoubleTy(context), v)});
+            }
+
+            case ExprKind::Identifier: {
+                llvm::FunctionCallee fn = module.getOrInsertFunction("frust_ast_param",
+                    llvm::FunctionType::get(ptrTy, {ptrTy}, false));
+                llvm::Constant* nameConst = llvm::ConstantDataArray::getString(context, node->text);
+                auto* nameGlobal = new llvm::GlobalVariable(module, nameConst->getType(), true, llvm::GlobalValue::PrivateLinkage, nameConst, ".quote_param_name");
+                return builder.CreateCall(fn, {nameGlobal});
+            }
+
+            case ExprKind::Binary: {
+                llvm::Value* lhs = buildQuoteTree(node->lhs);
+                llvm::Value* rhs = buildQuoteTree(node->rhs);
+                if (!lhs || !rhs) return nullptr;
+                llvm::FunctionCallee fn = module.getOrInsertFunction("frust_ast_binary",
+                    llvm::FunctionType::get(ptrTy, {llvm::Type::getInt32Ty(context), ptrTy, ptrTy}, false));
+                llvm::Value* opCode = llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), static_cast<int32_t>(node->binaryOp));
+                return builder.CreateCall(fn, {opCode, lhs, rhs});
+            }
+
+            case ExprKind::Unary: {
+                llvm::Value* operand = buildQuoteTree(node->lhs);
+                if (!operand) return nullptr;
+                llvm::FunctionCallee fn = module.getOrInsertFunction("frust_ast_unary",
+                    llvm::FunctionType::get(ptrTy, {llvm::Type::getInt32Ty(context), ptrTy}, false));
+                llvm::Value* opCode = llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), static_cast<int32_t>(node->unaryOp));
+                return builder.CreateCall(fn, {opCode, operand});
+            }
+
+            case ExprKind::Unquote: {
+                llvm::Value* liveVal = compileExpr(node->lhs);
+                if (!liveVal) return nullptr;
+                llvm::Value* asDouble = coerceToType(liveVal, llvm::Type::getDoubleTy(context));
+                llvm::FunctionCallee fn = module.getOrInsertFunction("frust_ast_lit_f64",
+                    llvm::FunctionType::get(ptrTy, {llvm::Type::getDoubleTy(context)}, false));
+                return builder.CreateCall(fn, {asDouble});
+            }
+
+            default:
+                std::cerr << "frust: codegen error: unsupported inside quote { ... } for now\n";
+                return nullptr;
+        }
     }
 
     llvm::Value* compileExpr(const Expr* expr) {
@@ -553,6 +640,23 @@ private:
             case ExprKind::Perform: return compilePerform(*expr);
             case ExprKind::Handle: return compileHandle(*expr);
             case ExprKind::Resume: return compileResume(*expr);
+
+            case ExprKind::Quote: return buildQuoteTree(expr->lhs);
+
+            // A pure marker in this design - build_time { ... } is just an
+            // ordinary block that happens to (usually) end in a quote.
+            // Everything before that (the `let a = coefficients[0]` style
+            // setup) is completely normal live code, run every time this
+            // function is actually called.
+            case ExprKind::BuildTime: return compileExpr(expr->lhs);
+
+            // Reached only when `unquote(...)` shows up somewhere
+            // buildQuoteTree's own walk didn't already handle it - i.e.
+            // used outside a quote { ... } block, which is meaningless
+            // (there's no template being spliced into).
+            case ExprKind::Unquote:
+                std::cerr << "frust: codegen error: unquote() is only valid inside quote { ... }\n";
+                return nullptr;
 
             default:
                 std::cerr << "frust: codegen does not support this expression kind yet\n";
