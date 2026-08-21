@@ -121,3 +121,15 @@ set_target_properties(frust_plugin_host_reload_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
 )
+
+# Automation-layer host-call verification harness (FRUST_LANG_SPEC.md
+# section 4) - proves the exact mechanism the JUCE IDE's AutomationPanel
+# uses: a native host constructing an interface-implementing struct and
+# calling its methods directly by symbol name, no interface/vtable
+# knowledge needed host-side. See automation_host_example.cpp.
+add_executable(frust_plugin_host_automation_example examples/automation_host_example.cpp)
+target_link_libraries(frust_plugin_host_automation_example PRIVATE frust_plugin_host)
+set_target_properties(frust_plugin_host_automation_example PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
+)
