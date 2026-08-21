@@ -285,6 +285,33 @@ private:
             if (expr->pathSegments.empty()) return std::nullopt;
             return expr->pathSegments.front();
         }
+        if (expr->kind == ExprKind::SmartPtrNew) {
+            // `own Foo { ... }` / `raw Foo { ... }` - same struct identity
+            // as the literal it wraps, just heap-allocated instead of
+            // stack (compileHeapStructLiteral). Let/call-site coercion
+            // and method dispatch shouldn't care which allocation
+            // strategy produced the pointer.
+            return inferStructTypeName(expr->lhs);
+        }
+        if (expr->kind == ExprKind::Call && expr->lhs && expr->lhs->kind == ExprKind::Identifier) {
+            // A plain free-function call whose declared return type names
+            // a struct - e.g. `let inst: Foo = make_foo();` (a
+            // constructor-style function). Was previously nullopt
+            // unconditionally ("struct-returning Call... deliberately out
+            // of scope"), which meant a constructor's result could never
+            // be used anywhere inferStructTypeName gates (interface
+            // coercion, method calls on the result) even though the
+            // pointer itself is perfectly valid - functionDeclsByName
+            // (added for interface-typed call-argument coercion) already
+            // has exactly the info needed to answer this now. Scoped to
+            // free functions only, not method-call results - not needed
+            // yet, and a Path-based static-method call shape doesn't
+            // exist in this language currently anyway.
+            auto it = functionDeclsByName.find(expr->lhs->text);
+            if (it != functionDeclsByName.end()) {
+                return resolveStructTypeName(it->second->returnType);
+            }
+        }
         return std::nullopt;
     }
 
@@ -651,6 +678,7 @@ private:
             case ExprKind::Break: return compileBreak(*expr);
             case ExprKind::Continue: return compileContinue(*expr);
             case ExprKind::StructLiteral: return compileStructLiteral(*expr);
+            case ExprKind::SmartPtrNew: return compileHeapStructLiteral(*expr);
             case ExprKind::ArrayLiteral: return compileArrayLiteral(*expr);
             case ExprKind::Index: return compileIndex(*expr);
             case ExprKind::Member: return compileMember(*expr);
@@ -1036,6 +1064,30 @@ private:
         return builder.CreateExtractElement(base, indexVal);
     }
 
+    // Shared by compileStructLiteral (stack) and compileHeapStructLiteral
+    // (heap) - both just need "given a base pointer already sized for
+    // structTy, store each initializer expression into its field slot."
+    // Returns false (message already printed) on a real error.
+    bool initStructFields(const Expr& expr, const std::string& typeName, llvm::StructType* structTy,
+                           std::unordered_map<std::string, int>& fieldIndex, llvm::Value* basePtr) {
+        for (auto& init : expr.fields) {
+            auto fieldIt = fieldIndex.find(init.name);
+            if (fieldIt == fieldIndex.end()) {
+                std::cerr << "frust: codegen error: struct '" << typeName << "' has no field '" << init.name << "'\n";
+                return false;
+            }
+            auto* val = compileExpr(init.value);
+            if (!val) return false;
+            val = coerceToType(val, structTy->getElementType(fieldIt->second));
+            llvm::Value* fieldPtr = builder.CreateStructGEP(structTy, basePtr, fieldIt->second);
+            builder.CreateStore(val, fieldPtr);
+        }
+        // Fields not present in the literal are left uninitialized (no
+        // default-value story exists yet) - fine for v1, matches "no
+        // validation for scenarios not yet required."
+        return true;
+    }
+
     llvm::Value* compileStructLiteral(const Expr& expr) {
         if (expr.pathSegments.empty()) {
             std::cerr << "frust: codegen error: struct literal missing a type name\n";
@@ -1053,27 +1105,69 @@ private:
         // Alloca'd in the entry block (same pattern `mut` locals already
         // use) rather than at the current insert point - keeps every
         // struct's storage mem2reg-friendly and independent of how deep
-        // inside nested blocks the literal happens to appear.
+        // inside nested blocks the literal happens to appear. This
+        // pointer does NOT survive the enclosing function returning - see
+        // compileHeapStructLiteral for the `own`/`raw` alternative that
+        // does.
         llvm::Function* theFunction = builder.GetInsertBlock()->getParent();
         llvm::IRBuilder<> tmpBuilder(&theFunction->getEntryBlock(), theFunction->getEntryBlock().begin());
         llvm::AllocaInst* alloca = tmpBuilder.CreateAlloca(structTy, nullptr, typeName);
 
-        for (auto& init : expr.fields) {
-            auto fieldIt = fieldIndex.find(init.name);
-            if (fieldIt == fieldIndex.end()) {
-                std::cerr << "frust: codegen error: struct '" << typeName << "' has no field '" << init.name << "'\n";
-                return nullptr;
-            }
-            auto* val = compileExpr(init.value);
-            if (!val) return nullptr;
-            val = coerceToType(val, structTy->getElementType(fieldIt->second));
-            llvm::Value* fieldPtr = builder.CreateStructGEP(structTy, alloca, fieldIt->second);
-            builder.CreateStore(val, fieldPtr);
-        }
-        // Fields not present in the literal are left uninitialized (no
-        // default-value story exists yet) - fine for v1, matches "no
-        // validation for scenarios not yet required."
+        if (!initStructFields(expr, typeName, structTy, fieldIndex, alloca)) return nullptr;
         return alloca;
+    }
+
+    // `own StructName { ... }` / `raw StructName { ... }` (ExprKind::
+    // SmartPtrNew wrapping a StructLiteral) - was entirely unimplemented
+    // (fell to compileExpr's generic "unsupported expression kind"
+    // error). The gap this closes: a plain struct literal always
+    // stack-allocas in the CONSTRUCTING function's own entry block, so a
+    // function meant to build-and-return an instance (a constructor) was
+    // handing back a dangling pointer the moment it returned - real,
+    // silent undefined behavior, not just a missing-feature error,
+    // because nothing caught it. `own`/`raw` heap-allocate via malloc
+    // instead, so the returned pointer is genuinely valid for as long as
+    // the caller wants to keep using it.
+    //
+    // `own` vs `raw` is purely a documented ownership-discipline
+    // DISTINCTION for now, not an enforced one - Frust has no semantic-
+    // analysis pass to check "exactly one owner"/"never freed twice"
+    // (same pre-existing gap noted throughout this file for struct
+    // mutation not being gated on `mut`), so both currently just malloc
+    // and return the pointer. `shared`/`weak` genuinely need reference
+    // counting (a header word, retain/release) - real, separate,
+    // deliberately not built here; rejected with a clear error instead
+    // of silently behaving like `own`.
+    llvm::Value* compileHeapStructLiteral(const Expr& smartPtrExpr) {
+        if (smartPtrExpr.smartPtrKind == SmartPtrKind::Shared || smartPtrExpr.smartPtrKind == SmartPtrKind::Weak) {
+            std::cerr << "frust: codegen error: 'shared'/'weak' construction isn't implemented yet (needs real reference counting) - only 'own'/'raw' heap construction is\n";
+            return nullptr;
+        }
+        const Expr* lit = smartPtrExpr.lhs;
+        if (!lit || lit->kind != ExprKind::StructLiteral) {
+            std::cerr << "frust: codegen error: 'own'/'raw' currently only wraps a struct literal, e.g. `own Foo { ... }`\n";
+            return nullptr;
+        }
+        if (lit->pathSegments.empty()) {
+            std::cerr << "frust: codegen error: struct literal missing a type name\n";
+            return nullptr;
+        }
+        const std::string& typeName = lit->pathSegments.front();
+        auto typeIt = structTypes.find(typeName);
+        if (typeIt == structTypes.end()) {
+            std::cerr << "frust: codegen error: unknown struct type '" << typeName << "'\n";
+            return nullptr;
+        }
+        llvm::StructType* structTy = typeIt->second;
+        auto& fieldIndex = structFieldIndex[typeName];
+
+        uint64_t sizeBytes = module.getDataLayout().getTypeAllocSize(structTy);
+        llvm::FunctionCallee mallocFn = module.getOrInsertFunction("malloc",
+            llvm::FunctionType::get(llvm::PointerType::getUnqual(context), {llvm::Type::getInt64Ty(context)}, false));
+        llvm::Value* heapPtr = builder.CreateCall(mallocFn, {llvm::ConstantInt::get(llvm::Type::getInt64Ty(context), sizeBytes)});
+
+        if (!initStructFields(*lit, typeName, structTy, fieldIndex, heapPtr)) return nullptr;
+        return heapPtr;
     }
 
     llvm::Value* compileMember(const Expr& expr) {
