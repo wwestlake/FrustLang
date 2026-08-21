@@ -144,6 +144,7 @@ private:
     llvm::Value* currentCoroId = nullptr;
     llvm::BasicBlock* currentCleanupBB = nullptr;
     llvm::BasicBlock* currentSuspendBB = nullptr;
+    llvm::Type* currentFnRetType = nullptr;
     
     llvm::Value* currentActiveHandleForResume = nullptr;
     llvm::Value* currentActivePromiseForResume = nullptr;
@@ -312,6 +313,88 @@ private:
         return value;
     }
 
+    // Refinement types (`i32[!= 0]`, `f32[-1.0..1.0]`) were parsed into
+    // RefinementInfo on TypeExpr and then never looked at anywhere in
+    // codegen - FRUST_LANG_SPEC.md's explicit claim ("Guaranteed
+    // zero-panic compile-time safety") was not backed by anything. Real
+    // fix, scoped honestly: this is RUNTIME enforcement (a check emitted
+    // at each refined parameter's function entry, panicking on
+    // violation), not a compile-time proof that a violation can never
+    // occur - true compile-time proof needs real value-range analysis
+    // across the whole call graph, a much bigger project. Runtime
+    // enforcement still delivers the spec's actual promise (divide-by-
+    // zero genuinely cannot happen - the program stops first), just
+    // caught at the call site rather than proven impossible ahead of
+    // time.
+    //
+    // A `type NonZeroI32 = i32[!= 0]` alias attaches the refinement to
+    // the ALIAS TARGET's TypeExpr, not to every use site's own TypeExpr
+    // (`denominator: NonZeroI32` carries no refinement info directly) -
+    // this walks the same alias chain resolveType() does to find it.
+    const TypeExpr* resolveRefinementType(const TypeExpr* type, int depth = 0) {
+        if (!type || depth > 16) return nullptr;
+        if (type->refinementKind != RefinementKind::None) return type;
+        auto aliasIt = typeAliases.find(type->name);
+        if (aliasIt != typeAliases.end()) return resolveRefinementType(aliasIt->second, depth + 1);
+        return nullptr;
+    }
+
+    void emitRefinementCheck(llvm::Value* paramVal, const TypeExpr* refType, const std::string& paramName, llvm::Function* llvmFn) {
+        bool isFloat = paramVal->getType()->isFloatingPointTy();
+
+        llvm::Value* violated = nullptr;
+        std::string reason;
+        if (refType->refinementKind == RefinementKind::Range) {
+            llvm::Value* low = isFloat ? (llvm::Value*)llvm::ConstantFP::get(paramVal->getType(), refType->refLow)
+                                        : (llvm::Value*)llvm::ConstantInt::get(paramVal->getType(), static_cast<int64_t>(refType->refLow), true);
+            llvm::Value* high = isFloat ? (llvm::Value*)llvm::ConstantFP::get(paramVal->getType(), refType->refHigh)
+                                         : (llvm::Value*)llvm::ConstantInt::get(paramVal->getType(), static_cast<int64_t>(refType->refHigh), true);
+            llvm::Value* tooLow = isFloat ? builder.CreateFCmpOLT(paramVal, low) : builder.CreateICmpSLT(paramVal, low);
+            llvm::Value* tooHigh = isFloat ? builder.CreateFCmpOGT(paramVal, high) : builder.CreateICmpSGT(paramVal, high);
+            violated = builder.CreateOr(tooLow, tooHigh);
+            reason = "refinement violated: '" + paramName + "' out of range [" + std::to_string(refType->refLow) + ".." + std::to_string(refType->refHigh) + "]";
+        } else if (refType->refinementKind == RefinementKind::Compare) {
+            llvm::Value* threshold = isFloat ? (llvm::Value*)llvm::ConstantFP::get(paramVal->getType(), refType->refCmpValue)
+                                              : (llvm::Value*)llvm::ConstantInt::get(paramVal->getType(), static_cast<int64_t>(refType->refCmpValue), true);
+            // Violation is the NEGATION of the required predicate - e.g.
+            // `i32[!= 0]` requires val != 0, so it's violated exactly
+            // when val == 0.
+            switch (refType->refCmpOp) {
+                case CompareOp::Eq:  violated = isFloat ? builder.CreateFCmpONE(paramVal, threshold) : builder.CreateICmpNE(paramVal, threshold); break;
+                case CompareOp::Neq: violated = isFloat ? builder.CreateFCmpOEQ(paramVal, threshold) : builder.CreateICmpEQ(paramVal, threshold); break;
+                case CompareOp::Lt:  violated = isFloat ? builder.CreateFCmpOGE(paramVal, threshold) : builder.CreateICmpSGE(paramVal, threshold); break;
+                case CompareOp::Le:  violated = isFloat ? builder.CreateFCmpOGT(paramVal, threshold) : builder.CreateICmpSGT(paramVal, threshold); break;
+                case CompareOp::Gt:  violated = isFloat ? builder.CreateFCmpOLE(paramVal, threshold) : builder.CreateICmpSLE(paramVal, threshold); break;
+                case CompareOp::Ge:  violated = isFloat ? builder.CreateFCmpOLT(paramVal, threshold) : builder.CreateICmpSLT(paramVal, threshold); break;
+            }
+            reason = "refinement violated: '" + paramName + "' failed its value predicate";
+        } else {
+            return; // RefinementKind::None - nothing to check
+        }
+
+        llvm::BasicBlock* panicBB = llvm::BasicBlock::Create(context, "refinement_panic_" + paramName, llvmFn);
+        llvm::BasicBlock* okBB = llvm::BasicBlock::Create(context, "refinement_ok_" + paramName, llvmFn);
+        builder.CreateCondBr(violated, panicBB, okBB);
+
+        builder.SetInsertPoint(panicBB);
+        llvm::FunctionCallee printFn = module.getOrInsertFunction("frust_print_str",
+            llvm::FunctionType::get(llvm::Type::getVoidTy(context), {llvm::PointerType::getUnqual(context)}, false));
+        llvm::Constant* msgConst = llvm::ConstantDataArray::getString(context, reason);
+        auto* msgGlobal = new llvm::GlobalVariable(module, msgConst->getType(), true, llvm::GlobalValue::PrivateLinkage, msgConst, ".refinement_msg");
+        builder.CreateCall(printFn, {msgGlobal});
+        // exit(1), not abort(): abort() under the Windows Debug CRT pops
+        // an interactive "Debug Error" Abort/Retry/Ignore dialog instead
+        // of terminating the process - confirmed by hand (the JIT-run
+        // process hung indefinitely on a real violation until killed).
+        // exit() terminates immediately with no dialog, on every
+        // platform this targets.
+        llvm::FunctionCallee exitFn = module.getOrInsertFunction("exit", llvm::FunctionType::get(llvm::Type::getVoidTy(context), {llvm::Type::getInt32Ty(context)}, false));
+        builder.CreateCall(exitFn, {llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), 1)});
+        builder.CreateUnreachable();
+
+        builder.SetInsertPoint(okBB);
+    }
+
     llvm::Value* compileExpr(const Expr* expr) {
         if (!expr) return nullptr;
 
@@ -442,7 +525,17 @@ private:
             case ExprKind::Return: {
                 auto* val = compileExpr(expr->lhs);
                 if (!val) return nullptr;
-                builder.CreateRet(val);
+                // Was CreateRet(val) unconditionally - only the implicit
+                // block-tail-value return path (end of compileFunction)
+                // coerced to the function's declared return type. An
+                // explicit `return expr` bypassed coercion entirely,
+                // producing an LLVM verifier failure ("ret float ...
+                // double") for anything needing float<->double or
+                // int<->float promotion - e.g. spec's own
+                // f32-refinement-typed parameter returned from an f64
+                // function.
+                llvm::Value* coerced = currentFnRetType ? coerceToType(val, currentFnRetType) : val;
+                builder.CreateRet(coerced);
                 blockTerminated = true;
                 return val;
             }
@@ -1544,6 +1637,9 @@ public:
             return llvmFn;
         }
 
+        llvm::Type* prevFnRetType = currentFnRetType;
+        currentFnRetType = declaredRetType;
+
         namedValues.clear();
         namedValueStructType.clear();
 
@@ -1566,6 +1662,12 @@ public:
         llvm::BasicBlock* bb = llvm::BasicBlock::Create(context, "entry", llvmFn);
         builder.SetInsertPoint(bb);
         blockTerminated = false;
+
+        for (auto& p : fn.params) {
+            if (const TypeExpr* refType = resolveRefinementType(p.type)) {
+                emitRefinementCheck(namedValues[p.name], refType, p.name, llvmFn);
+            }
+        }
 
         llvm::Value* prevCoroHandle = currentCoroHandle;
         llvm::Value* prevPromiseAlloc = currentPromiseAlloc;
@@ -1661,6 +1763,7 @@ public:
         currentPromiseAlloc = prevPromiseAlloc;
         currentCoroId = prevCoroId;
         currentCleanupBB = prevCleanupBB;
+        currentFnRetType = prevFnRetType;
 
         std::string errMsg;
         llvm::raw_string_ostream os(errMsg);
@@ -1698,11 +1801,15 @@ public:
         llvm::FunctionType* ft = llvm::FunctionType::get(retType, {}, false);
         llvm::Function* llvmFn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, name, module);
 
+        llvm::Type* prevFnRetType = currentFnRetType;
+        currentFnRetType = retType;
+
         llvm::BasicBlock* bb = llvm::BasicBlock::Create(context, "entry", llvmFn);
         builder.SetInsertPoint(bb);
         blockTerminated = false;
 
         llvm::Value* result = compileExpr(body);
+        currentFnRetType = prevFnRetType;
         if (!blockTerminated) {
             if (!result) {
                 std::cerr << "frust: codegen error: expression produced no value\n";
