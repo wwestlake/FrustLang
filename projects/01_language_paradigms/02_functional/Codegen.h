@@ -152,6 +152,17 @@ private:
     // compileCall's existing Path handling already produces for lookups.
     std::unordered_map<std::string, const FunctionDecl*> methods;
 
+    // EVERY function/method's FunctionDecl (free functions too, unlike
+    // `methods` above), keyed by its LLVM symbol name - lets call-site
+    // argument coercion see each parameter's real declared TypeExpr, not
+    // just its resolved llvm::Type*. Needed specifically for interface-
+    // typed parameters: every interface resolves to the same generic
+    // fat-pointer LLVM shape, so "which interface does this parameter
+    // want" can only be answered from the original TypeExpr's name, the
+    // same "opaque pointer erases identity" problem namedValueStructType
+    // already exists to solve, one level up at the call site.
+    std::unordered_map<std::string, const FunctionDecl*> functionDeclsByName;
+
     // `interface Name { fn method(&mut self, ...) -> T ... }` - a named,
     // checked capability contract. Populated by indexInterfaceDecls()
     // before Pass 1, same timing as effectDecls.
@@ -344,6 +355,16 @@ private:
         auto aliasIt = typeAliases.find(type->name);
         if (aliasIt != typeAliases.end()) return resolveStructTypeName(aliasIt->second, depth + 1);
         if (structTypes.count(type->name)) return type->name;
+        return std::nullopt;
+    }
+
+    // Same alias-following as resolveStructTypeName, but for interface
+    // names instead of struct names.
+    std::optional<std::string> resolveInterfaceName(const TypeExpr* type, int depth = 0) {
+        if (!type || depth > 16) return std::nullopt;
+        auto aliasIt = typeAliases.find(type->name);
+        if (aliasIt != typeAliases.end()) return resolveInterfaceName(aliasIt->second, depth + 1);
+        if (interfaceDecls.count(type->name)) return type->name;
         return std::nullopt;
     }
 
@@ -1127,14 +1148,26 @@ private:
             return nullptr;
         }
 
+        auto methodDeclIt = methods.find(mangled);
+        const FunctionDecl* methodDecl = (methodDeclIt != methods.end()) ? methodDeclIt->second : nullptr;
+
         std::vector<llvm::Value*> args;
         args.push_back(selfPtr);
         auto argTypeIt = callee->arg_begin();
         ++argTypeIt; // skip self's type when coercing declared args
-        for (auto* a : expr.args) {
-            auto* v = compileExpr(a);
+        for (size_t i = 0; i < expr.args.size(); ++i) {
+            auto* v = compileExpr(expr.args[i]);
             if (!v) return nullptr;
-            args.push_back(coerceToType(v, argTypeIt->getType()));
+            // methodDecl->params has no self entry either (self is
+            // synthetic, added separately - see declareFunctionSignature),
+            // so index i lines up directly here too.
+            if (methodDecl && i < methodDecl->params.size()) {
+                v = coerceArgForParam(v, expr.args[i], methodDecl->params[i].type);
+            } else {
+                v = coerceToType(v, argTypeIt->getType());
+            }
+            if (!v) return nullptr;
+            args.push_back(v);
             ++argTypeIt;
         }
         return builder.CreateCall(callee, args, callee->getReturnType()->isVoidTy() ? "" : "calltmp");
@@ -1189,7 +1222,9 @@ private:
         for (size_t i = 0; i < expr.args.size(); ++i) {
             llvm::Value* v = compileExpr(expr.args[i]);
             if (!v) return nullptr;
-            args.push_back(coerceToType(v, paramTys[i + 1]));
+            v = coerceArgForParam(v, expr.args[i], sig->params[i].type);
+            if (!v) return nullptr;
+            args.push_back(v);
         }
         return builder.CreateCall(fnTy, fnPtr, args, retTy->isVoidTy() ? "" : "ifacecalltmp");
     }
@@ -1306,12 +1341,24 @@ private:
             return nullptr;
         }
 
+        auto declIt = functionDeclsByName.find(targetName);
+        const FunctionDecl* targetDecl = (declIt != functionDeclsByName.end()) ? declIt->second : nullptr;
+
         std::vector<llvm::Value*> args;
         auto argTypeIt = callee->arg_begin();
-        for (auto* a : expr.args) {
-            auto* v = compileExpr(a);
+        for (size_t i = 0; i < expr.args.size(); ++i) {
+            auto* v = compileExpr(expr.args[i]);
             if (!v) return nullptr;
-            args.push_back(coerceToType(v, argTypeIt->getType()));
+            // targetDecl->params has no synthetic self entry for a free
+            // function, so index i lines up directly - unlike
+            // compileMethodCall's args[0]=self offset.
+            if (targetDecl && i < targetDecl->params.size()) {
+                v = coerceArgForParam(v, expr.args[i], targetDecl->params[i].type);
+            } else {
+                v = coerceToType(v, argTypeIt->getType());
+            }
+            if (!v) return nullptr;
+            args.push_back(v);
             ++argTypeIt;
         }
         return builder.CreateCall(callee, args, callee->getReturnType()->isVoidTy() ? "" : "calltmp");
@@ -1893,6 +1940,33 @@ private:
         return fat;
     }
 
+    // Call-site argument coercion, interface-aware. Was: every call site
+    // just did coerceToType(v, argTypeIt->getType()), which only ever sees
+    // the resolved llvm::Type* - fine for numeric widening, but every
+    // interface resolves to the exact same generic { ptr, ptr } shape, so
+    // there's no way to recover "which interface" from the LLVM type
+    // alone. This looks at the parameter's real declared TypeExpr instead:
+    // if it names an interface and the argument is still a plain concrete
+    // value (not already wrapped), wrap it via wrapAsInterface using the
+    // argument EXPRESSION's own inferred struct type - the same
+    // AST-level lookup namedValueStructType/inferStructTypeName already
+    // provide for the `let x: Interface = ...` case, now reused at call
+    // sites too. Anything else falls through to the existing numeric/
+    // pointer coercion unchanged.
+    llvm::Value* coerceArgForParam(llvm::Value* argVal, const Expr* argExpr, const TypeExpr* paramType) {
+        if (auto ifaceName = resolveInterfaceName(paramType)) {
+            if (argVal->getType() == fatPointerType()) return argVal; // already a fat pointer - trust it as-is
+            auto concreteTypeName = inferStructTypeName(argExpr);
+            if (!concreteTypeName) {
+                std::cerr << "frust: codegen error: argument for interface-typed parameter '" << *ifaceName
+                           << "' needs a struct-valued expression\n";
+                return nullptr;
+            }
+            return wrapAsInterface(argVal, *ifaceName, *concreteTypeName);
+        }
+        return coerceToType(argVal, resolveType(paramType));
+    }
+
 public:
     // Pass-1 step: create the llvm::Function (signature only, no body) so
     // module.getFunction() lookups succeed for any call regardless of
@@ -1918,6 +1992,7 @@ public:
         if (isCoro) llvmFn->setPresplitCoroutine();
 
         if (fn.isMethod) methods[llvmName] = &fn;
+        functionDeclsByName[llvmName] = &fn;
         return llvmFn;
     }
 
@@ -1956,6 +2031,14 @@ public:
             namedValues[p.name] = &*argIt;
             if (auto structName = resolveStructTypeName(p.type)) {
                 namedValueStructType[p.name] = *structName;
+            }
+            // Interface-typed parameter (a fat pointer at the ABI level,
+            // per resolveType) - record it the same way namedValueStructType
+            // does for concrete structs, so a method call on this parameter
+            // inside the function body (compileMethodCall) dispatches
+            // through the vtable instead of failing "unknown struct type".
+            if (auto ifaceName = resolveInterfaceName(p.type)) {
+                namedValueInterfaceType[p.name] = *ifaceName;
             }
             ++argIt;
         }
