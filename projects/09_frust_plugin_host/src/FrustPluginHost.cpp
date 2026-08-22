@@ -4,6 +4,7 @@
 // plugins instead of one throwaway run.
 
 #include "frust_plugin_host/FrustPluginHost.h"
+#include "frust_plugin_host/FrustPluginManifest.h"
 
 #include <algorithm>
 #include <fstream>
@@ -142,6 +143,21 @@ void reportError(const std::string& msg) {
     g_lastError = msg;
 }
 
+// Manifests live at "<basename>.json" next to "<basename>.frust" (see
+// FrustPluginManifest.h's file comment and every examples/*.json fixture
+// - event_plugin.frust + event_plugin.json, lifecycle_plugin.frust +
+// lifecycle_plugin.json, etc). Given a source path, derives where its
+// manifest WOULD be, if one exists - used by frust_plugin_load below to
+// auto-refuse an incompatible plugin without the host having to ask.
+std::string DeriveManifestPath(const std::string& sourcePath) {
+    size_t slash = sourcePath.find_last_of("/\\");
+    size_t dot = sourcePath.find_last_of('.');
+    if (dot == std::string::npos || (slash != std::string::npos && dot < slash)) {
+        return sourcePath + ".json";
+    }
+    return sourcePath.substr(0, dot) + ".json";
+}
+
 // Parses a single .frust file - same shape as Main.cpp's ParseSource,
 // duplicated here rather than shared because it isn't part of
 // frust_lang's public header surface (it's a free function local to
@@ -168,6 +184,43 @@ struct FrustPluginHandleImpl {
 extern "C" {
 
 FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_load(const char* path) {
+    // Auto-refuse a plugin whose own manifest declares it incompatible
+    // with this host - "if the framework can know a plugin is not
+    // compatible it should refuse it" (docs/17-Plugin-Automation-Layer.md
+    // section 4.2), rather than leaving every host integration to
+    // remember to call frust_plugin_manifest_is_compatible() itself.
+    // Only acts when a manifest actually exists next to the source
+    // (DeriveManifestPath's convention) - no manifest means the
+    // framework genuinely has no way to know, so it stays silent and
+    // lets the app decide, same permissive default as every other
+    // optional manifest field.
+    //
+    // Deliberately done BEFORE s.mutex is taken below:
+    // frust_plugin_host::IsCompatible() calls both
+    // frust_plugin_host_application_identity() and
+    // frust_plugin_is_host_function_available(), which each take that
+    // same mutex themselves - doing this check while already holding it
+    // would deadlock.
+    {
+        std::string manifestPath = DeriveManifestPath(path);
+        std::ifstream manifestProbe(manifestPath);
+        if (manifestProbe) {
+            manifestProbe.close();
+            if (auto parsed = frust_plugin_host::LoadPluginManifest(manifestPath)) {
+                if (!frust_plugin_host::IsCompatible(*parsed)) {
+                    reportError("refusing to load '" + std::string(path) + "': " +
+                        frust_plugin_host::LastIncompatibilityReason());
+                    return nullptr;
+                }
+            }
+            // Manifest exists but failed to parse: LoadPluginManifest
+            // already reported that to stderr itself. Don't refuse the
+            // load over a broken manifest the framework can't actually
+            // read - fall through and let the app decide, same as "no
+            // manifest at all."
+        }
+    }
+
     auto& s = state();
     std::lock_guard<std::mutex> lock(s.mutex);
     if (!s.ensureInit()) return nullptr;

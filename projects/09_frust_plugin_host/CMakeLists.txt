@@ -202,3 +202,14 @@ set_target_properties(frust_plugin_host_app_identity_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
 )
+
+# frust_plugin_load() itself auto-refusing an incompatible plugin ("if
+# the framework can know a plugin is not compatible it should refuse
+# it" / "if it doesn't know, let the app decide") - see
+# auto_refuse_example.cpp/restricted_plugin.frust/unrestricted_plugin.frust.
+add_executable(frust_plugin_host_auto_refuse_example examples/auto_refuse_example.cpp)
+target_link_libraries(frust_plugin_host_auto_refuse_example PRIVATE frust_plugin_host)
+set_target_properties(frust_plugin_host_auto_refuse_example PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
+)
