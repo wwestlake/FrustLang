@@ -174,3 +174,21 @@ set_target_properties(frust_plugin_host_reload_events_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
 )
+
+# Completion-plan item D: 4 real plugins loaded simultaneously, plus
+# unload/reload mid-session, proving cross-plugin isolation.
+add_executable(frust_plugin_host_multi_plugin_stress_example examples/multi_plugin_stress_example.cpp)
+target_link_libraries(frust_plugin_host_multi_plugin_stress_example PRIVATE frust_plugin_host)
+set_target_properties(frust_plugin_host_multi_plugin_stress_example PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
+)
+
+# Completion-plan item E: concurrent access to the event/service
+# registries from multiple threads.
+add_executable(frust_plugin_host_concurrency_stress_example examples/concurrency_stress_example.cpp)
+target_link_libraries(frust_plugin_host_concurrency_stress_example PRIVATE frust_plugin_host)
+set_target_properties(frust_plugin_host_concurrency_stress_example PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
+)
