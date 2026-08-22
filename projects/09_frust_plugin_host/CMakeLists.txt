@@ -192,3 +192,13 @@ set_target_properties(frust_plugin_host_concurrency_stress_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
 )
+
+# Application-identity compatibility check (docs/17 4.2 follow-on) -
+# "an application should be able to know what plugins are valid for
+# it." See app_identity_example.cpp/restricted_plugin.json/unrestricted_plugin.json.
+add_executable(frust_plugin_host_app_identity_example examples/app_identity_example.cpp)
+target_link_libraries(frust_plugin_host_app_identity_example PRIVATE frust_plugin_host)
+set_target_properties(frust_plugin_host_app_identity_example PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
+)

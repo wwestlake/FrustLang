@@ -120,6 +120,32 @@ FRUST_PLUGIN_HOST_API void* frust_plugin_get_fn(FrustPluginHandle handle, const 
 // whatever was registered when they loaded).
 FRUST_PLUGIN_HOST_API void frust_plugin_register_host_function(const char* name, void* fn_ptr);
 
+// Is a host function named `name` currently resolvable - i.e. would a
+// plugin's `extern fn <name>(...)` actually link successfully right
+// now? Checks the real JIT symbol table (both explicit
+// frust_plugin_register_host_function() registrations and anything the
+// host process itself exports), not just "was this name registered at
+// some point" - a real answer, not a guess. Lets a host check "do I
+// actually provide what this plugin needs" BEFORE loading, instead of
+// discovering a missing symbol only when the JIT module link fails.
+FRUST_PLUGIN_HOST_API int32_t frust_plugin_is_host_function_available(const char* name);
+
+// -----------------------------------------------------------------------
+// Application identity - lets a host declare which application it IS
+// (once, at startup), so a plugin's manifest can declare which
+// application(s) it's built FOR, and frust_plugin_manifest_is_compatible()
+// (FrustPluginManifest.h) can give a real yes/no instead of a host
+// having to hand-roll that comparison itself. Purely informational
+// strings this library doesn't interpret beyond equality-checking them
+// - "lagdaemon-ide", "my-other-app", whatever a host wants to call
+// itself. Not set by default - a manifest with no declared target
+// application is treated as compatible with any host (see
+// frust_plugin_manifest_is_compatible's own doc for the exact rule).
+// -----------------------------------------------------------------------
+FRUST_PLUGIN_HOST_API void frust_plugin_host_set_application_identity(const char* appId);
+// "" if never set.
+FRUST_PLUGIN_HOST_API const char* frust_plugin_host_application_identity(void);
+
 // -----------------------------------------------------------------------
 // Lifecycle convenience wrappers - a RECOMMENDED, NOT ENFORCED, naming
 // convention for plugins that want one: `on_init() -> i64`,

@@ -86,12 +86,42 @@ struct PluginManifest {
     // Host functions this plugin's extern fn declarations expect to
     // resolve - see RequiredHostFunction above.
     std::vector<RequiredHostFunction> requiredHostFunctions;
+
+    // Which application(s) this plugin is built for - identity strings
+    // ("lagdaemon-ide", whatever a host calls itself via
+    // frust_plugin_host_set_application_identity in FrustPluginHost.h).
+    // Empty means "not restricted" - compatible with any host, same
+    // permissive-when-absent stance as every other optional manifest
+    // field. Non-empty means the CURRENT host's own declared identity
+    // must appear in this list for frust_plugin_manifest_is_compatible()
+    // to consider it a match.
+    std::vector<std::string> intendedApplications;
 };
 
 // Parses a plugin.json file. Returns std::nullopt on any read/parse
 // failure (details go to stderr, matching this library's existing
 // error-reporting style).
 std::optional<PluginManifest> LoadPluginManifest(const std::string& path);
+
+// The real compatibility check - built into the library so a host
+// doesn't have to hand-roll it every time (previously the manifest was
+// purely advisory: a host could READ requiredHostFunctions but nothing
+// ever actually checked it). Checks, in order:
+//   1. If `m.intendedApplications` is non-empty, the current host's own
+//      declared identity (frust_plugin_host_set_application_identity,
+//      FrustPluginHost.h) must appear in it. A host that never declared
+//      an identity is treated as NOT matching a manifest that DOES
+//      restrict to specific applications (conservative - silence on
+//      the host side plus an explicit restriction on the plugin side
+//      is exactly the "might be the wrong app" case worth catching).
+//   2. Every name in `m.requiredHostFunctions` must currently be
+//      resolvable (frust_plugin_is_host_function_available,
+//      FrustPluginHost.h) - a real symbol check, not just "was it in
+//      the manifest."
+// Returns true only if both hold. On false, call
+// LastIncompatibilityReason() for why.
+bool IsCompatible(const PluginManifest& m);
+const std::string& LastIncompatibilityReason();
 
 } // namespace frust_plugin_host
 
@@ -140,6 +170,17 @@ FRUST_PLUGIN_HOST_API const char* frust_plugin_manifest_listened_event(FrustPlug
 FRUST_PLUGIN_HOST_API int32_t frust_plugin_manifest_required_host_function_count(FrustPluginManifestHandle handle);
 FRUST_PLUGIN_HOST_API const char* frust_plugin_manifest_required_host_function_name(FrustPluginManifestHandle handle, int32_t index);
 FRUST_PLUGIN_HOST_API const char* frust_plugin_manifest_required_host_function_description(FrustPluginManifestHandle handle, int32_t index);
+
+// Applications this plugin declares itself built for - see
+// PluginManifest::intendedApplications.
+FRUST_PLUGIN_HOST_API int32_t frust_plugin_manifest_intended_application_count(FrustPluginManifestHandle handle);
+FRUST_PLUGIN_HOST_API const char* frust_plugin_manifest_intended_application(FrustPluginManifestHandle handle, int32_t index);
+
+// The real compatibility check - see IsCompatible's doc above. 1 if
+// compatible, 0 if not; call frust_plugin_manifest_incompatibility_reason()
+// on 0 for why.
+FRUST_PLUGIN_HOST_API int32_t frust_plugin_manifest_is_compatible(FrustPluginManifestHandle handle);
+FRUST_PLUGIN_HOST_API const char* frust_plugin_manifest_incompatibility_reason(void);
 
 #ifdef __cplusplus
 }

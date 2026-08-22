@@ -1,0 +1,6 @@
+{
+    "name": "unrestricted_plugin",
+    "version": "0.1.0",
+    "description": "Manifest fixture with no intendedApplications/requiredHostFunctions declared - must be compatible with any host by default",
+    "sourceFile": "event_plugin.frust"
+}

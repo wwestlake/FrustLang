@@ -42,6 +42,12 @@ struct HostState {
     uint64_t nextPluginId = 0;
     bool initAttempted = false;
 
+    // This host's own declared identity - see
+    // frust_plugin_host_set_application_identity's header doc. Process-
+    // wide like everything else here, not per-thread - a host only has
+    // one identity regardless of which thread asks.
+    std::string applicationId;
+
     // AST content hash (FRUST_LANG_SPEC.md 1.4) of the last successfully
     // loaded program for each path - lets frust_plugin_reload skip the
     // full unload/recompile/relink cycle when a reload is triggered but
@@ -340,6 +346,37 @@ FRUST_PLUGIN_HOST_API void frust_plugin_register_host_function(const char* name,
 
 FRUST_PLUGIN_HOST_API const char* frust_plugin_last_error(void) {
     return g_lastError.c_str();
+}
+
+FRUST_PLUGIN_HOST_API int32_t frust_plugin_is_host_function_available(const char* name) {
+    if (!name) return 0;
+    auto& s = state();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    if (!s.ensureInit() || !s.hostDylib) return 0;
+
+    // A real symbol lookup, not just "was register_host_function() ever
+    // called with this name" - also true for anything the host process
+    // itself exports (the DynamicLibrarySearchGenerator path
+    // ensureInit() already wired into hostDylib), matching exactly what
+    // an `extern fn` in a plugin would actually resolve against.
+    auto sym = s.jit->lookup(*s.hostDylib, name);
+    if (!sym) {
+        llvm::consumeError(sym.takeError());
+        return 0;
+    }
+    return 1;
+}
+
+FRUST_PLUGIN_HOST_API void frust_plugin_host_set_application_identity(const char* appId) {
+    auto& s = state();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    s.applicationId = appId ? appId : "";
+}
+
+FRUST_PLUGIN_HOST_API const char* frust_plugin_host_application_identity(void) {
+    auto& s = state();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    return s.applicationId.c_str();
 }
 
 FRUST_PLUGIN_HOST_API int64_t frust_plugin_call_on_init(FrustPluginHandle handle) {

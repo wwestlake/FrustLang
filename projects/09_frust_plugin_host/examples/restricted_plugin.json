@@ -1,0 +1,10 @@
+{
+    "name": "restricted_plugin",
+    "version": "0.1.0",
+    "description": "Manifest fixture for testing frust_plugin_manifest_is_compatible - deliberately restricts which application it's built for",
+    "sourceFile": "event_plugin.frust",
+    "intendedApplications": ["test-app-a", "test-app-b"],
+    "requiredHostFunctions": [
+        { "name": "some_fn", "description": "A capability this plugin needs that isn't registered by default in the test harness." }
+    ]
+}
