@@ -1,3 +1,5 @@
+manifest "{\"name\":\"event_plugin\",\"version\":\"0.2.0\",\"description\":\"Reload target for event_plugin.frust - same shape, on_init returns 112 instead of 111 so a real reload is distinguishable\",\"listenedEvents\":[\"something_happened\"],\"requiredHostFunctions\":[{\"name\":\"test_mark_fired\",\"description\":\"Called by my_handler when something_happened fires - increments a host-side counter the test observes.\"}]}";
+
 extern fn frust_register_event_handler(name: String, handler: String);
 extern fn test_mark_fired(id: i64) -> i64;
 

@@ -1,3 +1,5 @@
+manifest "{\"name\":\"lifecycle_plugin\",\"version\":\"0.1.0\",\"description\":\"Example plugin exercising the recommended lifecycle convention\",\"entryPoints\":[\"on_init\",\"on_event\",\"on_unload\"]}";
+
 pub fn on_init() -> i64 = {
     111
 }

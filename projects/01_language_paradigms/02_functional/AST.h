@@ -266,12 +266,33 @@ struct ImplDecl {
     std::string interfaceName;
 };
 
+// `manifest "...";` - a plugin's own self-describing metadata (raw JSON
+// text), compiled directly into the module as a discoverable global
+// constant instead of living in a separate companion file. See
+// frust_plugin_host/FrustPluginHost.cpp: frust_plugin_load() reads this
+// straight off the freshly-compiled llvm::Module, before the module is
+// ever linked into a JIT or executed - "no manifest, no load" is
+// enforced from this, not from any file on disk. At most one per
+// program - Codegen.h rejects a second one as a compile error.
+struct ManifestDecl {
+    std::string json;
+    SourceLoc loc;
+};
+
+// The fixed global-variable name Codegen.h emits a `manifest "...";`
+// decl's JSON text under (see Codegen::compileManifestDecl) and
+// frust_plugin_host looks up by exact name on the freshly-compiled
+// llvm::Module, before it's ever linked into a JIT. Shared as one named
+// constant, not a string literal duplicated in two files, so the two
+// sides can't silently drift apart.
+inline constexpr const char* kFrustPluginManifestGlobalName = "__frust_plugin_manifest";
+
 // TopLevelStmt exists because the REPL accepts bare statements directly
 // (`let dist = 100.0 * Meter`, `dist / time`, per FRUST_LANG_SPEC.md's REPL
 // section) with no enclosing `fn`. Folding it into DeclKind rather than
 // giving Program a second, separately-ordered list keeps top-level ordering
 // uniform between files (all decls) and REPL input (all statements).
-enum class DeclKind { Function, Struct, TypeAlias, Effect, Component, Use, TopLevelStmt, Impl, Interface };
+enum class DeclKind { Function, Struct, TypeAlias, Effect, Component, Use, TopLevelStmt, Impl, Interface, Manifest };
 
 struct Decl {
     DeclKind kind;
@@ -284,6 +305,7 @@ struct Decl {
     Expr* topLevelStmt = nullptr;
     ImplDecl* implDecl = nullptr;
     InterfaceDecl* interfaceDecl = nullptr;
+    ManifestDecl* manifestDecl = nullptr;
 };
 
 struct Program {
@@ -351,6 +373,11 @@ public:
         return interfaceDecls_.back().get();
     }
 
+    ManifestDecl* NewManifestDecl() {
+        manifestDecls_.push_back(std::make_unique<ManifestDecl>());
+        return manifestDecls_.back().get();
+    }
+
     Decl* NewDecl(DeclKind kind) {
         decls_.push_back(std::make_unique<Decl>());
         decls_.back()->kind = kind;
@@ -373,6 +400,7 @@ private:
     std::vector<std::unique_ptr<UseDecl>> useDecls_;
     std::vector<std::unique_ptr<ImplDecl>> implDecls_;
     std::vector<std::unique_ptr<InterfaceDecl>> interfaceDecls_;
+    std::vector<std::unique_ptr<ManifestDecl>> manifestDecls_;
     std::vector<std::unique_ptr<Decl>> decls_;
     std::vector<std::unique_ptr<Program>> programs_; // always exactly one in practice; vector keeps ownership uniform.
 };

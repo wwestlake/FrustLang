@@ -1,14 +1,26 @@
 // frust_plugin_host manifest - name/version/description/entry-point
-// metadata for a plugin, read from a `plugin.json` sitting next to its
-// `.frust` source. Modeled directly on frate's existing PodMetadata/
-// PodMetadataJson pattern (projects/05_frate/include/frate/
-// PodMetadata.h, src/PodMetadataJson.cpp) - same struct-plus-JSON-
-// round-trip shape, not a new format invented for this.
+// metadata for a plugin. Originally read from a `plugin.json` sitting
+// next to its `.frust` source (modeled on frate's PodMetadata/
+// PodMetadataJson pattern - projects/05_frate/include/frate/
+// PodMetadata.h, src/PodMetadataJson.cpp); a plugin's REAL manifest now
+// lives embedded directly in its own source (`manifest "...";`, a
+// top-level Frust declaration - see AST.h's ManifestDecl and
+// Codegen.h's compileManifestDecl) - frust_plugin_load() (
+// FrustPluginHost.h) reads it straight off the compiled module and
+// enforces "no manifest, no load." LoadPluginManifest()/
+// frust_plugin_manifest_load() (file-based) and ParseManifestJson()
+// (raw-JSON-text-based, what frust_plugin_load actually calls) both
+// remain - useful for a manifest a host wants to inspect independently
+// of loading the plugin's code (see app_identity_example.cpp) - but
+// they are no longer how frust_plugin_load itself decides whether to
+// load. frust_plugin_get_manifest() (FrustPluginHost.h) returns the
+// SAME manifest a loaded plugin's handle already carries, not a fresh
+// re-read from anywhere.
 //
 // This is metadata ABOUT a plugin (what it's called, what it claims to
-// export) - it does not load or run anything. Load the plugin itself
-// separately via frust_plugin_load() (FrustPluginHost.h); nothing here
-// requires that to have happened first, or ties the two together.
+// export) - it does not load or run anything itself. PluginManifest/
+// IsCompatible() below have no dependency on frust_plugin_load having
+// been called first.
 
 #pragma once
 
@@ -103,6 +115,16 @@ struct PluginManifest {
 // error-reporting style).
 std::optional<PluginManifest> LoadPluginManifest(const std::string& path);
 
+// The actual JSON-parsing logic LoadPluginManifest uses, factored out so
+// FrustPluginHost.cpp can parse a manifest's raw JSON text pulled
+// directly out of a compiled plugin's own `manifest "...";` declaration
+// (see AST.h's kFrustPluginManifestGlobalName) - not just from a file on
+// disk. `contextLabel` is only used in error messages (e.g. the plugin's
+// source path) so a parse failure is traceable back to which plugin it
+// came from. Returns std::nullopt on any parse failure (reported to
+// stderr, same as LoadPluginManifest).
+std::optional<PluginManifest> ParseManifestJson(const std::string& json, const std::string& contextLabel);
+
 // The real compatibility check - built into the library so a host
 // doesn't have to hand-roll it every time (previously the manifest was
 // purely advisory: a host could READ requiredHostFunctions but nothing
@@ -135,6 +157,24 @@ extern "C" {
 #endif
 
 typedef struct FrustPluginManifestHandleImpl* FrustPluginManifestHandle;
+
+#ifdef __cplusplus
+}
+
+namespace frust_plugin_host {
+// Wraps an already-parsed PluginManifest (e.g. one FrustPluginHost.cpp
+// extracted from a plugin's embedded `manifest "...";` declaration) as a
+// FrustPluginManifestHandle the C ABI can hand back to a caller -
+// FrustPluginHandleImpl and FrustPluginManifestHandleImpl are each
+// private to their own .cpp file, so this is the one shared seam that
+// lets frust_plugin_get_manifest() (FrustPluginHost.h) build a real
+// handle without either file reaching into the other's internals. Takes
+// ownership of a COPY - the caller's own PluginManifest is untouched.
+FrustPluginManifestHandle WrapManifest(PluginManifest manifest);
+} // namespace frust_plugin_host
+
+extern "C" {
+#endif
 
 // C-ABI surface over the same PluginManifest, for non-C++ hosts. NULL
 // on any read/parse failure.

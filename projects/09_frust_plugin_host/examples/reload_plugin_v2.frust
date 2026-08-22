@@ -1,3 +1,5 @@
+manifest "{\"name\":\"reload_plugin\",\"version\":\"2.0.0\"}";
+
 pub fn get_value() -> i64 = {
     return 222
 }

@@ -92,7 +92,7 @@
 %token
     FN "fn" PUB "pub" UNSAFE "unsafe" EXTERN "extern" ENTRY "entry" USE "use" LET "let" MUT "mut" RETURN "return"
     IF "if" ELSE "else" WHILE "while" LOOP "loop" FOR "for" BREAK "break" CONTINUE "continue"
-    IMPL "impl" SELF "self" INTERFACE "interface"
+    IMPL "impl" SELF "self" INTERFACE "interface" MANIFEST "manifest"
     STRUCT "struct" TYPE "type" EFFECT "effect" PERFORM "perform"
     HANDLE "handle" RESUME "resume" WITH "with" COMPONENT "component"
     IN "in" OUT "out" BUILD_TIME "build_time" QUOTE "quote" UNQUOTE "unquote"
@@ -145,6 +145,7 @@
 %type <frust::InterfaceDecl*> interface_decl
 %type <frust::InterfaceMethodSig> interface_method_sig
 %type <std::vector<frust::InterfaceMethodSig>> interface_method_sig_list
+%type <frust::ManifestDecl*> manifest_decl
 
 %type <bool> pub_opt unsafe_opt extern_opt entry_opt
 %type <frust::TypeExpr*> return_type_opt type_expr type_base type_annot_opt
@@ -212,6 +213,7 @@ decl:
   | use_decl        { $$ = arena.NewDecl(DeclKind::Use); $$->useDecl = $1; }
   | impl_decl       { $$ = arena.NewDecl(DeclKind::Impl); $$->implDecl = $1; }
   | interface_decl  { $$ = arena.NewDecl(DeclKind::Interface); $$->interfaceDecl = $1; }
+  | manifest_decl   { $$ = arena.NewDecl(DeclKind::Manifest); $$->manifestDecl = $1; }
   // Bare top-level statements - the REPL types `let dist = 100.0 * Meter`,
   // `dist / time`, etc. directly with no enclosing `fn` (FRUST_LANG_SPEC.md
   // REPL section). Requires a trailing ";" when more than one appears in the
@@ -387,6 +389,21 @@ use_decl:
         $$->isSelfUse = true;
         $$->pathSegments.push_back($4);
         $$->loc = ToSourceLoc(@1);
+    }
+;
+
+// -----------------------------------------------------------------------
+// Plugin manifest: `manifest "{ ...raw JSON... }";` - a plugin's own
+// self-describing metadata, embedded directly in the source rather than
+// living in a separate companion file. Just a keyword + an existing
+// STRING_LITERAL - no new lexing/escaping machinery needed. At most one
+// per program (Codegen.h's compileManifestDecl rejects a second one).
+// -----------------------------------------------------------------------
+
+manifest_decl:
+    "manifest" STRING_LITERAL ";" {
+        $$ = arena.NewManifestDecl();
+        $$->json = $2; $$->loc = ToSourceLoc(@1);
     }
 ;
 

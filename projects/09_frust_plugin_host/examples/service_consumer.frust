@@ -1,3 +1,5 @@
+manifest "{\"name\":\"service_consumer\",\"version\":\"0.1.0\",\"description\":\"Looks up and calls the doubler service another plugin provides\",\"requiredHostFunctions\":[{\"name\":\"test_report_result\",\"description\":\"Reports the result of calling doubler back to the host so the test can verify it.\"}]}";
+
 extern fn frust_lookup_service(name: String) -> String;
 extern fn test_report_result(val: i64) -> i64;
 

@@ -1,30 +1,30 @@
-// Verification harness for frust_plugin_load() auto-refusing an
-// incompatible plugin (docs/17-Plugin-Automation-Layer.md section 4.2).
+// Verification harness for frust_plugin_load()'s "no manifest, no load"
+// gate (docs/17-Plugin-Automation-Layer.md section 4.2).
 //
-// Prior state: frust_plugin_manifest_is_compatible() was a real check,
-// but nothing in frust_plugin_load() itself ever called it - a host had
-// to remember to check compatibility BEFORE calling load, or an
-// incompatible plugin would load anyway. User's direct instruction:
-// "if the framework can know that the plugin is not compatible it
-// should refuse it" - low-level, but this one crosses into user-visible
-// behavior (a bad plugin can no longer load silently), so it's not left
-// as a host-side opt-in. Countervailing instruction, same message: "if
-// it doesn't know, let the app decide" - a plugin with no manifest at
-// all must still load exactly as before; the framework only acts when
-// it genuinely has the information.
+// History: this started as an auto-refuse-when-incompatible check with a
+// permissive fallback ("if it doesn't know [because there's no manifest
+// at all], let the app decide"). The user then asked whether the
+// manifest could be embedded directly in the plugin's own source instead
+// of living in a separate companion file - Frust compiles through LLVM
+// IR, so a plugin's own module can carry its own metadata as a
+// discoverable global constant, readable before the module is ever
+// linked into the JIT or executed. Once that was built, the user's
+// instruction sharpened the rule: "no manifest, no load at all" - there
+// is no more permissive fallback. A plugin with no `manifest "...";`
+// declaration in its own source cannot load, period.
 //
 // Walks through every real combination: a restricted plugin
-// (restricted_plugin.frust + restricted_plugin.json, which declares
-// intendedApplications + a requiredHostFunctions entry) is refused by
-// frust_plugin_load itself with no host identity set; still refused
-// once the identity matches but the required function isn't registered
-// yet; loads successfully once both hold; refused again if the host's
-// identity later changes to something that doesn't match (proves the
-// check runs fresh on every load call, not cached); an unrestricted
-// plugin (unrestricted_plugin.frust + unrestricted_plugin.json, no
-// restrictions declared) always loads; and a plugin with NO manifest at
-// all (test_plugin.frust, no sibling .json) always loads regardless of
-// host identity - the "let the app decide" case.
+// (restricted_plugin.frust, whose embedded manifest declares
+// intendedApplications + a requiredHostFunctions entry) is refused with
+// no host identity set; still refused once the identity matches but the
+// required function isn't registered yet; loads once both hold; refused
+// again if the host's identity later changes to something that doesn't
+// match (proves the check runs fresh on every load call, not cached); an
+// unrestricted plugin (unrestricted_plugin.frust, an embedded manifest
+// with no restrictions) always loads; and a plugin with NO embedded
+// manifest at all (test_plugin.frust, deliberately left without one) is
+// ALWAYS refused, regardless of host identity - there is no longer any
+// case where a manifest-less plugin loads.
 
 #include "frust_plugin_host/FrustPluginHost.h"
 
@@ -36,7 +36,7 @@ extern "C" int64_t some_fn() { return 0; }
 
 int main(int argc, char** argv) {
     if (argc < 4) {
-        std::fprintf(stderr, "usage: auto_refuse_example <restricted_plugin.frust> <unrestricted_plugin.frust> <test_plugin.frust>\n");
+        std::fprintf(stderr, "usage: auto_refuse_example <restricted_plugin.frust> <unrestricted_plugin.frust> <test_plugin.frust (no manifest)>\n");
         return 1;
     }
     std::string restrictedPath = argv[1];
@@ -73,21 +73,23 @@ int main(int argc, char** argv) {
     FrustPluginHandle h5 = frust_plugin_load(restrictedPath.c_str());
     bool step5Refused = (h5 == nullptr);
 
-    // Step 6: a plugin with no manifest at all loads regardless of
-    // identity - the framework has no way to know, so it defers to the
-    // app rather than refusing.
+    // Step 6: a plugin with NO embedded manifest at all is ALWAYS
+    // refused now - "no manifest, no load" has no permissive fallback.
     FrustPluginHandle h6 = frust_plugin_load(noManifestPath.c_str());
-    bool step6Loaded = (h6 != nullptr);
+    bool step6Refused = (h6 == nullptr);
+    std::string reason6 = frust_plugin_last_error();
+    bool reason6MentionsManifest = reason6.find("no embedded plugin manifest") != std::string::npos;
 
     if (h2) frust_plugin_unload(h2);
     if (h4) frust_plugin_unload(h4);
-    if (h6) frust_plugin_unload(h6);
 
-    std::printf("step1Refused=%d reason1Ok=%d step2Loaded=%d step3Refused=%d step4Loaded=%d step5Refused=%d step6Loaded=%d\n",
-        step1Refused, reason1Ok, step2Loaded, step3Refused, step4Loaded, step5Refused, step6Loaded);
+    std::printf("step1Refused=%d reason1Ok=%d step2Loaded=%d step3Refused=%d step4Loaded=%d step5Refused=%d step6Refused=%d reason6MentionsManifest=%d\n",
+        step1Refused, reason1Ok, step2Loaded, step3Refused, step4Loaded, step5Refused, step6Refused, reason6MentionsManifest);
     std::printf("reason1='%s'\n", reason1.c_str());
+    std::printf("reason6='%s'\n", reason6.c_str());
 
-    bool allOk = step1Refused && reason1Ok && step2Loaded && step3Refused && step4Loaded && step5Refused && step6Loaded;
+    bool allOk = step1Refused && reason1Ok && step2Loaded && step3Refused && step4Loaded && step5Refused
+        && step6Refused && reason6MentionsManifest;
     std::printf("%s\n", allOk ? "ALL_CHECKS_PASSED" : "CHECKS_FAILED");
     return allOk ? 0 : 1;
 }

@@ -20,14 +20,16 @@ extern "C" int64_t host_add_ten(int64_t x) {
 
 static void write_plugin_v1(const std::string& path) {
     std::ofstream f(path);
-    f << "extern fn host_add_ten(x: i64) -> i64;\n"
+    f << "manifest \"{\\\"name\\\":\\\"host_example_scratch\\\",\\\"version\\\":\\\"1.0.0\\\",\\\"requiredHostFunctions\\\":[{\\\"name\\\":\\\"host_add_ten\\\"}]}\";\n"
+      << "extern fn host_add_ten(x: i64) -> i64;\n"
       << "pub fn plugin_double(x: i64) -> i64 = { x * 2 }\n"
       << "pub fn plugin_call_host(x: i64) -> i64 = { host_add_ten(x) }\n";
 }
 
 static void write_plugin_v2(const std::string& path) {
     std::ofstream f(path);
-    f << "extern fn host_add_ten(x: i64) -> i64;\n"
+    f << "manifest \"{\\\"name\\\":\\\"host_example_scratch\\\",\\\"version\\\":\\\"2.0.0\\\",\\\"requiredHostFunctions\\\":[{\\\"name\\\":\\\"host_add_ten\\\"}]}\";\n"
+      << "extern fn host_add_ten(x: i64) -> i64;\n"
       << "pub fn plugin_double(x: i64) -> i64 = { x * 100 }\n" // deliberately different
       << "pub fn plugin_call_host(x: i64) -> i64 = { host_add_ten(x) }\n";
 }

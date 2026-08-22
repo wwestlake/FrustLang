@@ -17,11 +17,14 @@ std::optional<PluginManifest> LoadPluginManifest(const std::string& path) {
     }
     std::stringstream buf;
     buf << file.rdbuf();
+    return ParseManifestJson(buf.str(), path);
+}
 
+std::optional<PluginManifest> ParseManifestJson(const std::string& json, const std::string& contextLabel) {
     juce::var parsed;
-    auto parseResult = juce::JSON::parse(juce::String(buf.str()), parsed);
+    auto parseResult = juce::JSON::parse(juce::String(json), parsed);
     if (parseResult.failed() || !parsed.isObject()) {
-        std::cerr << "frust_plugin_host: failed to parse manifest '" << path << "': "
+        std::cerr << "frust_plugin_host: failed to parse manifest '" << contextLabel << "': "
                    << parseResult.getErrorMessage() << "\n";
         return std::nullopt;
     }
@@ -133,6 +136,14 @@ struct ManifestHolder {
 } // namespace
 
 struct FrustPluginManifestHandleImpl : ManifestHolder {};
+
+namespace frust_plugin_host {
+FrustPluginManifestHandle WrapManifest(PluginManifest manifest) {
+    auto* handle = new FrustPluginManifestHandleImpl();
+    handle->manifest = std::move(manifest);
+    return handle;
+}
+} // namespace frust_plugin_host
 
 extern "C" {
 

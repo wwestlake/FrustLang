@@ -1,3 +1,5 @@
+manifest "{\"name\":\"restricted_plugin\",\"version\":\"0.1.0\",\"intendedApplications\":[\"test-app-a\",\"test-app-b\"],\"requiredHostFunctions\":[{\"name\":\"some_fn\",\"description\":\"A capability this plugin needs that isn't registered by default in the test harness.\"}]}";
+
 pub fn ping() -> i64 = {
     1
 }

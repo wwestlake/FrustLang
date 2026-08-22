@@ -1,23 +1,29 @@
 // Verification harness for Phase 2: plugin manifest + lifecycle
-// convenience wrappers. See lifecycle_plugin.frust/.json.
+// convenience wrappers. See lifecycle_plugin.frust - its manifest is now
+// embedded directly in the source (`manifest "...";`) rather than a
+// separate companion .json, so this test reads it via
+// frust_plugin_get_manifest() on the already-loaded handle - the SAME
+// manifest frust_plugin_load() itself already parsed and verified, not
+// a second, independently-read copy that could drift out of sync.
 
 #include "frust_plugin_host/FrustPluginHost.h"
-#include "frust_plugin_host/FrustPluginManifest.h"
 
 #include <cstdio>
 #include <cstring>
 #include <string>
 
 int main(int argc, char** argv) {
-    if (argc < 3) {
-        std::fprintf(stderr, "usage: lifecycle_example <plugin.frust> <plugin.json>\n");
+    if (argc < 2) {
+        std::fprintf(stderr, "usage: lifecycle_example <plugin.frust>\n");
         return 1;
     }
     std::string pluginPath = argv[1];
-    std::string manifestPath = argv[2];
 
-    FrustPluginManifestHandle manifest = frust_plugin_manifest_load(manifestPath.c_str());
-    if (!manifest) { std::fprintf(stderr, "FAIL: manifest load\n"); return 1; }
+    FrustPluginHandle plugin = frust_plugin_load(pluginPath.c_str());
+    if (!plugin) { std::fprintf(stderr, "FAIL: plugin load ('%s')\n", frust_plugin_last_error()); return 1; }
+
+    FrustPluginManifestHandle manifest = frust_plugin_get_manifest(plugin);
+    if (!manifest) { std::fprintf(stderr, "FAIL: get_manifest\n"); return 1; }
 
     bool manifestOk =
         std::strcmp(frust_plugin_manifest_name(manifest), "lifecycle_plugin") == 0 &&
@@ -35,9 +41,6 @@ int main(int argc, char** argv) {
         manifestOk ? 1 : 0);
 
     frust_plugin_manifest_free(manifest);
-
-    FrustPluginHandle plugin = frust_plugin_load(pluginPath.c_str());
-    if (!plugin) { std::fprintf(stderr, "FAIL: plugin load\n"); return 1; }
 
     int64_t initResult = frust_plugin_call_on_init(plugin);       // expect 111
     int64_t eventResult = frust_plugin_call_on_event(plugin, 10, 32); // expect 42

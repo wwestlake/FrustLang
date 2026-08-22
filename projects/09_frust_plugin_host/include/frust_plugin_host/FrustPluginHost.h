@@ -45,6 +45,15 @@
 
 #include <stdint.h>
 
+// A loaded plugin's manifest is no longer optional metadata a host might
+// or might not go read separately - "no manifest, no load"
+// (frust_plugin_load, below) means every successfully loaded plugin
+// necessarily HAS one, verified and parsed before it was ever linked
+// into the JIT. That makes a manifest part of what "a loaded plugin" IS,
+// not a loosely-related concept in a separate file - hence this include
+// (previously these two headers were deliberately independent).
+#include "frust_plugin_host/FrustPluginManifest.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -71,7 +80,34 @@ FRUST_PLUGIN_HOST_API const char* frust_plugin_last_error(void);
 // isolated JITDylib. Returns NULL on any parse/codegen error (details go
 // to stderr AND frust_plugin_last_error(), matching frust_compiler's own
 // error reporting style for the stderr half).
+//
+// NO MANIFEST, NO LOAD: every plugin must declare its own metadata
+// inline in its source (`manifest "{ ... }";` - a top-level declaration,
+// compiled into the module as a discoverable global constant, not a
+// separate companion file that can drift out of sync with the code it
+// describes). Before this function ever links the compiled module into
+// the JIT or runs a single instruction of it, it reads that embedded
+// manifest straight off the freshly-compiled module and checks it via
+// the same logic as frust_plugin_manifest_is_compatible()
+// (FrustPluginManifest.h). Refuses (returns NULL,
+// frust_plugin_last_error() explains why) when: the plugin has no
+// `manifest` declaration at all; its JSON fails to parse; or it parses
+// but is incompatible with this host (wrong intendedApplications, or a
+// requiredHostFunctions entry this host doesn't currently provide).
+// There is no permissive fallback for "couldn't find a manifest" - a
+// plugin with none simply cannot load, full stop.
 FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_load(const char* path);
+
+// Returns the manifest of an already-loaded plugin - specifically, the
+// SAME parsed PluginManifest frust_plugin_load() itself already
+// extracted from the plugin's own `manifest "...";` declaration and
+// verified compatible, not a fresh re-read from anywhere. Caller owns
+// the returned handle and must free it with
+// frust_plugin_manifest_free() (FrustPluginManifest.h), same convention
+// as frust_plugin_manifest_load(). Never NULL for a handle actually
+// returned by frust_plugin_load() - "no manifest, no load" guarantees
+// every loaded plugin has one.
+FRUST_PLUGIN_HOST_API FrustPluginManifestHandle frust_plugin_get_manifest(FrustPluginHandle handle);
 
 // Tears down this plugin's JITDylib - frees its compiled code, removes
 // its symbols. Any function pointers previously returned by

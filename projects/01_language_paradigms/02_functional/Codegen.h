@@ -83,6 +83,7 @@ public:
 
         indexEffectDecls(prog);
         indexInterfaceDecls(prog);
+        if (!compileManifestDecl(prog)) return false;
 
         // Pass 1: declare every function/method *signature* up front, so
         // calls resolve regardless of textual order - module.getFunction()
@@ -189,6 +190,34 @@ private:
                 interfaceDecls[decl->interfaceDecl->name] = decl->interfaceDecl;
             }
         }
+    }
+
+    // `manifest "...";` (frust_plugin_host/FrustPluginHost.cpp reads this
+    // by name before a plugin is ever JIT-linked or executed - see
+    // frust_plugin_load's "no manifest, no load" gate). Emits a
+    // PrivateLinkage global under a FIXED name, same pattern as the
+    // print_f64 format-string global above - private linkage is fine
+    // (and preferred: it never becomes a resolvable extern JIT symbol a
+    // plugin's own code could collide with) because the host inspects it
+    // directly on the in-memory llvm::Module object, not through the
+    // JIT's symbol table. At most one `manifest` decl per program - a
+    // second one is a real compile error, not a silent overwrite.
+    bool compileManifestDecl(const Program& prog) {
+        const ManifestDecl* found = nullptr;
+        for (auto* decl : prog.decls) {
+            if (decl->kind != DeclKind::Manifest) continue;
+            if (found) {
+                std::cerr << "frust: codegen error: more than one 'manifest' declaration in the same program\n";
+                return false;
+            }
+            found = decl->manifestDecl;
+        }
+        if (!found) return true; // no manifest decl at all is not a codegen error - the host decides what that means.
+
+        llvm::Constant* jsonConst = llvm::ConstantDataArray::getString(context, found->json);
+        new llvm::GlobalVariable(module, jsonConst->getType(), true,
+            llvm::GlobalValue::PrivateLinkage, jsonConst, kFrustPluginManifestGlobalName);
+        return true;
     }
 
     llvm::StructType* fatPointerType() {

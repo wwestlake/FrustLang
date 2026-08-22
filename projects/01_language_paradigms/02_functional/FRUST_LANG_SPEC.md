@@ -325,3 +325,30 @@ dynamic dispatch, not just that one interface implementation compiles.
 Domain-specific automations (audio parameters, engine transforms) are a
 separate, later concern layered on top of this - `Automation` itself is
 deliberately host-agnostic.
+
+### 4.3 Self-describing plugins (`manifest`)
+
+```frust
+manifest "{ \"name\": \"event_plugin\", \"listenedEvents\": [\"something_happened\"], \"requiredHostFunctions\": [{\"name\": \"test_mark_fired\"}] }";
+```
+
+A top-level `manifest "<raw JSON text>";` declaration - a plugin's own
+metadata, compiled directly into it rather than living in a separate
+companion file that can drift out of sync with the code it describes.
+Deliberately narrow: not a general `const`/`static` declaration (Frust
+has neither), just this one purpose-built construct, so a real plugin-
+hosting need doesn't turn into open-ended language scope creep.
+
+At most one per program - a second `manifest` declaration is a compile
+error. The JSON text is compiled into a `PrivateLinkage` LLVM global
+under a fixed name (`kFrustPluginManifestGlobalName`, `AST.h`) -
+private linkage so it never becomes a resolvable extern JIT symbol the
+plugin's own code could collide with; `frust_plugin_host`
+(`projects/09_frust_plugin_host`) reads it directly off the compiled
+`llvm::Module` object, before the plugin is ever linked into a JIT or
+executed. `frust_plugin_load()` enforces "no manifest, no load": a
+plugin with no `manifest` declaration - or one whose JSON fails to
+parse, or one incompatible with the host per its declared
+`intendedApplications`/`requiredHostFunctions` - is refused outright,
+with no permissive fallback. See `docs/17-Plugin-Automation-Layer.md`
+section 4.2 for the full manifest schema and compatibility-check rules.

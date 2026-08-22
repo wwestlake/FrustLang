@@ -1,3 +1,5 @@
+manifest "{\"name\":\"service_provider\",\"version\":\"0.1.0\",\"description\":\"Registers a doubler service other plugins can look up by name\"}";
+
 extern fn frust_register_service(name: String, service: String);
 
 fn double_it(x: i64) -> i64 = {

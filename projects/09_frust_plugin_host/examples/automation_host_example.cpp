@@ -10,13 +10,16 @@
 // Also proves the manifest's implementedInterfaces field is real, not
 // just parsed-and-ignored data: instead of hardcoding "new_ramp"/
 // "RampAutomation::tick" by name (as this file used to), the
-// constructor and mangled method names are read FROM automation.json
-// at runtime - a host that only knows "I want something implementing
-// Automation" can discover how to build and call one without any
-// hardcoded knowledge of RampAutomation/DecayAutomation specifically.
+// constructor and mangled method names are read from automation.fr's
+// OWN embedded `manifest "...";` declaration, via
+// frust_plugin_get_manifest() on the already-loaded handle - the SAME
+// manifest frust_plugin_load() itself already parsed and used to gate
+// the load, not a second copy independently read from a companion file.
+// A host that only knows "I want something implementing Automation" can
+// discover how to build and call one without any hardcoded knowledge of
+// RampAutomation/DecayAutomation specifically.
 
 #include "frust_plugin_host/FrustPluginHost.h"
-#include "frust_plugin_host/FrustPluginManifest.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -53,24 +56,23 @@ bool tickThree(FrustPluginHandle h, const char* constructorFn, const char* typeN
 } // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 3) {
-        std::fprintf(stderr, "usage: automation_host_example <automation.fr> <automation.json>\n");
+    if (argc < 2) {
+        std::fprintf(stderr, "usage: automation_host_example <automation.fr>\n");
         return 1;
     }
     std::string pluginPath = argv[1];
-    std::string manifestPath = argv[2];
 
-    FrustPluginManifestHandle manifest = frust_plugin_manifest_load(manifestPath.c_str());
-    if (!manifest) { std::fprintf(stderr, "FAIL: manifest load\n"); return 1; }
+    FrustPluginHandle h = frust_plugin_load(pluginPath.c_str());
+    if (!h) { std::fprintf(stderr, "FAIL: load ('%s')\n", frust_plugin_last_error()); return 1; }
+
+    FrustPluginManifestHandle manifest = frust_plugin_get_manifest(h);
+    if (!manifest) { std::fprintf(stderr, "FAIL: get_manifest\n"); return 1; }
 
     int32_t ifaceCount = frust_plugin_manifest_interface_count(manifest);
     bool manifestShapeOk = ifaceCount == 2;
     for (int32_t i = 0; i < ifaceCount; ++i) {
         if (std::strcmp(frust_plugin_manifest_interface_name(manifest, i), "Automation") != 0) manifestShapeOk = false;
     }
-
-    FrustPluginHandle h = frust_plugin_load(pluginPath.c_str());
-    if (!h) { std::fprintf(stderr, "FAIL: load\n"); return 1; }
 
     // Drive both instances entirely from what the manifest declared -
     // no "RampAutomation"/"new_ramp" string literals below this point.

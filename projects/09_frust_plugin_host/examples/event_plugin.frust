@@ -1,3 +1,5 @@
+manifest "{\"name\":\"event_plugin\",\"version\":\"0.1.0\",\"description\":\"Example plugin exercising event subscription - registers a handler in on_init and expects the host to have a counter callback available\",\"listenedEvents\":[\"something_happened\"],\"requiredHostFunctions\":[{\"name\":\"test_mark_fired\",\"description\":\"Called by my_handler when something_happened fires - increments a host-side counter the test observes.\"}]}";
+
 extern fn frust_register_event_handler(name: String, handler: String);
 extern fn test_mark_fired(id: i64) -> i64;
 

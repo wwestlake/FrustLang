@@ -1,3 +1,5 @@
+manifest "{\"name\":\"file_reader_plugin\",\"version\":\"0.1.0\",\"description\":\"Discovers host file-I/O capabilities via frust_lookup_service and reads a CSV entirely through them - never touches a raw OS file handle itself\",\"requiredHostFunctions\":[{\"name\":\"test_report_line\",\"description\":\"Reports each line read back to the host so the test can verify what the plugin actually saw.\"}]}";
+
 extern fn frust_lookup_service(name: String) -> String;
 extern fn test_report_line(line: String) -> i64;
 
