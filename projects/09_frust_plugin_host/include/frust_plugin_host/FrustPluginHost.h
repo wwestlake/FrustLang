@@ -127,6 +127,34 @@ FRUST_PLUGIN_HOST_API int64_t frust_plugin_call_on_event(FrustPluginHandle handl
 // frust_plugin_unload() separately.
 FRUST_PLUGIN_HOST_API int64_t frust_plugin_call_on_unload(FrustPluginHandle handle);
 
+// -----------------------------------------------------------------------
+// Event subscription - docs/17-Plugin-Automation-Layer.md. The inverse
+// direction of frust_plugin_register_host_function(): there, the HOST
+// gives a PLUGIN something to call; here, a PLUGIN gives the HOST
+// something to call, keyed by an event name rather than a symbol name
+// the caller has to already know. Domain-agnostic by construction - an
+// event is a name plus an opaque payload whose meaning is defined
+// entirely by whoever fires it and whoever handles it. This library
+// never inspects, types, or constrains the payload.
+// -----------------------------------------------------------------------
+
+// Fires `name` with `payload` - every handler currently registered for
+// that exact name (across every loaded plugin) is called, in
+// registration order, with `payload` passed through unchanged.
+FRUST_PLUGIN_HOST_API void frust_fire_event(const char* name, void* payload);
+
+// Registers `handler` to run whenever `name` is fired. Must be called
+// from WITHIN a plugin's own frust_plugin_call_on_init() call (i.e.
+// from that plugin's `on_init` function) - that's how this library
+// knows which plugin owns the registration, so it can automatically
+// remove it when that plugin is unloaded (frust_plugin_unload). A
+// stale handler pointing into unloaded JIT code would otherwise be a
+// use-after-free the next time the event fired. Registering from
+// outside that window still works (the handler still fires) but won't
+// be tracked for automatic cleanup - the caller is then responsible for
+// not firing that event after the owning plugin is unloaded.
+FRUST_PLUGIN_HOST_API void frust_register_event_handler(const char* name, void (*handler)(void*));
+
 #ifdef __cplusplus
 }
 #endif

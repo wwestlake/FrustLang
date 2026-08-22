@@ -5,12 +5,15 @@
 
 #include "frust_plugin_host/FrustPluginHost.h"
 
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 #include "AST.h"
 #include "ASTHash.h"
@@ -24,6 +27,8 @@
 #include <llvm/Support/TargetSelect.h>
 
 using namespace frust;
+
+struct FrustPluginHandleImpl; // full definition below; only a pointer is needed as a map key here
 
 namespace {
 
@@ -44,6 +49,16 @@ struct HostState {
     // twice). Called with `mutex` already held, same as everything else
     // here.
     std::map<std::string, std::string> lastAstHashByPath;
+
+    // Event subscription registry (docs/17-Plugin-Automation-Layer.md).
+    // eventHandlers is the fast path fire() actually iterates.
+    // handlersByPlugin exists purely so unload() can find and purge
+    // exactly the handlers a given plugin owns - without it, a stale
+    // handler pointing into that plugin's now-freed JIT code would be a
+    // use-after-free the next time its event fired. Both guarded by
+    // `mutex`, same as everything else here.
+    std::unordered_map<std::string, std::vector<void(*)(void*)>> eventHandlers;
+    std::unordered_map<FrustPluginHandleImpl*, std::vector<std::pair<std::string, void(*)(void*)>>> handlersByPlugin;
 
     // Called with `mutex` already held.
     bool ensureInit() {
@@ -90,6 +105,14 @@ HostState& state() {
     static HostState s;
     return s;
 }
+
+// Set only around frust_plugin_call_on_init()'s call into a plugin's
+// own `on_init` - the window during which frust_register_event_handler
+// can attribute a registration to a specific plugin for automatic
+// cleanup on unload. thread_local so concurrent init calls on different
+// threads (unlikely today, but not precluded) don't cross-contaminate
+// ownership.
+thread_local FrustPluginHandleImpl* g_registeringHandle = nullptr;
 
 // Parses a single .frust file - same shape as Main.cpp's ParseSource,
 // duplicated here rather than shared because it isn't part of
@@ -180,6 +203,20 @@ FRUST_PLUGIN_HOST_API void frust_plugin_unload(FrustPluginHandle handle) {
     if (!handle) return;
     auto& s = state();
     std::lock_guard<std::mutex> lock(s.mutex);
+
+    // Purge any event handlers this plugin registered (during its own
+    // on_init, via frust_register_event_handler) before its code goes
+    // away - a handler left behind would point into freed JIT code, a
+    // real use-after-free the next time that event fired.
+    auto ownedIt = s.handlersByPlugin.find(handle);
+    if (ownedIt != s.handlersByPlugin.end()) {
+        for (auto& owned : ownedIt->second) {
+            auto& vec = s.eventHandlers[owned.first];
+            vec.erase(std::remove(vec.begin(), vec.end(), owned.second), vec.end());
+        }
+        s.handlersByPlugin.erase(ownedIt);
+    }
+
     if (s.jit && handle->dylib) {
         if (auto err = s.jit->getExecutionSession().removeJITDylib(*handle->dylib)) {
             std::cerr << "frust_plugin_host: unload of '" << handle->path << "' failed: "
@@ -256,7 +293,15 @@ FRUST_PLUGIN_HOST_API void frust_plugin_register_host_function(const char* name,
 
 FRUST_PLUGIN_HOST_API int64_t frust_plugin_call_on_init(FrustPluginHandle handle) {
     auto* fn = reinterpret_cast<int64_t(*)()>(frust_plugin_get_fn(handle, "on_init"));
-    return fn ? fn() : 0;
+    if (!fn) return 0;
+    // See g_registeringHandle's declaration - this window is how
+    // frust_register_event_handler attributes a registration made
+    // during on_init() to this specific plugin.
+    FrustPluginHandleImpl* prev = g_registeringHandle;
+    g_registeringHandle = handle;
+    int64_t result = fn();
+    g_registeringHandle = prev;
+    return result;
 }
 
 FRUST_PLUGIN_HOST_API int64_t frust_plugin_call_on_event(FrustPluginHandle handle, int64_t id, int64_t arg) {
@@ -267,6 +312,33 @@ FRUST_PLUGIN_HOST_API int64_t frust_plugin_call_on_event(FrustPluginHandle handl
 FRUST_PLUGIN_HOST_API int64_t frust_plugin_call_on_unload(FrustPluginHandle handle) {
     auto* fn = reinterpret_cast<int64_t(*)()>(frust_plugin_get_fn(handle, "on_unload"));
     return fn ? fn() : 0;
+}
+
+FRUST_PLUGIN_HOST_API void frust_fire_event(const char* name, void* payload) {
+    if (!name) return;
+    // Copy the handler list out under the lock, then call handlers with
+    // the lock released - a handler is arbitrary plugin code and could
+    // itself call back into this library (e.g. register another
+    // handler, or unload a plugin), which would deadlock on a
+    // non-recursive std::mutex if held across the calls.
+    std::vector<void(*)(void*)> handlersCopy;
+    {
+        auto& s = state();
+        std::lock_guard<std::mutex> lock(s.mutex);
+        auto it = s.eventHandlers.find(name);
+        if (it != s.eventHandlers.end()) handlersCopy = it->second;
+    }
+    for (auto* h : handlersCopy) h(payload);
+}
+
+FRUST_PLUGIN_HOST_API void frust_register_event_handler(const char* name, void (*handler)(void*)) {
+    if (!name || !handler) return;
+    auto& s = state();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    s.eventHandlers[name].push_back(handler);
+    if (g_registeringHandle) {
+        s.handlersByPlugin[g_registeringHandle].push_back({name, handler});
+    }
 }
 
 } // extern "C"

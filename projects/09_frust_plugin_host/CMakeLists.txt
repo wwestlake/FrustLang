@@ -133,3 +133,12 @@ set_target_properties(frust_plugin_host_automation_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
 )
+
+# Event subscription verification harness (docs/17-Plugin-Automation-Layer.md).
+# See event_example.cpp/event_plugin.frust.
+add_executable(frust_plugin_host_event_example examples/event_example.cpp)
+target_link_libraries(frust_plugin_host_event_example PRIVATE frust_plugin_host)
+set_target_properties(frust_plugin_host_event_example PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
+)
