@@ -1,0 +1,23 @@
+extern fn frust_lookup_service(name: String) -> String;
+extern fn test_report_line(line: String) -> i64;
+
+pub fn on_init() -> i64 = {
+    let dialog_fn: String = frust_lookup_service("file_dialog_open");
+    let open_fn: String = frust_lookup_service("file_open");
+    let read_fn: String = frust_lookup_service("file_read_line");
+    let close_fn: String = frust_lookup_service("file_close");
+
+    let path: String = call_str(dialog_fn);
+    let file_id: i64 = call_i64(open_fn, path, 0);
+
+    loop {
+        let line: String = call_str(read_fn, file_id);
+        if (line == null) {
+            break;
+        };
+        test_report_line(line);
+    };
+
+    call_i64(close_fn, file_id);
+    111
+}

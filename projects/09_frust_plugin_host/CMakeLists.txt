@@ -152,3 +152,14 @@ set_target_properties(frust_plugin_host_service_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
 )
+
+# Host-advertised-capabilities verification harness: the same service
+# registry used the other direction - the host registers real file I/O
+# capabilities, a plugin discovers and drives them entirely on its own.
+# See host_file_service_example.cpp/file_reader_plugin.frust/sample_data.csv.
+add_executable(frust_plugin_host_file_service_example examples/host_file_service_example.cpp)
+target_link_libraries(frust_plugin_host_file_service_example PRIVATE frust_plugin_host)
+set_target_properties(frust_plugin_host_file_service_example PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
+)
