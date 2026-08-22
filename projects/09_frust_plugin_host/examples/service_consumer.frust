@@ -1,0 +1,9 @@
+extern fn frust_lookup_service(name: String) -> String;
+extern fn test_report_result(val: i64) -> i64;
+
+pub fn on_init() -> i64 = {
+    let svc: String = frust_lookup_service("doubler");
+    let result: i64 = call_i64(svc, 21);
+    test_report_result(result);
+    222
+}

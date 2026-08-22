@@ -1,0 +1,10 @@
+extern fn frust_register_service(name: String, service: String);
+
+fn double_it(x: i64) -> i64 = {
+    x * 2
+}
+
+pub fn on_init() -> i64 = {
+    frust_register_service("doubler", double_it);
+    111
+}

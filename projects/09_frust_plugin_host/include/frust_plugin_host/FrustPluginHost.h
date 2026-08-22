@@ -155,6 +155,39 @@ FRUST_PLUGIN_HOST_API void frust_fire_event(const char* name, void* payload);
 // not firing that event after the owning plugin is unloaded.
 FRUST_PLUGIN_HOST_API void frust_register_event_handler(const char* name, void (*handler)(void*));
 
+// -----------------------------------------------------------------------
+// Plugin-to-plugin service discovery - docs/17-Plugin-Automation-Layer.md
+// section 4.3. Everything above is two-party (host<->plugin); this is
+// the third connection this library provides: one loaded plugin
+// registering a capability under a name, and ANY other loaded plugin
+// (or the host) looking it up by that name, without either side needing
+// to already know which specific plugin provides it. Same domain-
+// agnostic-by-construction stance as events - a service is a name plus
+// an opaque pointer (a function pointer, a data pointer, whatever the
+// registering plugin and the looking-up caller agree on out of band);
+// this library never inspects it.
+// -----------------------------------------------------------------------
+
+// Registers `service` under `name`, replacing any previous registration
+// for that exact name (a warning goes to stderr when that happens - two
+// plugins claiming the same service name is more likely a real conflict
+// than something intentional). Must be called from within a plugin's
+// own frust_plugin_call_on_init() call, same as
+// frust_register_event_handler - that's how a registration is
+// attributed to the plugin that made it, so frust_plugin_unload can
+// automatically remove it when that plugin is unloaded (a stale service
+// pointer into unloaded JIT code would otherwise be a use-after-free
+// for whoever looks it up next). Registering from outside that window
+// still works but isn't tracked for automatic cleanup.
+FRUST_PLUGIN_HOST_API void frust_register_service(const char* name, void* service);
+
+// Looks up whatever is currently registered under `name`, or NULL if
+// nothing is. The caller is responsible for knowing what to do with the
+// returned pointer (cast it to a function pointer and call it, treat it
+// as a data pointer, ...) - this library has no way to know what any
+// given service name means.
+FRUST_PLUGIN_HOST_API void* frust_lookup_service(const char* name);
+
 #ifdef __cplusplus
 }
 #endif

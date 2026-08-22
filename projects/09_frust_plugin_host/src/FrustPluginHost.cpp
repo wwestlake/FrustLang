@@ -60,6 +60,18 @@ struct HostState {
     std::unordered_map<std::string, std::vector<void(*)(void*)>> eventHandlers;
     std::unordered_map<FrustPluginHandleImpl*, std::vector<std::pair<std::string, void(*)(void*)>>> handlersByPlugin;
 
+    // Plugin-to-plugin service registry (docs/17 section 4.3) - name ->
+    // whatever opaque pointer was registered under it. servicesByPlugin
+    // mirrors handlersByPlugin's role: lets unload() find and purge
+    // exactly the service names a given plugin owns.
+    std::unordered_map<std::string, void*> services;
+    // (name, pointer) pairs, not just names - a later registration under
+    // the same name from a DIFFERENT plugin can overwrite an earlier
+    // one (see frust_register_service's "last call wins" convention),
+    // so unload() must only erase services[name] if it still holds THIS
+    // plugin's own pointer, not unconditionally by name.
+    std::unordered_map<FrustPluginHandleImpl*, std::vector<std::pair<std::string, void*>>> servicesByPlugin;
+
     // Called with `mutex` already held.
     bool ensureInit() {
         if (jit) return true;
@@ -217,6 +229,23 @@ FRUST_PLUGIN_HOST_API void frust_plugin_unload(FrustPluginHandle handle) {
         s.handlersByPlugin.erase(ownedIt);
     }
 
+    // Same purge for services this plugin registered - a stale service
+    // pointer into unloaded JIT code would be a use-after-free for
+    // whoever looks it up next.
+    auto ownedServicesIt = s.servicesByPlugin.find(handle);
+    if (ownedServicesIt != s.servicesByPlugin.end()) {
+        for (auto& owned : ownedServicesIt->second) {
+            auto svcIt = s.services.find(owned.first);
+            // Only erase if the registry still points at what THIS
+            // plugin registered - a later plugin may have overwritten
+            // it under the same name, and that registration must survive.
+            if (svcIt != s.services.end() && svcIt->second == owned.second) {
+                s.services.erase(svcIt);
+            }
+        }
+        s.servicesByPlugin.erase(ownedServicesIt);
+    }
+
     if (s.jit && handle->dylib) {
         if (auto err = s.jit->getExecutionSession().removeJITDylib(*handle->dylib)) {
             std::cerr << "frust_plugin_host: unload of '" << handle->path << "' failed: "
@@ -339,6 +368,28 @@ FRUST_PLUGIN_HOST_API void frust_register_event_handler(const char* name, void (
     if (g_registeringHandle) {
         s.handlersByPlugin[g_registeringHandle].push_back({name, handler});
     }
+}
+
+FRUST_PLUGIN_HOST_API void frust_register_service(const char* name, void* service) {
+    if (!name || !service) return;
+    auto& s = state();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    if (s.services.count(name)) {
+        std::cerr << "frust_plugin_host: service '" << name << "' registered again - "
+                   << "replacing the previous registration (last call wins)\n";
+    }
+    s.services[name] = service;
+    if (g_registeringHandle) {
+        s.servicesByPlugin[g_registeringHandle].push_back({name, service});
+    }
+}
+
+FRUST_PLUGIN_HOST_API void* frust_lookup_service(const char* name) {
+    if (!name) return nullptr;
+    auto& s = state();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    auto it = s.services.find(name);
+    return it != s.services.end() ? it->second : nullptr;
 }
 
 } // extern "C"
