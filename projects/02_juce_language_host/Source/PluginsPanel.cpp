@@ -125,9 +125,19 @@ void PluginsPanel::loadPluginClicked()
 
         FrustPluginHandle h = frust_plugin_load(file.getFullPathName().toRawUTF8());
         if (!h) {
-            log("FAILED to load: " + file.getFileName() + " (see console/stderr for the compiler error)");
+            // This IDE is a windowed app with no console (juce_add_gui_app)
+            // - stderr is genuinely invisible, so frust_plugin_last_error()
+            // is the only way the user ever finds out why a load failed.
+            log("FAILED to load: " + file.getFileName() + " - " + juce::String(frust_plugin_last_error()));
             return;
         }
+
+        // Was missing entirely - on_init() was never called on load, so
+        // nothing a plugin registers there (event handlers, services -
+        // see docs/17-Plugin-Automation-Layer.md) ever actually took
+        // effect when loaded through this panel, even though every CLI
+        // verification harness for that machinery calls it correctly.
+        frust_plugin_call_on_init(h);
 
         LoadedPlugin p;
         p.displayName = file.getFileName();
@@ -149,9 +159,12 @@ void PluginsPanel::reloadSelectedClicked()
     FrustPluginHandle newHandle = frust_plugin_reload(p.handle);
     // frust_plugin_reload() tears down the old handle either way, even
     // on failure (see FrustPluginHost.h) - don't try to keep using it.
+    // (frust_plugin_reload() itself now re-runs on_init() on a genuine
+    // content-changed reload, so event/service registrations survive -
+    // no separate call needed here, unlike loadPluginClicked's first load.)
     p.handle = newHandle;
     if (!newHandle) {
-        log("Hot-reload FAILED for " + p.displayName + " - it is now unloaded (see console/stderr)");
+        log("Hot-reload FAILED for " + p.displayName + " - " + juce::String(frust_plugin_last_error()) + " (it is now unloaded)");
         loaded.erase(loaded.begin() + idx);
         pluginList.updateContent();
         refreshManifestView();

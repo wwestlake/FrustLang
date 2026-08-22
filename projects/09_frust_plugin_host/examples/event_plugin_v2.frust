@@ -1,0 +1,11 @@
+extern fn frust_register_event_handler(name: String, handler: String);
+extern fn test_mark_fired(id: i64) -> i64;
+
+fn my_handler(payload: String) = {
+    test_mark_fired(1);
+}
+
+pub fn on_init() -> i64 = {
+    frust_register_event_handler("something_happened", my_handler);
+    112
+}

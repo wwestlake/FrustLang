@@ -163,3 +163,14 @@ set_target_properties(frust_plugin_host_file_service_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
 )
+
+# Completion-plan fix verification: reload must re-run on_init (event/
+# service registrations must survive a real reload) and
+# frust_plugin_last_error() must report something after a failed load.
+# See reload_events_example.cpp/event_plugin.frust/event_plugin_v2.frust.
+add_executable(frust_plugin_host_reload_events_example examples/reload_events_example.cpp)
+target_link_libraries(frust_plugin_host_reload_events_example PRIVATE frust_plugin_host)
+set_target_properties(frust_plugin_host_reload_events_example PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
+)

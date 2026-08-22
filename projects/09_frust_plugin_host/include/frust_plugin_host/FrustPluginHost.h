@@ -57,10 +57,20 @@ extern "C" {
 
 typedef struct FrustPluginHandleImpl* FrustPluginHandle;
 
+// The message from the most recent failed operation on THIS THREAD
+// (load/unload/reload/register_host_function) - "" if the last one on
+// this thread succeeded, or none has run yet. Every failure still also
+// goes to stderr as before (unchanged for anyone already relying on
+// that), but stderr is invisible in a windowed GUI host with no console
+// - this exists so a host like that can show the user *something*
+// instead of a silent no-op. thread_local so concurrent load attempts
+// on different threads don't clobber each other's error.
+FRUST_PLUGIN_HOST_API const char* frust_plugin_last_error(void);
+
 // Parses, codegens, and JITs the .frust file at `path` into a fresh,
 // isolated JITDylib. Returns NULL on any parse/codegen error (details go
-// to stderr, matching frust_compiler's own error reporting - no separate
-// error-string API in v1).
+// to stderr AND frust_plugin_last_error(), matching frust_compiler's own
+// error reporting style for the stderr half).
 FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_load(const char* path);
 
 // Tears down this plugin's JITDylib - frees its compiled code, removes
@@ -79,11 +89,17 @@ FRUST_PLUGIN_HOST_API void frust_plugin_unload(FrustPluginHandle handle);
 //     (a no-op save, a duplicate file-watcher event).
 //   - Changed (or the path can no longer be parsed cleanly - errors go
 //     to stderr the normal way): `handle` is unloaded and the source is
-//     re-parsed/re-JITed fresh into a NEW handle. NULL on failure (the
-//     old handle is still torn down either way - a failed reload doesn't
-//     leave the stale version running). Every function pointer obtained
-//     from the OLD handle is invalid after this call, even on failure -
-//     re-fetch from the new handle.
+//     re-parsed/re-JITed fresh into a NEW handle, and - unlike the very
+//     first frust_plugin_load() - its on_init() IS automatically called
+//     if it has one, so event/service registrations a plugin made
+//     during on_init survive a real reload instead of silently
+//     vanishing (this was a real bug: unload() correctly purged the old
+//     registrations, but nothing ever re-created them on the new
+//     handle). NULL on failure (the old handle is still torn down
+//     either way - a failed reload doesn't leave the stale version
+//     running). Every function pointer obtained from the OLD handle is
+//     invalid after this call, even on failure - re-fetch from the new
+//     handle.
 // Since which of these two happens isn't known until the content is
 // compared, a caller that must tell them apart should compare the
 // returned handle pointer against the one it passed in.
@@ -144,15 +160,19 @@ FRUST_PLUGIN_HOST_API int64_t frust_plugin_call_on_unload(FrustPluginHandle hand
 FRUST_PLUGIN_HOST_API void frust_fire_event(const char* name, void* payload);
 
 // Registers `handler` to run whenever `name` is fired. Must be called
-// from WITHIN a plugin's own frust_plugin_call_on_init() call (i.e.
-// from that plugin's `on_init` function) - that's how this library
-// knows which plugin owns the registration, so it can automatically
-// remove it when that plugin is unloaded (frust_plugin_unload). A
-// stale handler pointing into unloaded JIT code would otherwise be a
-// use-after-free the next time the event fired. Registering from
-// outside that window still works (the handler still fires) but won't
-// be tracked for automatic cleanup - the caller is then responsible for
-// not firing that event after the owning plugin is unloaded.
+// from WITHIN a plugin's own frust_plugin_call_on_init() OR
+// frust_plugin_call_on_event() call (i.e. from that plugin's `on_init`
+// or `on_event` function - both windows are tracked, so a plugin can
+// subscribe to a new event in reaction to one it's already handling,
+// not just at startup) - that's how this library knows which plugin
+// owns the registration, so it can automatically remove it when that
+// plugin is unloaded (frust_plugin_unload). A stale handler pointing
+// into unloaded JIT code would otherwise be a use-after-free the next
+// time the event fired. Registering from outside both windows (e.g. a
+// raw frust_plugin_get_fn call the host makes directly) still works
+// (the handler still fires) but won't be tracked for automatic cleanup
+// - the caller is then responsible for not firing that event after the
+// owning plugin is unloaded.
 FRUST_PLUGIN_HOST_API void frust_register_event_handler(const char* name, void (*handler)(void*));
 
 // -----------------------------------------------------------------------
@@ -172,12 +192,12 @@ FRUST_PLUGIN_HOST_API void frust_register_event_handler(const char* name, void (
 // for that exact name (a warning goes to stderr when that happens - two
 // plugins claiming the same service name is more likely a real conflict
 // than something intentional). Must be called from within a plugin's
-// own frust_plugin_call_on_init() call, same as
-// frust_register_event_handler - that's how a registration is
+// own frust_plugin_call_on_init() or frust_plugin_call_on_event() call,
+// same as frust_register_event_handler - that's how a registration is
 // attributed to the plugin that made it, so frust_plugin_unload can
 // automatically remove it when that plugin is unloaded (a stale service
 // pointer into unloaded JIT code would otherwise be a use-after-free
-// for whoever looks it up next). Registering from outside that window
+// for whoever looks it up next). Registering from outside both windows
 // still works but isn't tracked for automatic cleanup.
 FRUST_PLUGIN_HOST_API void frust_register_service(const char* name, void* service);
 

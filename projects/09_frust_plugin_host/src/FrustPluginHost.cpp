@@ -126,6 +126,16 @@ HostState& state() {
 // ownership.
 thread_local FrustPluginHandleImpl* g_registeringHandle = nullptr;
 
+// See frust_plugin_last_error()'s declaration - mirrors every existing
+// std::cerr write (unchanged, still happens) into a thread-local string
+// a GUI host with no visible console can actually show the user.
+thread_local std::string g_lastError;
+
+void reportError(const std::string& msg) {
+    std::cerr << "frust_plugin_host: " << msg << "\n";
+    g_lastError = msg;
+}
+
 // Parses a single .frust file - same shape as Main.cpp's ParseSource,
 // duplicated here rather than shared because it isn't part of
 // frust_lang's public header surface (it's a free function local to
@@ -158,7 +168,7 @@ FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_load(const char* path) {
 
     std::ifstream file(path);
     if (!file) {
-        std::cerr << "frust_plugin_host: cannot open '" << path << "'\n";
+        reportError("cannot open '" + std::string(path) + "'");
         return nullptr;
     }
 
@@ -166,8 +176,9 @@ FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_load(const char* path) {
     std::vector<std::string> parseErrors;
     Program* prog = ParsePluginSource(file, arena, parseErrors);
     if (!parseErrors.empty() || !prog) {
-        std::cerr << "frust_plugin_host: " << parseErrors.size() << " error(s) loading '" << path << "'\n";
-        for (const auto& err : parseErrors) std::cerr << "  " << err << "\n";
+        std::string msg = std::to_string(parseErrors.size()) + " error(s) loading '" + path + "'";
+        for (const auto& err : parseErrors) msg += "\n  " + err;
+        reportError(msg);
         return nullptr;
     }
 
@@ -178,14 +189,14 @@ FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_load(const char* path) {
 
     Codegen codegen(*context, *module);
     if (!codegen.compileProgram(*prog)) {
-        std::cerr << "frust_plugin_host: codegen failed for '" << path << "'\n";
+        reportError("codegen failed for '" + std::string(path) + "'");
         return nullptr;
     }
 
     std::string dylibName = "frust_plugin#" + std::to_string(s.nextPluginId++) + ":" + path;
     auto jdOrErr = s.jit->createJITDylib(dylibName);
     if (!jdOrErr) {
-        std::cerr << "frust_plugin_host: failed to create JITDylib for '" << path << "'\n";
+        reportError("failed to create JITDylib for '" + std::string(path) + "'");
         return nullptr;
     }
     llvm::orc::JITDylib& JD = *jdOrErr;
@@ -194,8 +205,7 @@ FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_load(const char* path) {
     llvm::orc::ThreadSafeContext tsc(std::move(context));
     llvm::orc::ThreadSafeModule tsm(std::move(module), tsc);
     if (auto err = s.jit->addIRModule(JD, std::move(tsm))) {
-        std::cerr << "frust_plugin_host: JIT module load failed for '" << path << "': "
-                   << llvm::toString(std::move(err)) << "\n";
+        reportError("JIT module load failed for '" + std::string(path) + "': " + llvm::toString(std::move(err)));
         if (auto rmErr = s.jit->getExecutionSession().removeJITDylib(JD)) {
             llvm::consumeError(std::move(rmErr));
         }
@@ -248,8 +258,7 @@ FRUST_PLUGIN_HOST_API void frust_plugin_unload(FrustPluginHandle handle) {
 
     if (s.jit && handle->dylib) {
         if (auto err = s.jit->getExecutionSession().removeJITDylib(*handle->dylib)) {
-            std::cerr << "frust_plugin_host: unload of '" << handle->path << "' failed: "
-                       << llvm::toString(std::move(err)) << "\n";
+            reportError("unload of '" + handle->path + "' failed: " + llvm::toString(std::move(err)));
         }
     }
     delete handle;
@@ -288,7 +297,17 @@ FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_reload(FrustPluginHandle ha
     }
 
     frust_plugin_unload(handle);
-    return frust_plugin_load(path.c_str());
+    FrustPluginHandle newHandle = frust_plugin_load(path.c_str());
+    // Was missing entirely - a real (content-changed) reload correctly
+    // purged the OLD handle's event/service registrations (unload()
+    // above) but never re-created them on the new one, so anything a
+    // plugin registered during on_init silently vanished on every real
+    // edit-and-reload. frust_plugin_load() itself deliberately does NOT
+    // call on_init (a fresh load and a reload have always been distinct
+    // operations - a host might want to defer initialization), so this
+    // has to happen here, specifically on the reload path.
+    if (newHandle) frust_plugin_call_on_init(newHandle);
+    return newHandle;
 }
 
 FRUST_PLUGIN_HOST_API void* frust_plugin_get_fn(FrustPluginHandle handle, const char* name) {
@@ -315,9 +334,12 @@ FRUST_PLUGIN_HOST_API void frust_plugin_register_host_function(const char* name,
         { mangle(name), llvm::orc::ExecutorSymbolDef(llvm::orc::ExecutorAddr::fromPtr(fn_ptr), llvm::JITSymbolFlags::Exported) }
     }));
     if (err) {
-        std::cerr << "frust_plugin_host: failed to register host function '" << name << "': "
-                   << llvm::toString(std::move(err)) << "\n";
+        reportError("failed to register host function '" + std::string(name) + "': " + llvm::toString(std::move(err)));
     }
+}
+
+FRUST_PLUGIN_HOST_API const char* frust_plugin_last_error(void) {
+    return g_lastError.c_str();
 }
 
 FRUST_PLUGIN_HOST_API int64_t frust_plugin_call_on_init(FrustPluginHandle handle) {
@@ -335,7 +357,16 @@ FRUST_PLUGIN_HOST_API int64_t frust_plugin_call_on_init(FrustPluginHandle handle
 
 FRUST_PLUGIN_HOST_API int64_t frust_plugin_call_on_event(FrustPluginHandle handle, int64_t id, int64_t arg) {
     auto* fn = reinterpret_cast<int64_t(*)(int64_t, int64_t)>(frust_plugin_get_fn(handle, "on_event"));
-    return fn ? fn(id, arg) : 0;
+    if (!fn) return 0;
+    // Same ownership-tracking window as frust_plugin_call_on_init - a
+    // plugin reacting to one event by subscribing to a new one (or
+    // registering a service in response to something happening) is a
+    // real, expected pattern, not just a startup-time thing.
+    FrustPluginHandleImpl* prev = g_registeringHandle;
+    g_registeringHandle = handle;
+    int64_t result = fn(id, arg);
+    g_registeringHandle = prev;
+    return result;
 }
 
 FRUST_PLUGIN_HOST_API int64_t frust_plugin_call_on_unload(FrustPluginHandle handle) {
