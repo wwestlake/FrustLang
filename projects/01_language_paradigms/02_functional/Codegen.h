@@ -193,6 +193,19 @@ private:
     // ever knew, so it has to be recorded here at the binding site.
     std::unordered_map<std::string, std::string> namedValueRawPointeeType;
 
+    // variable/param name -> element type name, for `Vector<T>`-typed
+    // bindings (LANGUAGE_GAPS.md #3). A Vector<T> value is a pointer to
+    // a shared, element-type-erased heap header (vectorHeaderType()) -
+    // T only matters for computing element size/stride at each
+    // push/get/index site, the same "opaque pointer erases identity,
+    // only the static declared type ever knew" reasoning as
+    // namedValueStructType/namedValueRawPointeeType. `Vector::new()`
+    // has no way to know T on its own (Frust has no real generic
+    // function syntax) - only the enclosing `let`'s own type annotation
+    // ever carries it, so construction is special-cased in the Let
+    // branch of compileExpr, not in compileCall.
+    std::unordered_map<std::string, std::string> namedValueVectorElementType;
+
     void indexInterfaceDecls(const Program& prog) {
         for (auto* decl : prog.decls) {
             if (decl->kind == DeclKind::Interface) {
@@ -232,6 +245,144 @@ private:
     llvm::StructType* fatPointerType() {
         llvm::Type* ptrTy = llvm::PointerType::getUnqual(context);
         return llvm::StructType::get(context, {ptrTy, ptrTy});
+    }
+
+    // `{ ptr data, i64 length, i64 capacity }` - the ONE shared,
+    // element-type-erased LLVM shape every `Vector<T>` instance uses,
+    // regardless of T (LANGUAGE_GAPS.md #3). A Vector<T> value is a
+    // pointer to one of these, heap-allocated by compileVectorNew.
+    // Anonymous (not llvm::StructType::create with a name) since,
+    // unlike user structs, there's no Frust-level name to recover it
+    // by - namedValueVectorElementType is what tells push/get/index
+    // which element type T to use at each site.
+    llvm::StructType* vectorHeaderType() {
+        llvm::Type* ptrTy = llvm::PointerType::getUnqual(context);
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(context);
+        return llvm::StructType::get(context, {ptrTy, i64Ty, i64Ty});
+    }
+
+    // Direct module.getOrInsertFunction wiring for malloc/realloc -
+    // same pattern compileProgram's own prologue already uses for
+    // printf (print_f64's implementation). Vector<T> is a compiler
+    // built-in, not user Frust code, so it doesn't rely on the user's
+    // own source having written `extern fn malloc(...)` - the compiler
+    // wires these up directly, once, regardless of what the program
+    // itself declares.
+    llvm::FunctionCallee getMallocFn() {
+        llvm::Type* ptrTy = llvm::PointerType::getUnqual(context);
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(context);
+        return module.getOrInsertFunction("malloc", llvm::FunctionType::get(ptrTy, {i64Ty}, false));
+    }
+    llvm::FunctionCallee getReallocFn() {
+        llvm::Type* ptrTy = llvm::PointerType::getUnqual(context);
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(context);
+        return module.getOrInsertFunction("realloc", llvm::FunctionType::get(ptrTy, {ptrTy, i64Ty}, false));
+    }
+
+    // `Vector::new()` - zero-initializes a fresh header (data=null,
+    // length=0, capacity=0). The actual element buffer isn't allocated
+    // until the first push (compileVectorMethodCall grows from 0 on
+    // first use) - an empty Vector<T> that's never pushed to never
+    // allocates an element buffer at all, only its small header.
+    llvm::Value* compileVectorNew() {
+        llvm::StructType* hdrTy = vectorHeaderType();
+        llvm::Type* ptrTy = llvm::PointerType::getUnqual(context);
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(context);
+        uint64_t hdrSize = module.getDataLayout().getTypeAllocSize(hdrTy);
+
+        llvm::Value* headerPtr = builder.CreateCall(getMallocFn(),
+            {llvm::ConstantInt::get(i64Ty, hdrSize)}, "vecheader");
+
+        builder.CreateStore(llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptrTy)),
+            builder.CreateStructGEP(hdrTy, headerPtr, 0));
+        builder.CreateStore(llvm::ConstantInt::get(i64Ty, 0), builder.CreateStructGEP(hdrTy, headerPtr, 1));
+        builder.CreateStore(llvm::ConstantInt::get(i64Ty, 0), builder.CreateStructGEP(hdrTy, headerPtr, 2));
+        return headerPtr;
+    }
+
+    // `receiver.push(x)` / `.len()` / `.get(i)` - the only three
+    // Vector<T> operations this pass ships (LANGUAGE_GAPS.md #3).
+    // `push` grows the element buffer (realloc, doubling from a base
+    // capacity of 4) exactly when length == capacity, matching the
+    // standard amortized-growth strategy - no PHI needed for the
+    // conditional grow: both the grow and no-grow paths converge on
+    // the same afterGrowBB and the element pointer is always computed
+    // AFTER that point by re-loading the (possibly just-updated) data
+    // field, so it's correct either way without merging SSA values by
+    // hand.
+    llvm::Value* compileVectorMethodCall(const Expr& expr, const Expr& member, const std::string& elemTypeName) {
+        llvm::Value* headerPtr = compileExpr(member.lhs);
+        if (!headerPtr) return nullptr;
+
+        llvm::StructType* hdrTy = vectorHeaderType();
+        llvm::Type* elemTy = resolveTypeByName(elemTypeName);
+        llvm::Type* ptrTy = llvm::PointerType::getUnqual(context);
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(context);
+        llvm::Value* dataFieldPtr = builder.CreateStructGEP(hdrTy, headerPtr, 0);
+        llvm::Value* lenFieldPtr = builder.CreateStructGEP(hdrTy, headerPtr, 1);
+        llvm::Value* capFieldPtr = builder.CreateStructGEP(hdrTy, headerPtr, 2);
+
+        if (member.text == "len") {
+            if (!expr.args.empty()) {
+                std::cerr << "frust: codegen error: Vector<T>'s 'len' takes no arguments\n";
+                return nullptr;
+            }
+            return builder.CreateLoad(i64Ty, lenFieldPtr, "veclen");
+        }
+
+        if (member.text == "get") {
+            if (expr.args.size() != 1) {
+                std::cerr << "frust: codegen error: Vector<T>'s 'get' takes exactly 1 argument\n";
+                return nullptr;
+            }
+            llvm::Value* idx = compileExpr(expr.args[0]);
+            if (!idx) return nullptr;
+            llvm::Value* dataPtr = builder.CreateLoad(ptrTy, dataFieldPtr, "vecdata");
+            llvm::Value* elemPtr = builder.CreateGEP(elemTy, dataPtr, idx, "vecelemptr");
+            return builder.CreateLoad(elemTy, elemPtr, "vecget");
+        }
+
+        if (member.text == "push") {
+            if (expr.args.size() != 1) {
+                std::cerr << "frust: codegen error: Vector<T>'s 'push' takes exactly 1 argument\n";
+                return nullptr;
+            }
+            llvm::Value* val = compileExpr(expr.args[0]);
+            if (!val) return nullptr;
+            val = coerceToType(val, elemTy);
+
+            llvm::Value* length = builder.CreateLoad(i64Ty, lenFieldPtr, "veclen");
+            llvm::Value* capacity = builder.CreateLoad(i64Ty, capFieldPtr, "veccap");
+
+            llvm::Function* theFunction = builder.GetInsertBlock()->getParent();
+            llvm::BasicBlock* growBB = llvm::BasicBlock::Create(context, "vecgrow", theFunction);
+            llvm::BasicBlock* afterGrowBB = llvm::BasicBlock::Create(context, "vecgrowdone", theFunction);
+            llvm::Value* needsGrow = builder.CreateICmpEQ(length, capacity, "vecneedsgrow");
+            builder.CreateCondBr(needsGrow, growBB, afterGrowBB);
+
+            builder.SetInsertPoint(growBB);
+            llvm::Value* isZero = builder.CreateICmpEQ(capacity, llvm::ConstantInt::get(i64Ty, 0), "veccapzero");
+            llvm::Value* doubled = builder.CreateMul(capacity, llvm::ConstantInt::get(i64Ty, 2), "vecdoubled");
+            llvm::Value* newCapacity = builder.CreateSelect(isZero, llvm::ConstantInt::get(i64Ty, 4), doubled, "vecnewcap");
+            uint64_t elemSize = module.getDataLayout().getTypeAllocSize(elemTy);
+            llvm::Value* newByteSize = builder.CreateMul(newCapacity, llvm::ConstantInt::get(i64Ty, elemSize), "vecnewbytes");
+            llvm::Value* oldData = builder.CreateLoad(ptrTy, dataFieldPtr, "vecolddata");
+            llvm::Value* newData = builder.CreateCall(getReallocFn(), {oldData, newByteSize}, "vecnewdata");
+            builder.CreateStore(newData, dataFieldPtr);
+            builder.CreateStore(newCapacity, capFieldPtr);
+            builder.CreateBr(afterGrowBB);
+
+            builder.SetInsertPoint(afterGrowBB);
+            llvm::Value* dataPtr = builder.CreateLoad(ptrTy, dataFieldPtr, "vecdata");
+            llvm::Value* elemPtr = builder.CreateGEP(elemTy, dataPtr, length, "vecelemptr");
+            builder.CreateStore(val, elemPtr);
+            llvm::Value* newLength = builder.CreateAdd(length, llvm::ConstantInt::get(i64Ty, 1), "vecnewlen");
+            builder.CreateStore(newLength, lenFieldPtr);
+            return newLength;
+        }
+
+        std::cerr << "frust: codegen error: Vector<T> has no method '" << member.text << "'\n";
+        return nullptr;
     }
 
     // (continueTarget, breakTarget) per enclosing loop, innermost last.
@@ -764,6 +915,29 @@ private:
             case ExprKind::Assign: return compileAssign(*expr);
 
             case ExprKind::Let: {
+                // `Vector::new()` construction (LANGUAGE_GAPS.md #3) -
+                // recognized HERE, before the generic compileExpr(expr->lhs)
+                // below, because `Vector::new()`'s call site has no way to
+                // know the element type T on its own (Frust has no real
+                // generic function syntax) - only this let's own type
+                // annotation ever carries it. compileCall has no access to
+                // that context, so this can't be handled there.
+                if (expr->typeAnnotation && expr->typeAnnotation->name == "Vector"
+                    && expr->typeAnnotation->genericArgs.size() == 1
+                    && !expr->typeAnnotation->genericArgs[0].isIntConst
+                    && expr->typeAnnotation->genericArgs[0].type
+                    && expr->lhs->kind == ExprKind::Call
+                    && expr->lhs->lhs->kind == ExprKind::Path
+                    && expr->lhs->lhs->pathSegments.size() == 2
+                    && expr->lhs->lhs->pathSegments[0] == "Vector"
+                    && expr->lhs->lhs->pathSegments[1] == "new") {
+                    llvm::Value* header = compileVectorNew();
+                    if (!header) return nullptr;
+                    namedValues[expr->text] = header;
+                    namedValueVectorElementType[expr->text] = expr->typeAnnotation->genericArgs[0].type->name;
+                    return header;
+                }
+
                 auto* val = compileExpr(expr->lhs);
                 if (!val) return nullptr;
 
@@ -1189,6 +1363,29 @@ private:
     // the vector's LLVM type); a runtime-variable index is not bounds-
     // checked yet - that needs real bounds-check codegen, out of scope here.
     llvm::Value* compileIndex(const Expr& expr) {
+        // `v[i]` for a Vector<T> (LANGUAGE_GAPS.md #3) - checked before
+        // compiling `base` generically below, same reasoning as
+        // compileMethodCall's Vector<T> branch: this only works for a
+        // plain named variable (namedValueVectorElementType lookup),
+        // same "anchor via a named binding" convention used throughout
+        // this file for anything opaque-pointer-typed.
+        if (expr.lhs->kind == ExprKind::Identifier) {
+            auto vecElemIt = namedValueVectorElementType.find(expr.lhs->text);
+            if (vecElemIt != namedValueVectorElementType.end()) {
+                llvm::Value* headerPtr = compileExpr(expr.lhs);
+                if (!headerPtr) return nullptr;
+                llvm::Value* idx = compileExpr(expr.rhs);
+                if (!idx) return nullptr;
+                llvm::StructType* hdrTy = vectorHeaderType();
+                llvm::Type* elemTy = resolveTypeByName(vecElemIt->second);
+                llvm::Type* ptrTy = llvm::PointerType::getUnqual(context);
+                llvm::Value* dataFieldPtr = builder.CreateStructGEP(hdrTy, headerPtr, 0);
+                llvm::Value* dataPtr = builder.CreateLoad(ptrTy, dataFieldPtr, "vecdata");
+                llvm::Value* elemPtr = builder.CreateGEP(elemTy, dataPtr, idx, "vecelemptr");
+                return builder.CreateLoad(elemTy, elemPtr, "vecindex");
+            }
+        }
+
         auto* base = compileExpr(expr.lhs);
         if (!base) return nullptr;
 
@@ -1364,6 +1561,14 @@ private:
             auto ifaceNameIt = namedValueInterfaceType.find(member.lhs->text);
             if (ifaceNameIt != namedValueInterfaceType.end()) {
                 return compileInterfaceMethodCall(expr, member, ifaceNameIt->second);
+            }
+            // Vector<T> (LANGUAGE_GAPS.md #3) - a compiler built-in, not
+            // a real user-defined method, checked here for the same
+            // reason the interface check above runs first: mutually
+            // exclusive membership, not competing priority.
+            auto vecElemIt = namedValueVectorElementType.find(member.lhs->text);
+            if (vecElemIt != namedValueVectorElementType.end()) {
+                return compileVectorMethodCall(expr, member, vecElemIt->second);
             }
         }
 
@@ -2260,6 +2465,7 @@ public:
         namedValues.clear();
         namedValueStructType.clear();
         namedValueRawPointeeType.clear();
+        namedValueVectorElementType.clear();
 
         auto argIt = llvmFn->args().begin();
         if (fn.isMethod) {

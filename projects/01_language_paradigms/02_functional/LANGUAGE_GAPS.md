@@ -87,9 +87,50 @@ comment itself, not silently overclaimed). No further work needed for
 this item; left numbered here as a record that it's closed, not
 renumbered away.
 
-## 3. Growable collections (a real `Vec<T>`/dynamic array)
+## 3. Growable collections (a real `Vector<T>`/dynamic array)
 
-**Status: OPEN.**
+**Status: DONE - 2026-08-23.** Shipped as a compiler-intrinsic-style
+built-in, exactly as scoped below - real generics (#4) not needed for
+this. Naming resolved cleanly: `Vector<T>` was already the name the
+spec doc (`FRUST_LANG_SPEC.md` section 2.3) and two separate code
+comments anticipated for this ("the unimplemented growable-collection
+`Vector<T>`") - no collision with `Vec<N>` (the fixed-size float math
+vector) to resolve at all, and no rename needed either.
+
+Representation: a `Vector<T>` value is a pointer to one shared,
+element-type-erased heap header (`vectorHeaderType()`:
+`{ ptr data, i64 length, i64 capacity }`) - T only matters for
+computing element size/stride at each push/get/index site (the same
+"opaque pointer erases identity, only the static type ever knew"
+reasoning as `namedValueStructType`/`namedValueRawPointeeType`, now
+joined by `namedValueVectorElementType`). `Vector::new()` is special-
+cased in the `Let` branch of `compileExpr`, not in `compileCall` -
+Frust has no real generic function syntax, so `Vector::new()`'s call
+site has no way to know T on its own; only the enclosing `let`'s type
+annotation (`let v: Vector<i64> = Vector::new();`) ever carries it.
+`malloc`/`realloc` are wired directly by the compiler
+(`module.getOrInsertFunction`, same pattern already used for `printf`
+in `compileProgram`'s own prologue) - Vector<T> doesn't depend on the
+user's own source declaring `extern fn malloc`.
+
+Shipped: `.push(x)` (real amortized growth - doubles capacity from a
+base of 4, `realloc`-backed), `.len()`, `.get(i)`, and `v[i]` bracket
+read. Scope cut, named honestly: `v[i] = x` (bracket WRITE) isn't
+shipped this pass - `.push()` covers building a vector, `.get()`/`v[i]`
+cover reading it back; in-place element mutation via brackets is a
+real, deliberately-deferred follow-on, not silently dropped.
+
+Verified (`test_vector.frust`, `frust_compiler.exe` direct-run): an
+empty vector starts at length 0; five pushes land at length 5,
+exercising BOTH the initial grow-from-0 (capacity 0 -> 4 on the 1st
+push) and the regrow-past-4 (capacity 4 -> 8 on the 5th push) code
+paths, not just the easy no-growth case; `.get(0)`/`.get(2)`/`.get(4)`
+and `v[0]`/`v[4]` all read back the correct values at the correct
+offsets. Real, hand-predicted exit code matched exactly. Full existing
+`frust_plugin_host` regression suite and the JUCE IDE both rebuilt and
+re-verified clean.
+
+Originally scoped (kept for the record):
 
 The single biggest "is this a real language" unlock. Built on #1
 (indexed pointer access) and `mem.fr`'s already-existing, already-
@@ -186,3 +227,29 @@ codebase. Either formalize `i64` (0/1) as the documented convention
 for anything crossing the FFI boundary, or actually verify/fix the i1
 ABI lowering properly and lift the restriction. Minor either way -
 named so it isn't silently rediscovered again.
+
+---
+
+## Future features (NOT gaps - queued after all 9 items above close)
+
+User's own distinction, explicit: these are new language features the
+user WANTS, not foundational things missing from what already exists -
+kept in a clearly separate section so they don't get conflated with
+the numbered gap-closing sequence above, and not started until that
+sequence is done.
+
+### Pattern matching + parameter/destructuring unpacking (F#-style)
+
+**Status: QUEUED - not started, not numbered into 1-9 above.**
+
+Confirmed by direct grammar read, 2026-08-23: no `match`/`case`/`when`
+keyword exists anywhere in `frust.y`'s token list - the only branching
+construct is `if`/`else` (including `else if` chains). No
+destructuring anywhere either: `let` bindings (`"let" mut_opt IDENT
+type_annot_opt "=" expr`) always bind a single identifier, never a
+tuple/struct-shaped pattern (`let (a, b) = pair`, `let { x, y } =
+point`); function parameters (`param: IDENT ":" type_expr`) are the
+same - always one name, one type, never a destructured shape; same for
+`for` loop variables. A real, separate feature from anything in the
+numbered list above - not blocking any of items 1-9, and not blocked
+by them either, just deliberately sequenced after.
