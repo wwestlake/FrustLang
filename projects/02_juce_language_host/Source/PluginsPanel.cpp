@@ -1,8 +1,42 @@
 #include "PluginsPanel.h"
 
+#include <cstdint>
+#include <cstring>
+#include <string>
+
+namespace {
+// metrics.frust's count_functions/count_structs/count_interfaces need
+// this - Frust has no pointer arithmetic, so re-searching text past a
+// previous match (what counting repeated occurrences needs) isn't
+// expressible in pure Frust. Same implementation already proven in
+// ide_plugins_example.cpp's CLI verification harness - this was
+// missing from the actual IDE process, which is exactly why the
+// Plugins panel reported metrics.frust as incompatible (its manifest
+// declares this as a requiredHostFunctions entry, correctly, and
+// frust_plugin_is_host_function_available() correctly found it absent
+// here until now).
+extern "C" int64_t host_count_occurrences(const char* text, const char* needle) {
+    if (!text || !needle || !*needle) return 0;
+    std::string t(text), n(needle);
+    int64_t count = 0;
+    size_t pos = 0;
+    while ((pos = t.find(n, pos)) != std::string::npos) {
+        ++count;
+        pos += n.size();
+    }
+    return count;
+}
+} // namespace
+
 PluginsPanel::PluginsPanel(juce::ApplicationProperties* appPropertiesIn)
     : appProperties(appPropertiesIn)
 {
+    // Must happen before scanBuiltInPluginsFolder() below - the
+    // compatibility check it runs (via frust_plugin_peek_manifest)
+    // needs this already registered to correctly report metrics.frust
+    // as compatible.
+    frust_plugin_register_host_function("host_count_occurrences", (void*)&host_count_occurrences);
+
     headerLabel.setFont(juce::Font(16.0f, juce::Font::bold));
     addAndMakeVisible(headerLabel);
 
