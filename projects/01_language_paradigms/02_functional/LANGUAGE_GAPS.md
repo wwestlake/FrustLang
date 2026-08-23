@@ -204,14 +204,48 @@ re-verified clean.
 
 ## 5. Result/Option (structured error handling)
 
-**Status: OPEN. Depends on #4.**
+**Status: PARTIAL - 2026-08-23.** `Result<T, E>`/`Option<T>` now exist
+as real, usable generic structs -
+`06_frust_library/core/src/result.fr`/`option.fr` - built as real
+Frust code using #4's generics, not another compiler intrinsic like
+`Vector<T>`: the first genuinely useful thing built on top of generics,
+not just a synthetic test of the feature.
 
-Failures today report to stderr and return a sentinel (null `String`,
-`-1`, `0`) - the caller has to already know the convention for
-whatever it's calling. Real `Result<T, E>`/`Option<T>` needs generics
-(#4). Lands with real breaking-change implications for
-`06_frust_library/core`, which uses the sentinel convention throughout
-today - named here explicitly so that's not a surprise later.
+```frust
+struct Option<T> { has_value: bool, value: T }
+struct Result<T, E> { is_ok: bool, ok_value: T, err_value: E }
+```
+
+Found and fixed a real, would-be-silent gap while verifying this:
+`resolveStructTypeName` (what item #2's struct-return-type-tracking
+fix relies on) only ever checked a struct's BARE name against
+`structTypes` - for a function returning a GENERIC struct
+(`fn safe_divide(...) -> Result<i64, String>`), that lookup would fail
+(only the MANGLED instantiation, `"Result<i64,String>"`, is ever in
+`structTypes` - see #4), silently breaking field access
+(`.is_ok`/`.ok_value`) on the returned value with no clear error.
+Fixed by having `resolveStructTypeName` monomorphize and return the
+mangled name too, mirroring `resolveType`'s own generic-struct branch.
+
+Honest limitations, stated directly rather than worked around: no
+`Result::ok(x)`/`Option::some(x)` constructor sugar (needs generic FREE
+FUNCTIONS - explicitly out of scope for #4's structs-only pass this
+session) - construct via a direct struct literal instead
+(`Result { is_ok: true, ok_value: 42 }`); no enforced safety against
+reading `.ok_value` on an `Err`/`.value` on a `None` (same "no
+default-value story, caller's responsibility" stance every struct
+literal already has in this codebase). `06_frust_library/core`'s
+existing sentinel-return convention (null/-1/0) is UNCHANGED - adopting
+`Result`/`Option` throughout that library is real, separate, not-yet-
+started follow-on work, named here so it isn't a silent surprise.
+
+Verified (`test_result_option.frust`, `frust_compiler.exe` direct-run):
+`safe_divide(a, b) -> Result<i64, String>`, a real function returning a
+generic struct, exercised on BOTH the Ok (10/2) and Err (10/0)
+branches, correct in each case; `Option<i64>` exercised on both Some
+and None. Real, hand-predicted exit code matched exactly. Full
+existing `frust_plugin_host` regression suite and the JUCE IDE both
+rebuilt and re-verified clean.
 
 ## 6. Closures
 

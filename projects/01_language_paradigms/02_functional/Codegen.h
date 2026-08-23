@@ -717,6 +717,27 @@ private:
         auto aliasIt = typeAliases.find(type->name);
         if (aliasIt != typeAliases.end()) return resolveStructTypeName(aliasIt->second, depth + 1);
         if (structTypes.count(type->name)) return type->name;
+        // Generic struct instantiation (LANGUAGE_GAPS.md #4) - a
+        // function's declared return type of `Result<i64, String>`
+        // never appears in structTypes under its bare name ("Result"
+        // alone was never eagerly registered - see indexStructs). Real
+        // gap, found before it could bite: without this, a call whose
+        // return type is a generic struct (e.g. `let r: Result<i64,
+        // String> = safe_divide(10, 2);`) would fail to be recognized
+        // as a struct at all via inferStructTypeName's Call branch,
+        // silently breaking field access on the result. Monomorphize
+        // (idempotent, memoized) and return the mangled name, same as
+        // resolveType's own generic-struct branch.
+        if (genericStructTemplates.count(type->name) && !type->genericArgs.empty()) {
+            std::vector<std::string> concreteArgNames;
+            for (auto& arg : type->genericArgs) {
+                if (arg.isIntConst || !arg.type) return std::nullopt;
+                concreteArgNames.push_back(arg.type->name);
+            }
+            if (getOrCreateMonomorphizedStruct(type->name, concreteArgNames)) {
+                return monomorphizedStructName(type->name, concreteArgNames);
+            }
+        }
         return std::nullopt;
     }
 
