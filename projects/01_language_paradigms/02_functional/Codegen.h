@@ -32,6 +32,7 @@
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace frust {
@@ -223,6 +224,37 @@ private:
     };
     std::unordered_map<std::string, ClosureSignature> namedValueClosureSignature;
     int closureCounter = 0;
+
+    // `shared T { ... }` (LANGUAGE_GAPS.md #7) - real strong reference
+    // counting + automatic scope-exit drop, scoped deliberately: only a
+    // shared value that stays entirely within the function that
+    // constructed it (through its own nested blocks/if branches/loops)
+    // is tracked. Returning one out of its constructing function (via
+    // an explicit `return name` or a block's own tail `name`) is
+    // recognized and the drop is SKIPPED there - ownership genuinely
+    // leaves untouched, never double-counted - but the receiving
+    // caller has no way to know it now holds a live strong reference
+    // (no call-boundary/return-type tracking this pass), so it will
+    // never be dropped by this mechanism either. Worst case is
+    // therefore always a LEAK (identical to how `own` already behaves
+    // today), never a double-free or use-after-free - a deliberate,
+    // safe way to bound scope on the riskiest gap in this file.
+    // `namedValueSharedType`: which currently-bound names hold a
+    // strong shared reference (flat, function-scoped, same convention
+    // as every other namedValue* side table in this file - not itself
+    // lexically scoped).
+    std::unordered_set<std::string> namedValueSharedType;
+    // `sharedScopeStack`: one entry per currently-open `{ ... }` block,
+    // holding the shared-owning names `let`-bound directly in that
+    // block, in declaration order - drained (in reverse) when that
+    // block exits normally, or by compileBreak/compileContinue/Return
+    // when control leaves it early.
+    std::vector<std::vector<std::string>> sharedScopeStack;
+    // `loopSharedScopeDepth`: sharedScopeStack's depth at each loop's
+    // entry, parallel to loopStack - compileBreak/compileContinue only
+    // drop frames pushed *since* the loop began, never the loop's own
+    // enclosing scopes.
+    std::vector<size_t> loopSharedScopeDepth;
 
     // `struct Box<T> { ... }` templates (LANGUAGE_GAPS.md #4) - name ->
     // the AST declaration, NOT an LLVM type. indexStructs() does not
@@ -609,6 +641,22 @@ private:
             }
         }
         return std::nullopt;
+    }
+
+    // Whether an expression's value already holds a strong `shared`
+    // reference (LANGUAGE_GAPS.md #7) - not a type name (namedValueStructType
+    // already tracks that, since a shared value's payload pointer is an
+    // ordinary struct pointer), just a yes/no for the Let branch and the
+    // Block-tail/Return skip-logic to decide whether this name needs
+    // eventual dropping. Deliberately narrower than inferStructTypeName:
+    // no Call-result case (LANGUAGE_GAPS.md #7's own named scope cut -
+    // a shared value returned from another function is untracked, a
+    // safe leak rather than an attempted double-drop).
+    bool inferSharedTypeName(const Expr* expr) {
+        if (!expr) return false;
+        if (expr->kind == ExprKind::Identifier) return namedValueSharedType.count(expr->text) > 0;
+        if (expr->kind == ExprKind::SmartPtrNew) return expr->smartPtrKind == SmartPtrKind::Shared;
+        return false;
     }
 
     // Which pointee type (if any) a `raw* T`-typed expression statically
@@ -1185,6 +1233,26 @@ private:
                     // analysis pass exists yet), not a new one.
                     namedValues[expr->text] = val;
                     namedValueStructType[expr->text] = *structTypeName;
+
+                    // A shared-refcounted local (LANGUAGE_GAPS.md #7) -
+                    // register it for automatic scope-exit drop.
+                    // inferSharedTypeName mirrors inferStructTypeName's
+                    // own shape (Identifier lookup / direct SmartPtrNew
+                    // literal), answering "does this value already hold
+                    // a strong shared reference" rather than a type
+                    // name (namedValueStructType above already has that).
+                    if (inferSharedTypeName(expr->lhs)) {
+                        // Rebinding an EXISTING shared name (`let b = a;`)
+                        // creates a second strong owner - retain it. A
+                        // fresh `shared Foo{...}` construction already
+                        // starts its own header at strong=1 and must NOT
+                        // be retained again here.
+                        if (expr->lhs->kind == ExprKind::Identifier) {
+                            retainSharedLocal(expr->lhs->text);
+                        }
+                        namedValueSharedType.insert(expr->text);
+                        if (!sharedScopeStack.empty()) sharedScopeStack.back().push_back(expr->text);
+                    }
                 } else if (expr->isMut) {
                     llvm::Function* theFunction = builder.GetInsertBlock()->getParent();
                     llvm::IRBuilder<> tmpBuilder(&theFunction->getEntryBlock(), theFunction->getEntryBlock().begin());
@@ -1210,18 +1278,44 @@ private:
                 // f32-refinement-typed parameter returned from an f64
                 // function.
                 llvm::Value* coerced = currentFnRetType ? coerceToType(val, currentFnRetType) : val;
+
+                // `return` exits every enclosing scope at once (unlike
+                // break/continue, which only exit up to the nearest
+                // loop) - drop every open frame, skipping the returned
+                // name itself if it's a bare identifier (ownership is
+                // leaving the function, not ending here).
+                std::string skipName = (expr->lhs->kind == ExprKind::Identifier) ? expr->lhs->text : std::string();
+                for (auto scopeIt = sharedScopeStack.rbegin(); scopeIt != sharedScopeStack.rend(); ++scopeIt) {
+                    emitScopeDrops(*scopeIt, skipName);
+                }
+
                 builder.CreateRet(coerced);
                 blockTerminated = true;
                 return val;
             }
 
             case ExprKind::Block: {
+                sharedScopeStack.push_back({});
                 llvm::Value* last = nullptr;
                 for (auto* stmt : expr->statements) {
                     if (blockTerminated) break;
                     last = compileExpr(stmt);
-                    if (!last) return nullptr;
+                    if (!last) { sharedScopeStack.pop_back(); return nullptr; }
                 }
+                if (!blockTerminated) {
+                    // A bare-identifier tail statement is this block's own
+                    // value propagating OUT (to an enclosing block/let/
+                    // return) - if it names one of THIS scope's own
+                    // shared-owning locals, skip dropping it here (see
+                    // namedValueSharedType's header comment: ownership
+                    // genuinely leaves untouched, tracked no further).
+                    std::string skipName;
+                    if (!expr->statements.empty() && expr->statements.back()->kind == ExprKind::Identifier) {
+                        skipName = expr->statements.back()->text;
+                    }
+                    emitScopeDrops(sharedScopeStack.back(), skipName);
+                }
+                sharedScopeStack.pop_back();
                 return last;
             }
 
@@ -1685,20 +1779,29 @@ private:
     // analysis pass to check "exactly one owner"/"never freed twice"
     // (same pre-existing gap noted throughout this file for struct
     // mutation not being gated on `mut`), so both currently just malloc
-    // and return the pointer. `shared`/`weak` genuinely need reference
-    // counting (a header word, retain/release) - real, separate,
-    // deliberately not built here; rejected with a clear error instead
-    // of silently behaving like `own`.
+    // and return the pointer. `shared` (LANGUAGE_GAPS.md #7) is real:
+    // the malloc'd block is an 8-byte i64 strong-count header
+    // immediately followed by the payload, initialized to 1 - the
+    // POINTER RETURNED HERE is still just the payload address (header
+    // + 8), so every existing struct-field/method-call code path keeps
+    // working completely unchanged; only construction/binding/drop
+    // needs to know about the header at all (see namedValueSharedType,
+    // sharedHeaderPtr, dropSharedLocal). `weak` genuinely needs a
+    // second, different mechanism (a control block that can outlive
+    // the payload) - real, separate, deliberately not built here;
+    // rejected with a clear error instead of silently behaving like
+    // `shared` or `own`.
     // typeNameOverride: see compileStructLiteral's own doc - same
-    // reasoning, for `own Box { ... }`/`raw Box { ... }`.
+    // reasoning, for `own Box { ... }`/`shared Box { ... }`.
     llvm::Value* compileHeapStructLiteral(const Expr& smartPtrExpr, const std::string& typeNameOverride = "") {
-        if (smartPtrExpr.smartPtrKind == SmartPtrKind::Shared || smartPtrExpr.smartPtrKind == SmartPtrKind::Weak) {
-            std::cerr << "frust: codegen error: 'shared'/'weak' construction isn't implemented yet (needs real reference counting) - only 'own'/'raw' heap construction is\n";
+        if (smartPtrExpr.smartPtrKind == SmartPtrKind::Weak) {
+            std::cerr << "frust: codegen error: 'weak' construction isn't implemented yet (needs a separate control-block mechanism) - 'own'/'raw'/'shared' heap construction all are\n";
             return nullptr;
         }
+        bool isShared = (smartPtrExpr.smartPtrKind == SmartPtrKind::Shared);
         const Expr* lit = smartPtrExpr.lhs;
         if (!lit || lit->kind != ExprKind::StructLiteral) {
-            std::cerr << "frust: codegen error: 'own'/'raw' currently only wraps a struct literal, e.g. `own Foo { ... }`\n";
+            std::cerr << "frust: codegen error: 'own'/'raw'/'shared' currently only wraps a struct literal, e.g. `own Foo { ... }`\n";
             return nullptr;
         }
         if (typeNameOverride.empty() && lit->pathSegments.empty()) {
@@ -1714,13 +1817,19 @@ private:
         llvm::StructType* structTy = typeIt->second;
         auto& fieldIndex = structFieldIndex[typeName];
 
-        uint64_t sizeBytes = module.getDataLayout().getTypeAllocSize(structTy);
-        llvm::FunctionCallee mallocFn = module.getOrInsertFunction("malloc",
-            llvm::FunctionType::get(llvm::PointerType::getUnqual(context), {llvm::Type::getInt64Ty(context)}, false));
-        llvm::Value* heapPtr = builder.CreateCall(mallocFn, {llvm::ConstantInt::get(llvm::Type::getInt64Ty(context), sizeBytes)});
+        uint64_t payloadSize = module.getDataLayout().getTypeAllocSize(structTy);
+        uint64_t totalSize = payloadSize + (isShared ? 8 : 0);
+        llvm::Value* totalSizeV = llvm::ConstantInt::get(llvm::Type::getInt64Ty(context), totalSize);
+        llvm::Value* rawPtr = builder.CreateCall(getMallocFn(), {totalSizeV});
 
-        if (!initStructFields(*lit, typeName, structTy, fieldIndex, heapPtr)) return nullptr;
-        return heapPtr;
+        llvm::Value* payloadPtr = rawPtr;
+        if (isShared) {
+            builder.CreateStore(builder.getInt64(1), rawPtr); // strong count = 1
+            payloadPtr = builder.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(context), rawPtr, 8);
+        }
+
+        if (!initStructFields(*lit, typeName, structTy, fieldIndex, payloadPtr)) return nullptr;
+        return payloadPtr;
     }
 
     llvm::Value* compileMember(const Expr& expr) {
@@ -2247,8 +2356,10 @@ private:
         // same targets Loop/For use, just condBB doubles as While's own
         // "recheck" step instead of needing a dedicated increment block.
         loopStack.push_back({condBB, mergeBB});
+        loopSharedScopeDepth.push_back(sharedScopeStack.size());
         llvm::Value* bodyV = compileExpr(expr.lhs);
         loopStack.pop_back();
+        loopSharedScopeDepth.pop_back();
         if (!bodyV) return nullptr;
 
         if (!blockTerminated) {
@@ -2279,8 +2390,10 @@ private:
         builder.SetInsertPoint(bodyBB);
 
         loopStack.push_back({bodyBB, mergeBB});
+        loopSharedScopeDepth.push_back(sharedScopeStack.size());
         llvm::Value* bodyV = compileExpr(expr.lhs);
         loopStack.pop_back();
+        loopSharedScopeDepth.pop_back();
         if (!bodyV) return nullptr;
 
         if (!blockTerminated) {
@@ -2333,8 +2446,10 @@ private:
         namedValues[expr.text] = counterAlloca;
 
         loopStack.push_back({incrBB, mergeBB});
+        loopSharedScopeDepth.push_back(sharedScopeStack.size());
         llvm::Value* bodyV = compileExpr(expr.lhs);
         loopStack.pop_back();
+        loopSharedScopeDepth.pop_back();
         if (!bodyV) return nullptr;
 
         if (!blockTerminated) {
@@ -2355,12 +2470,25 @@ private:
         return llvm::ConstantFP::get(context, llvm::APFloat(0.0));
     }
 
+    // Drops every shared local declared in a scope the loop body opened
+    // (any sharedScopeStack frame at or past this loop's own recorded
+    // entry depth) - break/continue bypass the frames' own natural
+    // Block-exit drop entirely (blockTerminated short-circuits it), so
+    // this is the only place those frames ever get cleaned up.
+    void dropSharedScopesSinceLoopEntry() {
+        size_t depth = loopSharedScopeDepth.back();
+        for (size_t i = sharedScopeStack.size(); i-- > depth; ) {
+            emitScopeDrops(sharedScopeStack[i], "");
+        }
+    }
+
     llvm::Value* compileBreak(const Expr& expr) {
         (void)expr;
         if (loopStack.empty()) {
             std::cerr << "frust: codegen error: 'break' used outside of a loop\n";
             return nullptr;
         }
+        dropSharedScopesSinceLoopEntry();
         builder.CreateBr(loopStack.back().second);
         blockTerminated = true;
         return llvm::ConstantFP::get(context, llvm::APFloat(0.0));
@@ -2372,6 +2500,7 @@ private:
             std::cerr << "frust: codegen error: 'continue' used outside of a loop\n";
             return nullptr;
         }
+        dropSharedScopesSinceLoopEntry();
         builder.CreateBr(loopStack.back().first);
         blockTerminated = true;
         return llvm::ConstantFP::get(context, llvm::APFloat(0.0));
@@ -2389,6 +2518,74 @@ private:
     }
     llvm::Value* slotAddr(llvm::Value* basePtr, int index) {
         return builder.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(context), basePtr, index * 8);
+    }
+
+    // A `shared`-allocated block is one contiguous malloc: an 8-byte i64
+    // strong-count header immediately followed by the payload struct -
+    // the payload pointer (what every existing struct code path
+    // actually holds and operates on) is always exactly 8 bytes past
+    // the real (malloc'd) header pointer.
+    llvm::Value* sharedHeaderPtr(llvm::Value* payloadPtr) {
+        return builder.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(context), payloadPtr, -8);
+    }
+
+    // Decrements `name`'s strong count and frees the whole block (header
+    // + payload, one malloc) if it just reached zero. Emits real
+    // conditional control flow (new "shared.free"/"shared.cont" blocks)
+    // right at the current insert point, then leaves the builder
+    // positioned in "shared.cont" so subsequent code (another drop, or
+    // the actual return/branch instruction) chains after it correctly.
+    void dropSharedLocal(const std::string& name) {
+        auto it = namedValues.find(name);
+        if (it == namedValues.end()) return;
+        llvm::Value* payloadPtr = it->second;
+        llvm::Value* headerPtr = sharedHeaderPtr(payloadPtr);
+        llvm::Value* strong = builder.CreateLoad(llvm::Type::getInt64Ty(context), headerPtr, name + ".strong");
+        llvm::Value* newStrong = builder.CreateSub(strong, builder.getInt64(1));
+        builder.CreateStore(newStrong, headerPtr);
+        llvm::Value* isZero = builder.CreateICmpEQ(newStrong, builder.getInt64(0));
+
+        llvm::Function* theFunction = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* freeBB = llvm::BasicBlock::Create(context, "shared.free", theFunction);
+        llvm::BasicBlock* contBB = llvm::BasicBlock::Create(context, "shared.cont", theFunction);
+        builder.CreateCondBr(isZero, freeBB, contBB);
+
+        builder.SetInsertPoint(freeBB);
+        llvm::FunctionCallee freeFn = module.getOrInsertFunction("free",
+            llvm::FunctionType::get(llvm::Type::getVoidTy(context), {llvm::PointerType::getUnqual(context)}, false));
+        builder.CreateCall(freeFn, {headerPtr});
+        builder.CreateBr(contBB);
+
+        builder.SetInsertPoint(contBB);
+    }
+
+    // The retain counterpart to dropSharedLocal - increments `name`'s
+    // strong count. Used only when an EXISTING shared value gets a
+    // second (or later) strong owner via a plain rebinding
+    // (`let b = a;`, `a` already shared) - a fresh `shared Foo{...}`
+    // construction already starts its own header at strong=1 and never
+    // calls this. Without this, `a` and `b` would each independently
+    // decrement the SAME header at their own respective scope exits -
+    // the second decrement reading (and then writing) already-freed
+    // memory, a real use-after-free.
+    void retainSharedLocal(const std::string& name) {
+        auto it = namedValues.find(name);
+        if (it == namedValues.end()) return;
+        llvm::Value* headerPtr = sharedHeaderPtr(it->second);
+        llvm::Value* strong = builder.CreateLoad(llvm::Type::getInt64Ty(context), headerPtr, name + ".strong");
+        llvm::Value* newStrong = builder.CreateAdd(strong, builder.getInt64(1));
+        builder.CreateStore(newStrong, headerPtr);
+    }
+
+    // Drops every shared-owning name in `names` (declaration order),
+    // in reverse, except `skipName` - the name (if any) whose ownership
+    // is propagating OUT of this scope as its value (a block's own tail
+    // identifier, or an explicit `return name`) rather than ending here.
+    void emitScopeDrops(const std::vector<std::string>& names, const std::string& skipName) {
+        for (auto it = names.rbegin(); it != names.rend(); ++it) {
+            if (*it == skipName) continue;
+            if (namedValueSharedType.count(*it)) dropSharedLocal(*it);
+        }
     }
 
     llvm::Value* compilePerform(const Expr& expr) {
@@ -2738,6 +2935,9 @@ private:
         auto savedVectorElem = namedValueVectorElementType;
         auto savedInterfaceType = namedValueInterfaceType;
         auto savedClosureSig = namedValueClosureSignature;
+        auto savedSharedType = namedValueSharedType;
+        auto savedSharedScopeStack = sharedScopeStack;
+        auto savedLoopSharedScopeDepth = loopSharedScopeDepth;
         llvm::Type* savedRetType = currentFnRetType;
         bool savedBlockTerminated = blockTerminated;
 
@@ -2749,6 +2949,9 @@ private:
             namedValueVectorElementType = savedVectorElem;
             namedValueInterfaceType = savedInterfaceType;
             namedValueClosureSignature = savedClosureSig;
+            namedValueSharedType = savedSharedType;
+            sharedScopeStack = savedSharedScopeStack;
+            loopSharedScopeDepth = savedLoopSharedScopeDepth;
             currentFnRetType = savedRetType;
             blockTerminated = savedBlockTerminated;
         };
@@ -2759,6 +2962,9 @@ private:
         namedValueVectorElementType.clear();
         namedValueInterfaceType.clear();
         namedValueClosureSignature.clear();
+        namedValueSharedType.clear();
+        sharedScopeStack.clear();
+        loopSharedScopeDepth.clear();
 
         llvm::BasicBlock* bb = llvm::BasicBlock::Create(context, "entry", trampolineFn);
         builder.SetInsertPoint(bb);
@@ -2903,6 +3109,9 @@ public:
         namedValueRawPointeeType.clear();
         namedValueVectorElementType.clear();
         namedValueClosureSignature.clear();
+        namedValueSharedType.clear();
+        sharedScopeStack.clear();
+        loopSharedScopeDepth.clear();
 
         auto argIt = llvmFn->args().begin();
         if (fn.isMethod) {
@@ -3079,6 +3288,8 @@ public:
         llvm::BasicBlock* bb = llvm::BasicBlock::Create(context, "entry", llvmFn);
         builder.SetInsertPoint(bb);
         blockTerminated = false;
+        sharedScopeStack.clear();
+        loopSharedScopeDepth.clear();
 
         llvm::Value* result = compileExpr(body);
         currentFnRetType = prevFnRetType;

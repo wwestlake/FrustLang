@@ -282,17 +282,64 @@ separate, smaller follow-ons if ever needed, not silently folded in.
 
 ## 7. `own`/`shared`/`weak` smart pointers (real reference counting / move semantics)
 
-**Status: PARTIAL - `own` heap allocation has real codegen
-(`compileHeapStructLiteral`, shipped this session, 2026-08-21).
-`shared`/`weak` (reference counting) remain zero-codegen, parsed only
-(`SmartPtrKind` in `frust.y`'s `type_ptr_prefix_opt`).**
+**Status: PARTIAL, `shared` now real (2026-08-23) - `own` heap
+allocation still has no automatic drop, `weak` remains entirely
+unimplemented.**
 
-The SAFETY layer - sequenced after #1/#6 deliberately, so it's
-designed once raw-pointer patterns are well-understood in practice,
-not designed in the abstract first. A real implementation needs
-reference counting (`shared`) and move semantics (`own`, for the parts
-not already covered) wired through the whole codegen path -
-substantial, standalone work even with #1-#6 done first.
+Deliberately scoped down from "full" after tracing a real risk: `own`
+has exactly one owner and no refcount, so an automatic drop needs real
+move-tracking (was this value returned out, reassigned, passed
+elsewhere?) - Frust has never had that analysis, and getting it wrong
+means a certain double-free in code that works today, not just a
+missing feature. `shared` doesn't have that problem (it's safe by
+construction - a count only frees at genuine zero), so that's what
+shipped:
+
+- `shared Foo { ... }` mallocs one block: an 8-byte i64 strong-count
+  header immediately followed by the payload struct. The pointer bound
+  to a `let` is still just the payload address (header + 8), so every
+  existing struct-field/method-call code path works completely
+  unchanged - only construction/binding/drop know about the header.
+- Real strong refcounting: a fresh construction starts at 1;
+  `let b = a;` (rebinding an EXISTING shared value - a second strong
+  owner) retains (increments) rather than starting fresh - a real bug
+  caught and fixed while tracing the design, before it ever shipped
+  (without the retain, `a` and `b` would each independently decrement
+  the SAME header at their own scope exits, the second one reading
+  already-freed memory).
+- Automatic scope-exit drop: every `{ ... }` block tracks the
+  shared-owning locals `let`-bound directly in it (`sharedScopeStack`);
+  they're dropped (in reverse) at the block's own natural exit, or by
+  `return`/`break`/`continue` when control leaves early (`return` walks
+  every open scope back to the function boundary; `break`/`continue`
+  only walk scopes opened since the nearest loop began, tracked via
+  `loopSharedScopeDepth` parallel to the existing `loopStack`). A
+  block's own tail identifier (or an explicit `return name`) is
+  recognized and skipped - ownership propagates out untouched rather
+  than being dropped prematurely.
+- **Named, deliberate scope cuts** (worst case is always a LEAK, never
+  a double-free or use-after-free - the whole point of stopping here):
+  a `shared` value returned out of its constructing function is
+  untracked by the caller (no call-boundary/return-type tracking this
+  pass - the constructing function's own copy correctly isn't dropped,
+  but the caller has no way to know it now holds a live strong
+  reference, so it's never dropped by this mechanism either); a
+  shared-typed function PARAMETER isn't tracked either (no
+  increment/decrement at call boundaries); no shadowing-awareness
+  (mirrors the same named cut in closures' capture analysis).
+- Verified with a real test: 2000 real alloc/drop cycles through a
+  loop (stress + a hand-predicted summed value, proving no heap
+  corruption across many real malloc/free cycles through the new
+  header math), plus a real aliasing case (`let b = a;`, both dropped
+  independently at their own scope exits, correct field reads right up
+  to each drop point). Full `frust_plugin_host` regression sweep (14
+  examples) and JUCE IDE rebuild both clean.
+
+`own`'s automatic-free and `weak` (needs a genuinely different
+mechanism - a control block that can outlive the payload) both remain
+real, separate, deliberately-not-attempted follow-ons - `own`
+construction is unchanged from its prior heap-malloc-only behavior;
+`weak` construction is still rejected with a clear error.
 
 ## 8. Multi-file plugins (`frust_plugin_host`)
 
