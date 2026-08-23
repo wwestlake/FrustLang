@@ -57,7 +57,10 @@ WorkbenchComponent::WorkbenchComponent()
     };
 
     auto aiChat = std::make_unique<AiChatPanel>();
-    auto plugins = std::make_unique<PluginsPanel>();
+    // appProperties (constructed above) is what persists which
+    // discovered plugins are marked auto-load across restarts - same
+    // mechanism already used for lastOpenedFolder.
+    auto plugins = std::make_unique<PluginsPanel>(appProperties.get());
 
     dockManager->registerPanel("explorer", "Project Explorer", std::move(fileTree), CreationDock::DockTargetZone::Left);
     dockManager->registerPanel("editor", "Code Editor", std::move(editor), CreationDock::DockTargetZone::CenterTab);

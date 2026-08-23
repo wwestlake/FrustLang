@@ -213,3 +213,20 @@ set_target_properties(frust_plugin_host_auto_refuse_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
 )
+
+add_executable(frust_plugin_host_peek_manifest_example examples/peek_manifest_example.cpp)
+target_link_libraries(frust_plugin_host_peek_manifest_example PRIVATE frust_plugin_host)
+set_target_properties(frust_plugin_host_peek_manifest_example PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
+)
+
+# Verification harness for the four REAL plugins shipping with the JUCE
+# IDE (../02_juce_language_host/plugins/) - linter, plugin_generator,
+# metrics, symbol_finder. See ide_plugins_example.cpp.
+add_executable(frust_plugin_host_ide_plugins_example examples/ide_plugins_example.cpp)
+target_link_libraries(frust_plugin_host_ide_plugins_example PRIVATE frust_plugin_host)
+set_target_properties(frust_plugin_host_ide_plugins_example PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
+)

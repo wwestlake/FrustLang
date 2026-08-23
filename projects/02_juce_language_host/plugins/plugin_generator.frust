@@ -1,0 +1,34 @@
+// A real IDE plugin: generates real, loadable boilerplate for a NEW
+// Frust plugin - directly useful for continuing to build more plugins
+// for this same IDE (dogfoods the plugin system itself), not a toy.
+//
+// Builds the result via alloc()+strcpy()+strcat() (verified working
+// this session, same primitives core/src/mem.fr and core/src/string.fr
+// wrap) rather than any string-formatting language feature Frust
+// doesn't have. Declares its own extern fn for the libc functions it
+// needs - see linter.frust's header for why (no multi-file plugin
+// support, so `use self::mem;`/`use self::string;` isn't available to
+// a single-file plugin loaded via frust_plugin_load()).
+
+manifest "{\"name\":\"plugin_generator\",\"version\":\"0.1.0\",\"description\":\"Generates real, loadable boilerplate for a new Frust plugin - a manifest declaration plus an on_init stub\",\"entryPoints\":[\"generate_skeleton\"]}";
+
+extern fn malloc(size: i64) -> String;
+extern fn strcpy(dest: String, src: String) -> String;
+extern fn strcat(dest: String, src: String) -> String;
+
+// Returns real Frust source text for a new plugin named `plugin_name` -
+// a valid `manifest "...";` declaration (so it satisfies "no manifest,
+// no load" the moment it's written to a file) plus an `on_init` stub.
+// The embedded manifest JSON only carries `name` (kept minimal
+// deliberately - every backslash-quote in the OUTPUT text needs to be
+// hand-escaped through two layers of string literal here, so fewer
+// fields means less room for an escaping mistake; a plugin author
+// fills in version/description/entryPoints themselves once they start
+// writing real functions).
+pub fn generate_skeleton(plugin_name: String) -> String = {
+    let buf: String = malloc(512);
+    strcpy(buf, "manifest \"{\\\"name\\\":\\\"");
+    strcat(buf, plugin_name);
+    strcat(buf, "\\\"}\";\n\npub fn on_init() -> i64 = {\n    111\n}\n");
+    buf
+}

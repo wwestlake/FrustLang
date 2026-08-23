@@ -1,0 +1,15 @@
+// A minimal demo plugin for the IDE's Plugins panel - not a CLI test
+// fixture, an actual "load this through the UI and see it work"
+// example. Proves the whole stack end to end: the embedded manifest
+// shows up in the panel's manifest view, on_init runs automatically on
+// load, and greet() is callable directly from the panel's Call box.
+
+manifest "{\"name\":\"hello_world\",\"version\":\"0.1.0\",\"description\":\"Minimal demo plugin for the IDE Plugins panel - proves load, manifest display, and calling a function all work end to end.\",\"entryPoints\":[\"on_init\",\"greet\"]}";
+
+pub fn on_init() -> i64 = {
+    111
+}
+
+pub fn greet(x: i64) -> i64 = {
+    x + 1
+}

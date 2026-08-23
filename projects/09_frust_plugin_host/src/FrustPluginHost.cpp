@@ -158,6 +158,74 @@ Program* ParsePluginSource(std::istream& input, AstArena& arena, std::vector<std
     return result;
 }
 
+// Shared Phase 1 of frust_plugin_load()/frust_plugin_peek_manifest():
+// parse `path` and codegen it into a fresh, not-yet-linked
+// llvm::Module - reports the error (reportError) and returns false on
+// any failure, in which case the caller has nothing further to do.
+// Takes s.mutex internally (ensureInit/computeAstHash's own needs) but
+// releases it before returning either way - callers do their own
+// manifest-reading work outside any lock, same reasoning as before
+// (IsCompatible()'s dependents take that same lock themselves).
+bool CompilePluginModule(const std::string& path,
+                          std::unique_ptr<llvm::LLVMContext>& outContext,
+                          std::unique_ptr<llvm::Module>& outModule,
+                          std::string& outAstHash) {
+    auto& s = state();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    if (!s.ensureInit()) return false;
+
+    std::ifstream file(path);
+    if (!file) {
+        reportError("cannot open '" + path + "'");
+        return false;
+    }
+
+    AstArena arena;
+    std::vector<std::string> parseErrors;
+    Program* prog = ParsePluginSource(file, arena, parseErrors);
+    if (!parseErrors.empty() || !prog) {
+        std::string msg = std::to_string(parseErrors.size()) + " error(s) loading '" + path + "'";
+        for (const auto& err : parseErrors) msg += "\n  " + err;
+        reportError(msg);
+        return false;
+    }
+
+    outAstHash = computeAstHash(*prog);
+    outContext = std::make_unique<llvm::LLVMContext>();
+    outModule = std::make_unique<llvm::Module>(path, *outContext);
+
+    Codegen codegen(*outContext, *outModule);
+    if (!codegen.compileProgram(*prog)) {
+        reportError("codegen failed for '" + path + "'");
+        return false;
+    }
+    return true;
+}
+
+// Shared Phase 2 (part A): finds the embedded manifest global on an
+// already-compiled module (Codegen::compileManifestDecl's
+// kFrustPluginManifestGlobalName), or nullptr if the source had no
+// `manifest "...";` declaration at all. AllowInternal=true is
+// required: the global is PrivateLinkage (deliberately, so it's never
+// a resolvable extern JIT symbol - see compileManifestDecl's comment),
+// and Module::getGlobalVariable() silently returns null for local-
+// linkage globals unless explicitly told to allow them.
+llvm::GlobalVariable* FindManifestGlobal(llvm::Module& module) {
+    auto* gv = module.getGlobalVariable(kFrustPluginManifestGlobalName, /*AllowInternal=*/true);
+    return (gv && gv->hasInitializer()) ? gv : nullptr;
+}
+
+// Shared Phase 2 (part B): pulls the raw JSON text out of a manifest
+// global already confirmed to exist by FindManifestGlobal. nullopt
+// only for a genuinely malformed constant (wrong LLVM constant kind) -
+// should not happen for anything Codegen itself ever emitted, but
+// checked rather than assumed.
+std::optional<std::string> ExtractManifestString(llvm::GlobalVariable& manifestGV) {
+    auto* manifestData = llvm::dyn_cast<llvm::ConstantDataArray>(manifestGV.getInitializer());
+    if (!manifestData || !manifestData->isCString()) return std::nullopt;
+    return manifestData->getAsCString().str();
+}
+
 } // namespace
 
 struct FrustPluginHandleImpl {
@@ -176,75 +244,32 @@ extern "C" {
 FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_load(const char* path) {
     auto& s = state();
 
+    // Phase 1: parse + codegen, into a fresh, not-yet-linked module.
     std::unique_ptr<llvm::LLVMContext> context;
     std::unique_ptr<llvm::Module> module;
     std::string astHash;
-
-    // Phase 1: parse + codegen, under s.mutex (ensureInit/nextPluginId
-    // etc. need it) but BEFORE the compiled module is ever linked into
-    // the JIT or executed.
-    {
-        std::lock_guard<std::mutex> lock(s.mutex);
-        if (!s.ensureInit()) return nullptr;
-
-        std::ifstream file(path);
-        if (!file) {
-            reportError("cannot open '" + std::string(path) + "'");
-            return nullptr;
-        }
-
-        AstArena arena;
-        std::vector<std::string> parseErrors;
-        Program* prog = ParsePluginSource(file, arena, parseErrors);
-        if (!parseErrors.empty() || !prog) {
-            std::string msg = std::to_string(parseErrors.size()) + " error(s) loading '" + path + "'";
-            for (const auto& err : parseErrors) msg += "\n  " + err;
-            reportError(msg);
-            return nullptr;
-        }
-
-        astHash = computeAstHash(*prog);
-
-        context = std::make_unique<llvm::LLVMContext>();
-        module = std::make_unique<llvm::Module>(path, *context);
-
-        Codegen codegen(*context, *module);
-        if (!codegen.compileProgram(*prog)) {
-            reportError("codegen failed for '" + std::string(path) + "'");
-            return nullptr;
-        }
-    }
+    if (!CompilePluginModule(path, context, module, astHash)) return nullptr;
 
     // Phase 2: NO MANIFEST, NO LOAD. Read the embedded manifest straight
-    // off the freshly-compiled module (Codegen::compileManifestDecl
-    // emitted it under AST.h's kFrustPluginManifestGlobalName, if the
-    // source had a `manifest "...";` decl at all) - before this module
-    // is ever linked into the JIT or a single instruction of it runs.
+    // off the freshly-compiled module - before this module is ever
+    // linked into the JIT or a single instruction of it runs.
     // Deliberately OUTSIDE s.mutex: frust_plugin_host::IsCompatible()
     // calls both frust_plugin_host_application_identity() and
     // frust_plugin_is_host_function_available(), which each take that
     // same lock themselves.
-    // AllowInternal=true is required: Codegen::compileManifestDecl emits
-    // the global under PrivateLinkage (deliberately, so it's never a
-    // resolvable extern JIT symbol - see that function's comment), and
-    // Module::getGlobalVariable() silently returns null for local-
-    // linkage globals unless explicitly told to allow them. Without
-    // this, EVERY plugin's embedded manifest - even a correctly
-    // embedded one - would look identical to "no manifest at all".
-    auto* manifestGV = module->getGlobalVariable(kFrustPluginManifestGlobalName, /*AllowInternal=*/true);
-    if (!manifestGV || !manifestGV->hasInitializer()) {
+    auto* manifestGV = FindManifestGlobal(*module);
+    if (!manifestGV) {
         reportError("refusing to load '" + std::string(path) + "': no embedded plugin manifest "
             "(every plugin must declare its own 'manifest \"{ ... }\";' - see docs/17-Plugin-Automation-Layer.md)");
         return nullptr;
     }
-    auto* manifestData = llvm::dyn_cast<llvm::ConstantDataArray>(manifestGV->getInitializer());
-    if (!manifestData || !manifestData->isCString()) {
+    auto manifestJson = ExtractManifestString(*manifestGV);
+    if (!manifestJson) {
         reportError("refusing to load '" + std::string(path) + "': malformed embedded manifest constant");
         return nullptr;
     }
-    std::string manifestJson = manifestData->getAsCString().str();
 
-    auto parsedManifest = frust_plugin_host::ParseManifestJson(manifestJson, path);
+    auto parsedManifest = frust_plugin_host::ParseManifestJson(*manifestJson, path);
     if (!parsedManifest) {
         reportError("refusing to load '" + std::string(path) + "': embedded manifest failed to parse "
             "(see stderr above for the JSON error)");
@@ -292,6 +317,39 @@ FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_load(const char* path) {
 FRUST_PLUGIN_HOST_API FrustPluginManifestHandle frust_plugin_get_manifest(FrustPluginHandle handle) {
     if (!handle) return nullptr;
     return frust_plugin_host::WrapManifest(handle->manifest);
+}
+
+FRUST_PLUGIN_HOST_API FrustPluginManifestHandle frust_plugin_peek_manifest(const char* path) {
+    // Same Phase 1/2 as frust_plugin_load (parse+codegen, then read the
+    // embedded manifest global) - but stops there. No compatibility
+    // check, no JIT link, no "loading" of any kind - context/module are
+    // simply discarded (RAII) once the manifest string is extracted.
+    // For a plugin BROWSER that wants to show every discovered plugin's
+    // metadata, including an incompatible one (so the user can see
+    // why), without committing to loading any of them.
+    std::unique_ptr<llvm::LLVMContext> context;
+    std::unique_ptr<llvm::Module> module;
+    std::string astHash;
+    if (!CompilePluginModule(path, context, module, astHash)) return nullptr;
+
+    auto* manifestGV = FindManifestGlobal(*module);
+    if (!manifestGV) {
+        reportError("no embedded plugin manifest in '" + std::string(path) + "'");
+        return nullptr;
+    }
+    auto manifestJson = ExtractManifestString(*manifestGV);
+    if (!manifestJson) {
+        reportError("malformed embedded manifest constant in '" + std::string(path) + "'");
+        return nullptr;
+    }
+
+    auto parsedManifest = frust_plugin_host::ParseManifestJson(*manifestJson, path);
+    if (!parsedManifest) {
+        reportError("embedded manifest in '" + std::string(path) + "' failed to parse "
+            "(see stderr above for the JSON error)");
+        return nullptr;
+    }
+    return frust_plugin_host::WrapManifest(std::move(*parsedManifest));
 }
 
 FRUST_PLUGIN_HOST_API void frust_plugin_unload(FrustPluginHandle handle) {

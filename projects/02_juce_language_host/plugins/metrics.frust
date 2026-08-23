@@ -1,0 +1,54 @@
+// A real IDE plugin: reports simple code metrics for a Frust source
+// file's text - total length, and counts of `fn `/`struct `/
+// `interface ` occurrences.
+//
+// The counts need one HOST-provided primitive (`host_count_occurrences`)
+// rather than pure libc, for a real, confirmed reason: Frust has no
+// pointer arithmetic today (no `ptr + n`, no pointer-difference
+// operator) - counting repeated occurrences of a substring means
+// re-searching from just past each match, which needs advancing a
+// search position, which needs pointer arithmetic. `strstr` alone
+// (verified working, including its null-vs-found result) can find the
+// FIRST occurrence, never "the next one after this position." Whoever
+// loads this plugin (the IDE, or a CLI test harness) must register
+// `host_count_occurrences` via frust_plugin_register_host_function
+// before calling frust_plugin_load - same pattern already used all
+// session for host-provided callbacks.
+
+manifest "{\"name\":\"metrics\",\"version\":\"0.1.0\",\"description\":\"Reports total length and fn/struct/interface counts for a Frust source file\",\"requiredHostFunctions\":[{\"name\":\"host_count_occurrences\",\"description\":\"Counts occurrences of a substring - Frust has no pointer arithmetic to do this in pure Frust today.\"}],\"entryPoints\":[\"total_length\",\"count_functions\",\"count_structs\",\"count_interfaces\",\"has_manifest_decl\"]}";
+
+extern fn strlen(s: String) -> i64;
+extern fn strstr(haystack: String, needle: String) -> String;
+extern fn host_count_occurrences(text: String, needle: String) -> i64;
+
+// i64 (0/1), not bool, for the same reason linter.frust's header
+// documents - no example anywhere in this codebase has ever returned a
+// Frust bool (LLVM i1) across the C ABI, and its register-width ABI
+// behavior in that direction is unverified.
+fn as_i64(cond: bool) -> i64 = {
+    if (cond) {
+        1
+    } else {
+        0
+    }
+}
+
+pub fn total_length(text: String) -> i64 = {
+    strlen(text)
+}
+
+pub fn count_functions(text: String) -> i64 = {
+    host_count_occurrences(text, "fn ")
+}
+
+pub fn count_structs(text: String) -> i64 = {
+    host_count_occurrences(text, "struct ")
+}
+
+pub fn count_interfaces(text: String) -> i64 = {
+    host_count_occurrences(text, "interface ")
+}
+
+pub fn has_manifest_decl(text: String) -> i64 = {
+    as_i64(strstr(text, "manifest \"") != null)
+}

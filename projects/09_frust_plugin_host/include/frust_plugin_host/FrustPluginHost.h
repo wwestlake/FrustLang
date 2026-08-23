@@ -109,6 +109,18 @@ FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_load(const char* path);
 // every loaded plugin has one.
 FRUST_PLUGIN_HOST_API FrustPluginManifestHandle frust_plugin_get_manifest(FrustPluginHandle handle);
 
+// Parses+codegens `path` far enough to read its embedded manifest,
+// then discards the compiled module - never links into the JIT, never
+// checks compatibility, never actually "loads" the plugin in any
+// sense frust_plugin_unload would need to undo. For a plugin BROWSER
+// that wants to preview every discovered plugin's metadata - including
+// one that's currently incompatible, so a human can see why - without
+// committing to loading any of them. NULL on parse/codegen failure, a
+// missing manifest declaration, or a manifest that fails to parse
+// (frust_plugin_last_error() explains which). Caller owns the returned
+// handle, same as frust_plugin_manifest_load()/frust_plugin_get_manifest().
+FRUST_PLUGIN_HOST_API FrustPluginManifestHandle frust_plugin_peek_manifest(const char* path);
+
 // Tears down this plugin's JITDylib - frees its compiled code, removes
 // its symbols. Any function pointers previously returned by
 // frust_plugin_get_fn() for this handle become invalid; the host must

@@ -110,6 +110,11 @@ target_compile_definitions(LagDaemonResearchIDE PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
+    # Lets PluginsPanel find its built-in plugins/ folder reliably at
+    # runtime regardless of where the built .exe actually runs from
+    # (bin/Debug/, nowhere near the source tree) - a compile-time
+    # string constant pointing at this CMakeLists.txt's own directory.
+    FRUST_IDE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
 )
 
 target_link_libraries(LagDaemonResearchIDE PRIVATE
