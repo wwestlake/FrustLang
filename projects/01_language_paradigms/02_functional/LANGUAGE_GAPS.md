@@ -150,16 +150,57 @@ made during implementation, not pre-decided here.
 
 ## 4. Generics (real, user-definable types/functions)
 
-**Status: OPEN.**
+**Status: PARTIAL (structs) - 2026-08-23.** Generic STRUCTS are real -
+`struct Box<T> { value: T }`, `struct Pair<A, B> { first: A, second: B
+}` - monomorphized (real per-instantiation LLVM struct types, not type
+erasure/boxing), matching the project's own stated "zero-overhead,
+aiming for the iron" philosophy (`FRUST_LANG_SPEC.md` section 2.1).
+Generic FREE FUNCTIONS and generic `impl` methods are explicitly OUT
+OF SCOPE for this pass - a real, separate, larger follow-on (see
+below), not silently folded in.
 
-The largest single item - a genuine type-system feature
-(monomorphization vs. type erasure is a real, consequential choice for
-implementation time, not decided here). Confirmed current state: the
-grammar's `<...>` (`type_generic_args_opt`) only ever consumes type
-arguments for hardcoded special cases (`Vec<N>`, interfaces) -
-`struct_decl`/`function_decl` have no type-parameter list in the
-grammar at all. Needed properly for #5 and for a general `Vec<T>`
-beyond #3's built-in special case.
+New grammar: `struct Name<T>` / `struct Name<A, B>` (`generic_params_opt`,
+a bare identifier list - distinct from `type_generic_args_opt`, which
+CONSUMES type arguments at a use site like `Box<i64>`; this DECLARES
+the parameter names). `StructDecl` gained `genericParams`.
+
+Codegen: a generic struct's bare name is deliberately never eagerly
+resolved to an LLVM type (`indexStructs` now skips it, storing the
+template in `genericStructTemplates` instead) - only concrete
+instantiations are, monomorphized lazily on first real use
+(`getOrCreateMonomorphizedStruct`, memoized under a mangled name like
+`"Box<i64>"` in the SAME `structTypes`/`structFieldIndex` maps every
+other struct already lives in, so field access/method calls/sizeof
+all work with zero further special-casing). `resolveType` triggers
+monomorphization for a type annotation like `Box<i64>`; struct-literal
+CONSTRUCTION (`Box { value: 42 }`, or `own Box { value: 42 }`) is
+special-cased in the `Let` branch of `compileExpr` - same "anchor via
+the enclosing let's type annotation" convention already established
+for `Vector::new()` (#3) and raw pointers (#1), since the literal's
+own syntax never carries the concrete type arguments itself.
+
+Scope cuts, named honestly:
+- A generic struct literal used as a bare sub-expression with no
+  enclosing typed `let` (e.g. passed directly as a function argument)
+  is not supported - the concrete type arguments have nowhere else to
+  come from yet.
+- Nested generics (a field typed `Vector<T>` inside `struct Box<T>`)
+  are not substituted - `resolveType` would resolve `T` as an unknown
+  name and fall through to `i64`. Real, deferred limitation.
+- Generic free functions/methods (`fn identity<T>(x: T) -> T`,
+  `impl<T> Box<T> { ... }`) - not started. `struct_decl`/`function_decl`
+  still have no type-parameter list in the grammar for functions/impls,
+  only for `struct_decl` now.
+
+Verified (`test_generics.frust`, `frust_compiler.exe` direct-run): two
+DIFFERENT instantiations of the same generic struct (`Box<i64>` and
+`Box<f32>`) each construct and read back correctly - proves genuine
+per-type monomorphization, not one hardcoded case; a two-type-parameter
+struct (`Pair<i64, f32>`, the real stand-in shape for #5's eventual
+`Result<T, E>`) with two different field types also correct. Real,
+hand-predicted exit code matched exactly. Full existing
+`frust_plugin_host` regression suite and the JUCE IDE both rebuilt and
+re-verified clean.
 
 ## 5. Result/Option (structured error handling)
 

@@ -133,6 +133,7 @@
 %type <std::vector<frust::Decl*>> decl_list
 %type <frust::FunctionDecl*> function_decl
 %type <frust::StructDecl*> struct_decl
+%type <std::vector<std::string>> generic_params_opt generic_param_list
 %type <frust::TypeAliasDecl*> type_alias_decl
 %type <frust::EffectDecl*> effect_decl
 %type <frust::ComponentDecl*> component_decl
@@ -262,11 +263,24 @@ param: IDENT ":" type_expr { $$ = Param{ $1, $3, ToSourceLoc(@1) }; } ;
 // -----------------------------------------------------------------------
 
 struct_decl:
-    "struct" IDENT "{" param_list_opt "}" {
+    "struct" IDENT generic_params_opt "{" param_list_opt "}" {
         $$ = arena.NewStructDecl();
-        $$->name = $2; $$->loc = ToSourceLoc(@1);
-        for (auto& p : $4) $$->fields.push_back(StructField{ p.name, p.type });
+        $$->name = $2; $$->genericParams = std::move($3); $$->loc = ToSourceLoc(@1);
+        for (auto& p : $5) $$->fields.push_back(StructField{ p.name, p.type });
     }
+;
+
+// `struct Box<T> { ... }` / `struct Result<T, E> { ... }` -
+// LANGUAGE_GAPS.md #4. Deliberately a bare identifier list, not
+// type_generic_args_opt (which is for CONSUMING type arguments at a
+// USE site, e.g. `Box<i64>` in a type_expr) - this is the opposite
+// direction, DECLARING the parameter names a generic struct's field
+// types can reference. One token of lookahead after IDENT ("{" vs
+// "<") keeps this conflict-free with the plain (non-generic) form.
+generic_params_opt: %empty { $$ = {}; } | "<" generic_param_list ">" { $$ = std::move($2); } ;
+generic_param_list:
+    IDENT                          { $$ = {}; $$.push_back($1); }
+  | generic_param_list "," IDENT   { $$ = std::move($1); $$.push_back($3); }
 ;
 
 // -----------------------------------------------------------------------

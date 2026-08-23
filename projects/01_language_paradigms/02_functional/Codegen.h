@@ -206,6 +206,19 @@ private:
     // branch of compileExpr, not in compileCall.
     std::unordered_map<std::string, std::string> namedValueVectorElementType;
 
+    // `struct Box<T> { ... }` templates (LANGUAGE_GAPS.md #4) - name ->
+    // the AST declaration, NOT an LLVM type. indexStructs() does not
+    // eagerly create an LLVM struct type for a generic struct's bare
+    // name (there's no single real type for "Box" alone - only for a
+    // concrete instantiation like "Box<i64>"); this is what
+    // getOrCreateMonomorphizedStruct looks up when a concrete use site
+    // needs one, lazily, memoized into structTypes/structFieldIndex
+    // under the mangled "Box<i64>"-style name so every OTHER struct-
+    // handling code path in this file (field access, method calls,
+    // sizeof) works on a monomorphized instantiation with zero further
+    // special-casing.
+    std::unordered_map<std::string, const StructDecl*> genericStructTemplates;
+
     void indexInterfaceDecls(const Program& prog) {
         for (auto* decl : prog.decls) {
             if (decl->kind == DeclKind::Interface) {
@@ -446,6 +459,17 @@ private:
             if (decl->kind != DeclKind::Struct) continue;
             const StructDecl& sd = *decl->structDecl;
 
+            // `struct Box<T> { ... }` (LANGUAGE_GAPS.md #4) - no single
+            // real LLVM type exists for "Box" alone (field types can
+            // reference T, which isn't a real type until a concrete use
+            // site supplies one). Remember the template; monomorphize
+            // lazily per concrete instantiation instead - see
+            // getOrCreateMonomorphizedStruct.
+            if (!sd.genericParams.empty()) {
+                genericStructTemplates[sd.name] = &sd;
+                continue;
+            }
+
             std::vector<llvm::Type*> fieldTypes;
             auto& fieldIndex = structFieldIndex[sd.name];
             for (size_t i = 0; i < sd.fields.size(); ++i) {
@@ -454,6 +478,71 @@ private:
             }
             structTypes[sd.name] = llvm::StructType::create(context, fieldTypes, sd.name);
         }
+    }
+
+    static std::string monomorphizedStructName(const std::string& baseName,
+                                                 const std::vector<std::string>& concreteArgNames) {
+        std::string mangled = baseName + "<";
+        for (size_t i = 0; i < concreteArgNames.size(); ++i) {
+            if (i) mangled += ",";
+            mangled += concreteArgNames[i];
+        }
+        mangled += ">";
+        return mangled;
+    }
+
+    // Lazily monomorphizes baseName<concreteArgNames...> the first time
+    // it's actually needed (a concrete use site - a type annotation, a
+    // struct-literal construction) - memoized into structTypes/
+    // structFieldIndex under the mangled name, same maps every other
+    // struct already lives in, so field access/method calls/sizeof all
+    // work on a monomorphized instantiation with zero further special-
+    // casing beyond this function existing. Substitution is a flat
+    // name->name replacement on each field's declared type name - a
+    // field typed exactly as a generic parameter (`value: T`) gets the
+    // concrete type; anything else resolves normally. Nested generics
+    // (a field typed `Vector<T>` inside `struct Box<T>`) are NOT
+    // substituted - real, out-of-scope-for-v1 limitation, not silently
+    // mishandled: resolveType would just resolve T as an unknown type
+    // name and fall through to i64, so avoid this shape for now.
+    llvm::StructType* getOrCreateMonomorphizedStruct(const std::string& baseName,
+                                                       const std::vector<std::string>& concreteArgNames) {
+        std::string mangled = monomorphizedStructName(baseName, concreteArgNames);
+        auto existingIt = structTypes.find(mangled);
+        if (existingIt != structTypes.end()) return existingIt->second;
+
+        auto templateIt = genericStructTemplates.find(baseName);
+        if (templateIt == genericStructTemplates.end()) {
+            std::cerr << "frust: codegen error: '" << baseName << "' is not a generic struct\n";
+            return nullptr;
+        }
+        const StructDecl& templateDecl = *templateIt->second;
+        if (templateDecl.genericParams.size() != concreteArgNames.size()) {
+            std::cerr << "frust: codegen error: '" << baseName << "' expects "
+                       << templateDecl.genericParams.size() << " type argument(s), got "
+                       << concreteArgNames.size() << "\n";
+            return nullptr;
+        }
+
+        std::unordered_map<std::string, std::string> substitution;
+        for (size_t i = 0; i < templateDecl.genericParams.size(); ++i) {
+            substitution[templateDecl.genericParams[i]] = concreteArgNames[i];
+        }
+
+        std::vector<llvm::Type*> fieldTypes;
+        auto& fieldIndex = structFieldIndex[mangled];
+        for (size_t i = 0; i < templateDecl.fields.size(); ++i) {
+            const std::string& fieldTypeName = templateDecl.fields[i].type->name;
+            auto subIt = substitution.find(fieldTypeName);
+            llvm::Type* fieldTy = (subIt != substitution.end())
+                ? resolveTypeByName(subIt->second)
+                : resolveType(templateDecl.fields[i].type);
+            fieldTypes.push_back(fieldTy);
+            fieldIndex[templateDecl.fields[i].name] = static_cast<int>(i);
+        }
+        llvm::StructType* structTy = llvm::StructType::create(context, fieldTypes, mangled);
+        structTypes[mangled] = structTy;
+        return structTy;
     }
 
     // Which Frust struct type (if any) a given expression statically is,
@@ -592,6 +681,22 @@ private:
 
         auto structIt = structTypes.find(n);
         if (structIt != structTypes.end()) return llvm::PointerType::getUnqual(context); // structs are always passed/held by pointer
+
+        // Generic struct instantiation (`Box<i64>`, `Result<i64,String>`)
+        // - LANGUAGE_GAPS.md #4. A generic struct's bare name is never
+        // in structTypes directly (see indexStructs) - only its
+        // monomorphized instantiations are, memoized here on first use.
+        if (genericStructTemplates.count(n) && !type->genericArgs.empty()) {
+            std::vector<std::string> concreteArgNames;
+            bool allTypeArgs = true;
+            for (auto& arg : type->genericArgs) {
+                if (arg.isIntConst || !arg.type) { allTypeArgs = false; break; }
+                concreteArgNames.push_back(arg.type->name);
+            }
+            if (allTypeArgs && getOrCreateMonomorphizedStruct(n, concreteArgNames)) {
+                return llvm::PointerType::getUnqual(context); // structs are always pointer-represented
+            }
+        }
 
         // A declared `interface Name { ... }` - values of this type are a
         // fat pointer { data, vtable }, not a plain struct pointer (see
@@ -936,6 +1041,46 @@ private:
                     namedValues[expr->text] = header;
                     namedValueVectorElementType[expr->text] = expr->typeAnnotation->genericArgs[0].type->name;
                     return header;
+                }
+
+                // Generic struct construction (LANGUAGE_GAPS.md #4) -
+                // `let r: Result<i64, String> = Result { ... };` or
+                // `let r: Result<i64, String> = own Result { ... };`.
+                // Same reasoning as Vector::new() above: the literal's
+                // own syntax (`Result { ... }`) never carries the
+                // concrete type arguments - only this let's type
+                // annotation does, so this has to be recognized here,
+                // before the generic compileExpr(expr->lhs) below.
+                if (expr->typeAnnotation && genericStructTemplates.count(expr->typeAnnotation->name)) {
+                    const Expr* literalExpr = expr->lhs;
+                    bool isHeap = (literalExpr->kind == ExprKind::SmartPtrNew);
+                    if (isHeap) literalExpr = literalExpr->lhs;
+
+                    if (literalExpr && literalExpr->kind == ExprKind::StructLiteral
+                        && !literalExpr->pathSegments.empty()
+                        && literalExpr->pathSegments.front() == expr->typeAnnotation->name) {
+                        std::vector<std::string> concreteArgNames;
+                        bool allTypeArgs = true;
+                        for (auto& arg : expr->typeAnnotation->genericArgs) {
+                            if (arg.isIntConst || !arg.type) { allTypeArgs = false; break; }
+                            concreteArgNames.push_back(arg.type->name);
+                        }
+                        if (!allTypeArgs) {
+                            std::cerr << "frust: codegen error: '" << expr->typeAnnotation->name
+                                       << "' type arguments must be types, not integers\n";
+                            return nullptr;
+                        }
+                        if (!getOrCreateMonomorphizedStruct(expr->typeAnnotation->name, concreteArgNames)) return nullptr;
+                        std::string mangled = monomorphizedStructName(expr->typeAnnotation->name, concreteArgNames);
+
+                        llvm::Value* instancePtr = isHeap
+                            ? compileHeapStructLiteral(*expr->lhs, mangled)
+                            : compileStructLiteral(*literalExpr, mangled);
+                        if (!instancePtr) return nullptr;
+                        namedValues[expr->text] = instancePtr;
+                        namedValueStructType[expr->text] = mangled;
+                        return instancePtr;
+                    }
                 }
 
                 auto* val = compileExpr(expr->lhs);
@@ -1432,12 +1577,18 @@ private:
         return true;
     }
 
-    llvm::Value* compileStructLiteral(const Expr& expr) {
-        if (expr.pathSegments.empty()) {
+    // typeNameOverride: when non-empty, used instead of the literal's
+    // own bare path name - the generic-struct-construction path in the
+    // Let branch of compileExpr passes the already-monomorphized
+    // mangled name here (e.g. "Box<i64>"), since the literal's own
+    // syntax (`Box { value: 42 }`) never carries the concrete type
+    // arguments itself - LANGUAGE_GAPS.md #4.
+    llvm::Value* compileStructLiteral(const Expr& expr, const std::string& typeNameOverride = "") {
+        if (typeNameOverride.empty() && expr.pathSegments.empty()) {
             std::cerr << "frust: codegen error: struct literal missing a type name\n";
             return nullptr;
         }
-        const std::string& typeName = expr.pathSegments.front();
+        std::string typeName = typeNameOverride.empty() ? expr.pathSegments.front() : typeNameOverride;
         auto typeIt = structTypes.find(typeName);
         if (typeIt == structTypes.end()) {
             std::cerr << "frust: codegen error: unknown struct type '" << typeName << "'\n";
@@ -1482,7 +1633,9 @@ private:
     // counting (a header word, retain/release) - real, separate,
     // deliberately not built here; rejected with a clear error instead
     // of silently behaving like `own`.
-    llvm::Value* compileHeapStructLiteral(const Expr& smartPtrExpr) {
+    // typeNameOverride: see compileStructLiteral's own doc - same
+    // reasoning, for `own Box { ... }`/`raw Box { ... }`.
+    llvm::Value* compileHeapStructLiteral(const Expr& smartPtrExpr, const std::string& typeNameOverride = "") {
         if (smartPtrExpr.smartPtrKind == SmartPtrKind::Shared || smartPtrExpr.smartPtrKind == SmartPtrKind::Weak) {
             std::cerr << "frust: codegen error: 'shared'/'weak' construction isn't implemented yet (needs real reference counting) - only 'own'/'raw' heap construction is\n";
             return nullptr;
@@ -1492,11 +1645,11 @@ private:
             std::cerr << "frust: codegen error: 'own'/'raw' currently only wraps a struct literal, e.g. `own Foo { ... }`\n";
             return nullptr;
         }
-        if (lit->pathSegments.empty()) {
+        if (typeNameOverride.empty() && lit->pathSegments.empty()) {
             std::cerr << "frust: codegen error: struct literal missing a type name\n";
             return nullptr;
         }
-        const std::string& typeName = lit->pathSegments.front();
+        std::string typeName = typeNameOverride.empty() ? lit->pathSegments.front() : typeNameOverride;
         auto typeIt = structTypes.find(typeName);
         if (typeIt == structTypes.end()) {
             std::cerr << "frust: codegen error: unknown struct type '" << typeName << "'\n";

@@ -184,6 +184,15 @@ struct StructDecl {
     std::string name;
     std::vector<StructField> fields;
     SourceLoc loc;
+
+    // `struct Box<T> { value: T }` - LANGUAGE_GAPS.md #4. Empty for an
+    // ordinary (non-generic) struct. When non-empty, Codegen.h does NOT
+    // eagerly create an LLVM struct type for `name` alone - `fields`'
+    // types may reference these parameter names, which only resolve to
+    // real types at a concrete USE site (`Box<i64>`), monomorphized
+    // lazily there (see Codegen.h's genericStructTemplates/
+    // getOrCreateMonomorphizedStruct).
+    std::vector<std::string> genericParams;
 };
 
 struct TypeAliasDecl {
