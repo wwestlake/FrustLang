@@ -24,57 +24,68 @@ Linux counterpart to conditionally compile for. Not being built.
 
 ## 1. Pointer arithmetic + raw dereference (`*ptr`, `ptr + n`)
 
-**Status: OPEN - up next.**
+**Status: DONE - 2026-08-23.** `*ptr` read/write and `ptr + n`/`ptr - n`
+element-stride arithmetic both have real codegen now. Also found and
+fixed a related pre-existing gap while implementing this:
+`resolveType` never checked `TypeExpr::isRawPointer` at all, so
+`raw* i64` previously resolved to plain `i64` (the pointee's VALUE
+type) instead of a pointer - would have made every operation this item
+adds operate on the wrong LLVM type. Fixed as part of this same
+change (`resolveType` now returns a pointer type immediately when
+`isRawPointer` is set, before alias resolution or anything else).
 
-The most foundational open gap. Collections (#3) need indexed pointer
-access; closures (#6) need captured-environment access. Already proven
-to actively block real work this session - `metrics.frust` (the IDE's
-real code-metrics plugin) needed a host-side C++ helper
-(`host_count_occurrences`) specifically because counting repeated
-substring occurrences in pure Frust means re-searching text past a
-previous match, which needs advancing a search position, which needs
-this.
+Scope actually shipped, honestly stated: `*expr`/`*expr = val` only
+work when `expr` is a plain named variable or parameter (an
+`inferRawPointeeTypeName` lookup, mirroring `inferStructTypeName`'s
+"named binding" convention) - dereferencing a compound expression
+directly (e.g. `*(ptr + 1)` inline, with no intermediate `let`) isn't
+supported; bind the arithmetic result to an explicitly `raw* T`-typed
+`let` first, same convention already established for structs. Pointer
+arithmetic supports `ptr + n`/`n + ptr`/`ptr - n`; `ptr - ptr`
+(pointer difference) and `n - ptr` are not supported (would need
+sizeof-based division, a separate, not-yet-needed feature).
 
-Current state (`Codegen.h`, `compileUnary`'s `UnaryOp::Deref` case,
-~line 954): prints "codegen does not support pointer dereference yet"
-and bails - fails loudly rather than silently misbehaving, a real
-asset to build on, not a bug to route around.
+Verified (`test_pointer_arithmetic.frust`, run via `frust_compiler.exe`
+directly): a single `raw* i64` write-then-read round-trip (`*p = 42`,
+confirmed `*p == 42`), and three independently pointer-arithmetic-
+derived pointers (`buf`, `buf + 1`, `buf + 2`) into a real 3-element
+buffer, each written a distinct value and read back correctly at its
+own offset (100/200/300, not all landing on the same slot) - real,
+hand-predicted exit code (0 = every check passed) matched exactly.
+Full existing `frust_plugin_host` regression suite (every example
+harness) and the JUCE IDE both rebuilt and re-verified clean - this
+touched `resolveType`/`compileUnary`/`compileAssign`/`compileBinary`,
+core codegen paths used everywhere else in the language, so a full
+regression pass (not just the new test) was the actual bar for "done."
 
-Design: Frust's opaque-pointer LLVM strategy means a raw pointer's
-LLVM type carries no pointee-type info (the same reason
-`namedValueStructType` exists as a side table for structs, since a
-struct pointer's real identity is otherwise unrecoverable once behind
-`PointerType::getUnqual`). `*ptr` needs the pointee type from the
-STATIC Frust type (`TypeExpr::isRawPointer`/`.name` for `raw* T` -
-already parsed, zero codegen). Plan: a new side table
-(`namedValueRawPointeeType`, mirroring `namedValueStructType`)
-populated wherever a `raw* T`-typed `let`/param is bound; `*ptr` reads
-it to know the `CreateLoad` type; `*ptr = val` (deref-assignment,
-`compileAssign`) does the matching `CreateStore`; pointer + integer
-arithmetic as a new case in `compileBinary` when one operand's
-declared type is a raw pointer (GEP-based - byte vs. element stride is
-a real design call made during implementation).
+Why it was picked first: the most foundational open gap - collections
+(#3) need indexed pointer access, closures (#6) need captured-
+environment access - and already proven to actively block real work
+this session before it was fixed (`metrics.frust`, the IDE's real
+code-metrics plugin, needed a host-side C++ helper specifically
+because counting repeated substring occurrences in pure Frust means
+re-searching text past a previous match, which needs advancing a
+search position, which needed this).
 
 ## 2. Struct-return type tracking
 
-**Status: OPEN - right after #1.**
-
-`inferStructTypeName` (`Codegen.h`, ~line 306) explicitly doesn't
-handle `ExprKind::Call` - a struct-returning function's result loses
-its type, so `let c: Counter = make_counter(); c.method()` fails with
-"cannot call a method on an expression of unknown struct type"
-(documented workaround already in the frust-library submodule -
-`random.fr`'s header requires direct struct-literal construction
-instead of a factory function because of exactly this).
-
-Now genuinely small to close: this session's `functionDeclsByName`
-registry (built for interface-typed parameters) already maps a call's
-target function to its real declared `FunctionDecl`, including its
-return `TypeExpr`. `inferStructTypeName` just needs a new
-`ExprKind::Call` branch that looks the callee up in that registry and
-checks whether its return type names a known struct. High ergonomic
-payoff (factory-function patterns work) for a small, contained fix -
-worth doing early so later features don't have to route around it.
+**Status: DONE - found already closed, 2026-08-23, while starting
+work on #1.** Was believed open based on the 2026-08-20 audit (which
+never re-checked the actual code, exactly the process gap this
+document's rewrite is meant to fix). Direct re-read of
+`inferStructTypeName` (`Codegen.h`, ~line 315) found it now DOES
+handle `ExprKind::Call` (a dedicated branch, `functionDeclsByName`
+lookup, checks the callee's declared return type against
+`structTypes`) - confirmed via `git log -S` to have landed in commit
+`1512cf2` ("Real heap-allocated struct construction (own/raw)"),
+earlier this same session, as a needed side effect of that work (a
+heap-allocating constructor function like `automation.fr`'s
+`new_ramp`/`new_decay` needed its return type tracked for correctness).
+Scoped to free-function calls only (not method-call results - a
+narrower scope than "fully general," named honestly in the code
+comment itself, not silently overclaimed). No further work needed for
+this item; left numbered here as a record that it's closed, not
+renumbered away.
 
 ## 3. Growable collections (a real `Vec<T>`/dynamic array)
 

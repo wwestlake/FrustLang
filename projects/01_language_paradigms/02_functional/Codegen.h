@@ -184,6 +184,15 @@ private:
     // interface handling), not a plain struct pointer.
     std::unordered_map<std::string, std::string> namedValueInterfaceType;
 
+    // variable/param name -> pointee type name, for `raw* T`-typed
+    // bindings (LANGUAGE_GAPS.md #1). Same reasoning as
+    // namedValueStructType: under opaque pointers, `*ptr`'s
+    // compileUnary has no way to recover what T is from the compiled
+    // llvm::Value alone (a raw pointer's LLVM type carries no pointee
+    // info) - only the STATIC Frust type (TypeExpr::isRawPointer/.name)
+    // ever knew, so it has to be recorded here at the binding site.
+    std::unordered_map<std::string, std::string> namedValueRawPointeeType;
+
     void indexInterfaceDecls(const Program& prog) {
         for (auto* decl : prog.decls) {
             if (decl->kind == DeclKind::Interface) {
@@ -344,6 +353,36 @@ private:
         return std::nullopt;
     }
 
+    // Which pointee type (if any) a `raw* T`-typed expression statically
+    // has, sourced from namedValueRawPointeeType - same "opaque pointer
+    // erases identity" reasoning as inferStructTypeName, one level
+    // simpler: only a plain named variable/param is covered in v1
+    // (LANGUAGE_GAPS.md #1). To dereference the result of pointer
+    // arithmetic (`ptr + n`), bind it to an explicitly `raw* T`-typed
+    // `let` first - the same "anchor the type via a named binding"
+    // convention inferStructTypeName already establishes for structs.
+    std::optional<std::string> inferRawPointeeTypeName(const Expr* expr) {
+        if (!expr) return std::nullopt;
+        if (expr->kind == ExprKind::Identifier) {
+            auto it = namedValueRawPointeeType.find(expr->text);
+            if (it != namedValueRawPointeeType.end()) return it->second;
+        }
+        return std::nullopt;
+    }
+
+    // Builds a minimal, non-arena TypeExpr from just a plain type name -
+    // TypeExpr has no arena-required constructor (a plain struct), so
+    // this is safe to stack-allocate. Lets namedValueRawPointeeType's
+    // stored strings (i64, a struct name, ...) go through the SAME
+    // resolveType() every other type name in this file resolves
+    // through, rather than a second, parallel name-to-llvm::Type switch
+    // that could silently drift out of sync with resolveType's.
+    llvm::Type* resolveTypeByName(const std::string& name) {
+        TypeExpr t;
+        t.name = name;
+        return resolveType(&t);
+    }
+
     llvm::Type* resolveType(const TypeExpr* type, int depth = 0) {
         if (!type) return llvm::Type::getInt64Ty(context); // untyped => default i64
 
@@ -351,6 +390,17 @@ private:
             std::cerr << "frust: codegen error: type alias cycle involving '" << type->name << "'\n";
             return llvm::Type::getInt64Ty(context);
         }
+
+        // `raw* T` is always a pointer, regardless of what T names -
+        // LANGUAGE_GAPS.md #1. Checked before alias resolution and
+        // everything else below: this was a real, pre-existing gap -
+        // resolveType previously ignored isRawPointer entirely and
+        // resolved `raw* i64` to plain i64 (the pointee's VALUE type,
+        // via the primitive-name check below), not a pointer. Found
+        // while building this pass's deref/pointer-arithmetic support,
+        // which needs a raw*-typed value to actually BE an LLVM pointer
+        // for CreateGEP/CreateLoad/CreateStore to work at all.
+        if (type->isRawPointer) return llvm::PointerType::getUnqual(context);
 
         auto aliasIt = typeAliases.find(type->name);
         if (aliasIt != typeAliases.end()) return resolveType(aliasIt->second, depth + 1);
@@ -717,6 +767,15 @@ private:
                 auto* val = compileExpr(expr->lhs);
                 if (!val) return nullptr;
 
+                // Record the pointee type for a `raw* T`-typed let,
+                // regardless of which storage branch below actually
+                // runs (plain/mut/struct) - this is bookkeeping for
+                // compileUnary's Deref case (LANGUAGE_GAPS.md #1), not
+                // a change to how the value itself gets stored.
+                if (expr->typeAnnotation && expr->typeAnnotation->isRawPointer) {
+                    namedValueRawPointeeType[expr->text] = expr->typeAnnotation->name;
+                }
+
                 // `let x: SomeInterface = <concrete struct value>;` - wrap
                 // the concrete pointer as a fat pointer for that interface,
                 // using the vtable buildVtable already emitted for this
@@ -871,6 +930,33 @@ private:
         auto* rhs = compileExpr(expr.rhs);
         if (!lhs || !rhs) return nullptr;
 
+        // Pointer + integer arithmetic (`raw* T`) - LANGUAGE_GAPS.md #1.
+        // Checked before anything else below: a raw pointer's LLVM type
+        // is an opaque `ptr`, indistinguishable from String/a struct
+        // pointer/any other pointer-shaped value in this file, so only
+        // the STATIC AST-level type (inferRawPointeeTypeName) can say
+        // "this operand is actually a raw pointer, do GEP-based element-
+        // stride arithmetic, not integer add/sub." `ptr - n` is
+        // supported (negate the offset, same GEP); `n - ptr` and
+        // `ptr - ptr` (pointer difference) are not - a real, separate
+        // feature (needs sizeof-based division), not attempted here.
+        if (expr.binaryOp == BinaryOp::Add || expr.binaryOp == BinaryOp::Sub) {
+            auto lhsPointee = inferRawPointeeTypeName(expr.lhs);
+            if (lhsPointee) {
+                llvm::Type* elemTy = resolveTypeByName(*lhsPointee);
+                llvm::Value* offset = (expr.binaryOp == BinaryOp::Sub)
+                    ? builder.CreateNeg(rhs, "negoffset") : rhs;
+                return builder.CreateGEP(elemTy, lhs, offset, "ptraddtmp");
+            }
+            if (expr.binaryOp == BinaryOp::Add) {
+                auto rhsPointee = inferRawPointeeTypeName(expr.rhs);
+                if (rhsPointee) {
+                    llvm::Type* elemTy = resolveTypeByName(*rhsPointee);
+                    return builder.CreateGEP(elemTy, rhs, lhs, "ptraddtmp");
+                }
+            }
+        }
+
         if (lhs->getType()->isVectorTy() || rhs->getType()->isVectorTy()) {
             return compileVectorBinary(expr, lhs, rhs);
         }
@@ -936,10 +1022,11 @@ private:
         return nullptr;
     }
 
-    // Deref (`*expr`, for `raw* T`) isn't handled here - out of scope for
-    // now (same "not yet" status as most of the smart-pointer system),
-    // falls through to the same "unsupported expression kind" signal as
-    // before this existed rather than silently misbehaving.
+    // Deref (`*expr`, for `raw* T`) - LANGUAGE_GAPS.md #1. Reads the
+    // pointee type from namedValueRawPointeeType (inferRawPointeeTypeName)
+    // rather than from `operand`'s own LLVM type, which - like every
+    // other pointer-shaped value in this file - is opaque and carries no
+    // pointee info.
     llvm::Value* compileUnary(const Expr& expr) {
         auto* operand = compileExpr(expr.lhs);
         if (!operand) return nullptr;
@@ -951,9 +1038,16 @@ private:
                     : builder.CreateNeg(operand, "negtmp");
             case UnaryOp::Not:
                 return builder.CreateNot(operand, "nottmp");
-            case UnaryOp::Deref:
-                std::cerr << "frust: codegen does not support pointer dereference yet\n";
-                return nullptr;
+            case UnaryOp::Deref: {
+                auto pointeeTypeName = inferRawPointeeTypeName(expr.lhs);
+                if (!pointeeTypeName) {
+                    std::cerr << "frust: codegen error: cannot dereference - only a raw*-typed "
+                                 "named variable or parameter can be dereferenced today\n";
+                    return nullptr;
+                }
+                llvm::Type* pointeeTy = resolveTypeByName(*pointeeTypeName);
+                return builder.CreateLoad(pointeeTy, operand, "derefload");
+            }
         }
         return nullptr;
     }
@@ -1025,6 +1119,30 @@ private:
             val = coerceToType(val, elemTy);
             llvm::Value* updated = builder.CreateInsertElement(current, val, idxVal);
             builder.CreateStore(updated, vecAlloca);
+            return val;
+        }
+
+        if (expr.lhs->kind == ExprKind::Unary && expr.lhs->unaryOp == UnaryOp::Deref) {
+            // `*ptr = value` - LANGUAGE_GAPS.md #1's write side. Same
+            // pointee-type lookup as compileUnary's read side
+            // (inferRawPointeeTypeName), needed here too so the stored
+            // value gets coerced to the right width/kind before the
+            // store (e.g. an i32 literal into an `raw* i64` target).
+            const Expr& derefTarget = *expr.lhs->lhs;
+            auto pointeeTypeName = inferRawPointeeTypeName(&derefTarget);
+            if (!pointeeTypeName) {
+                std::cerr << "frust: codegen error: cannot assign through a dereference - only a "
+                             "raw*-typed named variable or parameter can be dereferenced today\n";
+                return nullptr;
+            }
+            auto* ptrVal = compileExpr(&derefTarget);
+            if (!ptrVal) return nullptr;
+            auto* val = compileExpr(expr.rhs);
+            if (!val) return nullptr;
+
+            llvm::Type* pointeeTy = resolveTypeByName(*pointeeTypeName);
+            val = coerceToType(val, pointeeTy);
+            builder.CreateStore(val, ptrVal);
             return val;
         }
 
@@ -2141,6 +2259,7 @@ public:
 
         namedValues.clear();
         namedValueStructType.clear();
+        namedValueRawPointeeType.clear();
 
         auto argIt = llvmFn->args().begin();
         if (fn.isMethod) {
@@ -2162,6 +2281,9 @@ public:
             // through the vtable instead of failing "unknown struct type".
             if (auto ifaceName = resolveInterfaceName(p.type)) {
                 namedValueInterfaceType[p.name] = *ifaceName;
+            }
+            if (p.type && p.type->isRawPointer) {
+                namedValueRawPointeeType[p.name] = p.type->name;
             }
             ++argIt;
         }
