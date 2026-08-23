@@ -150,6 +150,7 @@ const char* ExprKindName(ExprKind kind) {
         case ExprKind::Perform: return "Perform";
         case ExprKind::Resume: return "Resume";
         case ExprKind::Handle: return "Handle";
+        case ExprKind::Closure: return "Closure";
     }
     return "?";
 }
@@ -205,6 +206,15 @@ void PrintExpr(const Expr* expr, int depth) {
         for (size_t i = 0; i < hc.params.size(); ++i) { if (i > 0) std::cout << ", "; std::cout << hc.params[i].name; }
         std::cout << ") =>\n";
         PrintExpr(hc.body, depth + 2);
+    }
+    if (expr->kind == ExprKind::Closure && !expr->params.empty()) {
+        PrintIndent(depth + 1); std::cout << "params:\n";
+        for (auto& p : expr->params) {
+            PrintIndent(depth + 2);
+            std::cout << p.name;
+            if (p.type) { std::cout << ": "; PrintType(p.type, depth + 2); }
+            std::cout << "\n";
+        }
     }
 }
 

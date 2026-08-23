@@ -94,6 +94,7 @@ enum class ExprKind {
     ArrayLiteral,
     BuildTime, Quote, Unquote,
     Perform, Resume, Handle,
+    Closure,
 };
 
 struct Expr;
@@ -147,6 +148,7 @@ struct Expr {
     std::vector<Expr*> statements;    // Block body
     std::vector<StructFieldInit> fields; // StructLiteral
     std::vector<HandleCase> handleCases; // Handle
+    std::vector<Param> params; // Closure params (typeAnnotation = declared return type, lhs = body)
 };
 
 // ---------------------------------------------------------------------

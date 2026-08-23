@@ -29,6 +29,7 @@
 
 #include <iostream>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -205,6 +206,23 @@ private:
     // ever carries it, so construction is special-cased in the Let
     // branch of compileExpr, not in compileCall.
     std::unordered_map<std::string, std::string> namedValueVectorElementType;
+
+    // A closure value (LANGUAGE_GAPS.md #6) is a fat pointer
+    // { ptr code, ptr env } - the exact same shape/mechanism
+    // wrapAsInterface already builds for interface dispatch, reused
+    // here rather than inventing a second representation. The fat
+    // pointer's LLVM type alone can't say what to pass/expect at a
+    // call site (opaque pointers again), so a closure-typed binding's
+    // real param/return LLVM types are recorded here at the closure
+    // literal's construction site and consulted by the call-dispatch
+    // path instead of compileIndirectCall's generic (and wrong, for a
+    // fat pointer) plain-pointer-callee assumption.
+    struct ClosureSignature {
+        std::vector<llvm::Type*> paramTypes;
+        llvm::Type* returnType = nullptr;
+    };
+    std::unordered_map<std::string, ClosureSignature> namedValueClosureSignature;
+    int closureCounter = 0;
 
     // `struct Box<T> { ... }` templates (LANGUAGE_GAPS.md #4) - name ->
     // the AST declaration, NOT an LLVM type. indexStructs() does not
@@ -1035,6 +1053,7 @@ private:
             case ExprKind::Continue: return compileContinue(*expr);
             case ExprKind::StructLiteral: return compileStructLiteral(*expr);
             case ExprKind::SmartPtrNew: return compileHeapStructLiteral(*expr);
+            case ExprKind::Closure: return compileClosureLiteral(*expr);
             case ExprKind::ArrayLiteral: return compileArrayLiteral(*expr);
             case ExprKind::Index: return compileIndex(*expr);
             case ExprKind::Member: return compileMember(*expr);
@@ -1106,6 +1125,22 @@ private:
 
                 auto* val = compileExpr(expr->lhs);
                 if (!val) return nullptr;
+
+                // A closure literal is self-describing (its own params/
+                // return type are right there in `|params| -> Ret { }`,
+                // unlike Vector::new()'s untyped call site above) - so
+                // construction itself needs no Let-anchoring, only the
+                // resulting SIGNATURE needs recording here, under the
+                // bound name, for compileCall's call-dispatch path
+                // (namedValueClosureSignature) to use later instead of
+                // compileIndirectCall's generic (and wrong, for a fat
+                // pointer) plain-pointer-callee assumption.
+                if (expr->lhs->kind == ExprKind::Closure) {
+                    ClosureSignature sig;
+                    for (auto& p : expr->lhs->params) sig.paramTypes.push_back(resolveType(p.type));
+                    sig.returnType = expr->lhs->typeAnnotation ? resolveType(expr->lhs->typeAnnotation) : llvm::Type::getVoidTy(context);
+                    namedValueClosureSignature[expr->text] = sig;
+                }
 
                 // Record the pointee type for a `raw* T`-typed let,
                 // regardless of which storage branch below actually
@@ -1923,6 +1958,20 @@ private:
     llvm::Value* compileCall(const Expr& expr) {
         if (expr.lhs->kind == ExprKind::Member) return compileMethodCall(expr);
 
+        // A closure-typed name (LANGUAGE_GAPS.md #6) - checked before
+        // module.getFunction()/compileIndirectCall's generic dispatch
+        // below, since a closure value is a fat pointer { ptr code, ptr
+        // env }, not the plain single `ptr` callee compileIndirectCall
+        // assumes. Uses the real signature recorded at the closure's
+        // `let`-binding site (namedValueClosureSignature) instead of
+        // compileIndirectCall's hardcoded-i64-return convention.
+        if (expr.lhs->kind == ExprKind::Identifier) {
+            auto sigIt = namedValueClosureSignature.find(expr.lhs->text);
+            if (sigIt != namedValueClosureSignature.end()) {
+                return compileClosureCall(expr, expr.lhs->text, sigIt->second);
+            }
+        }
+
         std::string targetName;
         if (expr.lhs->kind == ExprKind::Identifier) {
             targetName = expr.lhs->text;
@@ -2006,6 +2055,42 @@ private:
     // (purely additive, zero chance of changing what already-verified
     // code compiles to) and match this language's existing "nothing is
     // inferred, everything explicit" character.
+    // Calling a closure-typed value: unpack the fat pointer built by
+    // compileClosureLiteral ({ ptr code, ptr env }) and call code(env,
+    // args...) using the REAL param/return types recorded at the
+    // closure's `let`-binding site - not compileIndirectCall's generic
+    // plain-pointer-callee, hardcoded-i64-return assumption, which would
+    // misinterpret a 2-word fat-pointer aggregate as a bare callee
+    // address entirely.
+    llvm::Value* compileClosureCall(const Expr& expr, const std::string& name, const ClosureSignature& sig) {
+        llvm::Value* fat = compileExpr(expr.lhs);
+        if (!fat) return nullptr;
+        if (expr.args.size() != sig.paramTypes.size()) {
+            std::cerr << "frust: codegen error: closure '" << name << "' expects " << sig.paramTypes.size()
+                       << " argument(s), got " << expr.args.size() << "\n";
+            return nullptr;
+        }
+
+        llvm::Value* codePtr = builder.CreateExtractValue(fat, {0}, "closure.code");
+        llvm::Value* envPtr = builder.CreateExtractValue(fat, {1}, "closure.env");
+
+        std::vector<llvm::Value*> args;
+        args.push_back(envPtr);
+        std::vector<llvm::Type*> trampolineParamTypes;
+        trampolineParamTypes.push_back(llvm::PointerType::getUnqual(context));
+        for (size_t i = 0; i < expr.args.size(); ++i) {
+            llvm::Value* v = compileExpr(expr.args[i]);
+            if (!v) return nullptr;
+            v = coerceToType(v, sig.paramTypes[i]);
+            if (!v) return nullptr;
+            args.push_back(v);
+            trampolineParamTypes.push_back(sig.paramTypes[i]);
+        }
+
+        llvm::FunctionType* fnTy = llvm::FunctionType::get(sig.returnType, trampolineParamTypes, false);
+        return builder.CreateCall(fnTy, codePtr, args, sig.returnType->isVoidTy() ? "" : "closurecalltmp");
+    }
+
     llvm::Value* compileIndirectCall(const Expr& expr) {
         llvm::Value* calleeVal = compileExpr(expr.lhs);
         if (!calleeVal) return nullptr;
@@ -2560,6 +2645,183 @@ private:
         return fat;
     }
 
+    // Recursively collects free-variable references in a closure body -
+    // an Identifier that names something already bound in the ENCLOSING
+    // scope (namedValues, as of the closure literal's own construction
+    // site) but isn't one of the closure's own parameters. Same
+    // recursive-walk shape as hasPerform (lhs/rhs/condExpr/elseExpr/
+    // statements/args/handleCases) but has to be a member (not a free
+    // function like hasPerform) since it needs namedValues/
+    // module.getFunction() to tell "capture the outer variable" apart
+    // from "a known top-level function name" and "purely local to the
+    // closure body" - a name only ever bound INSIDE the closure (e.g. a
+    // nested `let`) is never in the OUTER namedValues at this point, so
+    // it's excluded for free, no separate "bound names grows as we
+    // descend" tracking needed. Named limitation: no shadowing
+    // awareness - a closure-body `let` that reuses an outer variable's
+    // name is misidentified as referencing the outer capture. Avoid
+    // reusing a captured name for a closure-local, same as every other
+    // real, bounded v1 cut in this file.
+    void collectFreeVariables(const Expr* node, const std::set<std::string>& boundNames,
+                               std::set<std::string>& seen, std::vector<std::string>& order) {
+        if (!node) return;
+        if (node->kind == ExprKind::Identifier) {
+            const std::string& name = node->text;
+            if (!boundNames.count(name) && namedValues.count(name) && !seen.count(name) && !module.getFunction(name)) {
+                seen.insert(name);
+                order.push_back(name);
+            }
+            return;
+        }
+        collectFreeVariables(node->lhs, boundNames, seen, order);
+        collectFreeVariables(node->rhs, boundNames, seen, order);
+        collectFreeVariables(node->condExpr, boundNames, seen, order);
+        collectFreeVariables(node->elseExpr, boundNames, seen, order);
+        for (auto* s : node->statements) collectFreeVariables(s, boundNames, seen, order);
+        for (auto* a : node->args) collectFreeVariables(a, boundNames, seen, order);
+        for (auto& hc : node->handleCases) collectFreeVariables(hc.body, boundNames, seen, order);
+    }
+
+    // `|params| -> RetType { body }` (LANGUAGE_GAPS.md #6). Represented
+    // as the exact same fat pointer wrapAsInterface builds for interface
+    // dispatch - { ptr code, ptr env } - reused deliberately, not a
+    // second mechanism. Capture is BY VALUE ONLY, copied into a real,
+    // heap-allocated (malloc'd) env struct at the closure literal's own
+    // construction site - a real, named v1 limitation: by-reference
+    // capture would need lifetime/escape analysis this project doesn't
+    // have. `perform` inside a closure body is rejected outright - no
+    // coroutine-trampoline machinery exists for a closure's own
+    // generated function.
+    llvm::Value* compileClosureLiteral(const Expr& expr) {
+        if (hasPerform(expr.lhs)) {
+            std::cerr << "frust: codegen error: 'perform' inside a closure body isn't supported yet\n";
+            return nullptr;
+        }
+
+        std::set<std::string> paramNames;
+        for (auto& p : expr.params) paramNames.insert(p.name);
+        std::set<std::string> seen;
+        std::vector<std::string> captured;
+        collectFreeVariables(expr.lhs, paramNames, seen, captured);
+
+        std::vector<llvm::Type*> capturedTypes;
+        for (auto& name : captured) capturedTypes.push_back(namedValues[name]->getType());
+        llvm::StructType* envTy = llvm::StructType::get(context, capturedTypes);
+
+        uint64_t envSize = module.getDataLayout().getTypeAllocSize(envTy);
+        llvm::Value* envPtr = builder.CreateCall(getMallocFn(),
+            {llvm::ConstantInt::get(llvm::Type::getInt64Ty(context), envSize)});
+        for (size_t i = 0; i < captured.size(); ++i) {
+            llvm::Value* fieldPtr = builder.CreateStructGEP(envTy, envPtr, (unsigned)i);
+            builder.CreateStore(namedValues[captured[i]], fieldPtr);
+        }
+
+        std::vector<llvm::Type*> paramTypes;
+        for (auto& p : expr.params) paramTypes.push_back(resolveType(p.type));
+        llvm::Type* retType = expr.typeAnnotation ? resolveType(expr.typeAnnotation) : llvm::Type::getVoidTy(context);
+
+        std::vector<llvm::Type*> trampolineParamTypes;
+        trampolineParamTypes.push_back(llvm::PointerType::getUnqual(context)); // env
+        for (auto* t : paramTypes) trampolineParamTypes.push_back(t);
+        llvm::FunctionType* trampolineTy = llvm::FunctionType::get(retType, trampolineParamTypes, false);
+        std::string trampolineName = "closure$" + std::to_string(closureCounter++);
+        llvm::Function* trampolineFn = llvm::Function::Create(trampolineTy, llvm::Function::InternalLinkage, trampolineName, module);
+
+        // Save the enclosing (currently-being-compiled) function's whole
+        // scope - compiling the trampoline body repoints the builder and
+        // every namedValue* map at a fresh function entirely, and none
+        // of that may leak back once this closure literal is done.
+        auto savedIP = builder.saveIP();
+        auto savedNamedValues = namedValues;
+        auto savedStructType = namedValueStructType;
+        auto savedRawPointee = namedValueRawPointeeType;
+        auto savedVectorElem = namedValueVectorElementType;
+        auto savedInterfaceType = namedValueInterfaceType;
+        auto savedClosureSig = namedValueClosureSignature;
+        llvm::Type* savedRetType = currentFnRetType;
+        bool savedBlockTerminated = blockTerminated;
+
+        auto restoreState = [&]() {
+            builder.restoreIP(savedIP);
+            namedValues = savedNamedValues;
+            namedValueStructType = savedStructType;
+            namedValueRawPointeeType = savedRawPointee;
+            namedValueVectorElementType = savedVectorElem;
+            namedValueInterfaceType = savedInterfaceType;
+            namedValueClosureSignature = savedClosureSig;
+            currentFnRetType = savedRetType;
+            blockTerminated = savedBlockTerminated;
+        };
+
+        namedValues.clear();
+        namedValueStructType.clear();
+        namedValueRawPointeeType.clear();
+        namedValueVectorElementType.clear();
+        namedValueInterfaceType.clear();
+        namedValueClosureSignature.clear();
+
+        llvm::BasicBlock* bb = llvm::BasicBlock::Create(context, "entry", trampolineFn);
+        builder.SetInsertPoint(bb);
+        blockTerminated = false;
+        currentFnRetType = retType;
+
+        auto argIt = trampolineFn->args().begin();
+        llvm::Value* envArg = &*argIt;
+        envArg->setName("env");
+        ++argIt;
+
+        for (size_t i = 0; i < captured.size(); ++i) {
+            const std::string& name = captured[i];
+            llvm::Value* fieldPtr = builder.CreateStructGEP(envTy, envArg, (unsigned)i);
+            namedValues[name] = builder.CreateLoad(capturedTypes[i], fieldPtr, name);
+            if (savedStructType.count(name)) namedValueStructType[name] = savedStructType[name];
+            if (savedRawPointee.count(name)) namedValueRawPointeeType[name] = savedRawPointee[name];
+            if (savedVectorElem.count(name)) namedValueVectorElementType[name] = savedVectorElem[name];
+            if (savedInterfaceType.count(name)) namedValueInterfaceType[name] = savedInterfaceType[name];
+            if (savedClosureSig.count(name)) namedValueClosureSignature[name] = savedClosureSig[name];
+        }
+
+        for (auto& p : expr.params) {
+            argIt->setName(p.name);
+            namedValues[p.name] = &*argIt;
+            if (auto structName = resolveStructTypeName(p.type)) namedValueStructType[p.name] = *structName;
+            if (auto ifaceName = resolveInterfaceName(p.type)) namedValueInterfaceType[p.name] = *ifaceName;
+            if (p.type && p.type->isRawPointer) namedValueRawPointeeType[p.name] = p.type->name;
+            ++argIt;
+        }
+
+        llvm::Value* result = compileExpr(expr.lhs);
+        if (!blockTerminated) {
+            if (retType->isVoidTy()) {
+                builder.CreateRetVoid();
+            } else if (result) {
+                builder.CreateRet(coerceToType(result, retType));
+            } else {
+                std::cerr << "frust: codegen error: closure body has no return value\n";
+                restoreState();
+                trampolineFn->eraseFromParent();
+                return nullptr;
+            }
+        }
+
+        std::string errMsg;
+        llvm::raw_string_ostream os(errMsg);
+        bool verifyFailed = llvm::verifyFunction(*trampolineFn, &os);
+
+        restoreState();
+
+        if (verifyFailed) {
+            std::cerr << "frust: LLVM verification failed for closure: " << os.str() << "\n";
+            trampolineFn->eraseFromParent();
+            return nullptr;
+        }
+
+        llvm::Value* fat = llvm::UndefValue::get(fatPointerType());
+        fat = builder.CreateInsertValue(fat, trampolineFn, {0});
+        fat = builder.CreateInsertValue(fat, envPtr, {1});
+        return fat;
+    }
+
     // Call-site argument coercion, interface-aware. Was: every call site
     // just did coerceToType(v, argTypeIt->getType()), which only ever sees
     // the resolved llvm::Type* - fine for numeric widening, but every
@@ -2640,6 +2902,7 @@ public:
         namedValueStructType.clear();
         namedValueRawPointeeType.clear();
         namedValueVectorElementType.clear();
+        namedValueClosureSignature.clear();
 
         auto argIt = llvmFn->args().begin();
         if (fn.isMethod) {

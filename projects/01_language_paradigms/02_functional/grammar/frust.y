@@ -771,6 +771,18 @@ primary_expr:
   | smart_ptr_expr_qualifier postfix_expr %prec UNARY_PREC {
         $$ = arena.NewExpr(ExprKind::SmartPtrNew, ToSourceLoc(@1)); $$->smartPtrKind = $1; $$->lhs = $2;
     }
+  // Closure literal. "|" only ever appears here as a fresh primary_expr
+  // start (no expr has been reduced yet) versus as the infix BitOr
+  // operator (which always follows an already-reduced expr) - different
+  // parser states, no conflict with `expr "|" expr` above. No "||" token
+  // exists in the lexer, so the zero-param case (`|| -> T { ... }`) is
+  // just two adjacent PIPE tokens with an empty param_list_opt between.
+  | "|" param_list_opt "|" return_type_opt block_expr {
+        $$ = arena.NewExpr(ExprKind::Closure, ToSourceLoc(@1));
+        $$->params = std::move($2);
+        $$->typeAnnotation = $4;
+        $$->lhs = $5;
+    }
 ;
 
 %%

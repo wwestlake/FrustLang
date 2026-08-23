@@ -249,17 +249,36 @@ rebuilt and re-verified clean.
 
 ## 6. Closures
 
-**Status: OPEN.**
+**Status: DONE.**
 
-Only the named-function + packed-buffer pattern works today (see
-`core/src/task.fr`/`curry.fr`) - a function's address can be taken and
-called back indirectly (`compileIndirectCall`/`compileTypedIndirectCall`),
-but there's no way to capture surrounding variables into an anonymous
-callable. Needs a heap-allocated captured-environment representation,
-a fat pointer (code address + environment address), and a calling
-convention that passes the environment implicitly - benefits from #1's
-pointer work and this session's already-proven heap-struct-literal
-pattern (`compileHeapStructLiteral`, built for `own`).
+`|params| -> RetType { body }` real closure literals, represented as
+the exact same fat pointer (`{ ptr code, ptr env }`) `wrapAsInterface`
+already builds for interface dispatch - deliberate reuse, not a second
+mechanism. Capture is by value only, copied into a real heap-allocated
+(malloc'd) env struct at the closure literal's own construction site -
+a named, deliberate v1 limitation (by-reference capture would need
+real lifetime/escape analysis this project doesn't have). Free
+variables are found via a new recursive AST walk
+(`collectFreeVariables`, mirrors `hasPerform`'s shape); `perform`
+inside a closure body is rejected outright (no coroutine-trampoline
+machinery for a closure's own generated function). A closure is
+self-describing (params/return type are in its own literal syntax,
+unlike `Vector::new()`), but its call-time SIGNATURE still has to be
+recorded under its bound name at the `let` site
+(`namedValueClosureSignature`) so `compileCall` can dispatch to it
+correctly - checked before `compileIndirectCall`'s generic (and wrong,
+for a fat-pointer aggregate) plain-pointer-callee assumption. Verified
+with a real test: two independent closures each capturing a different
+outer variable, called with real arguments, both correct
+(`add_base(5)` with `base=10` → 15; `scaled(7)` with `factor=3` → 21).
+Known, named limitation: no shadowing awareness in capture analysis -
+a closure-body `let` reusing an outer variable's name is misidentified
+as referencing the outer capture; avoid reusing captured names for
+closure-locals. Also known limitation: only `let`-bound (named)
+closures can be called - an immediately-invoked closure literal
+(`|x| {...}(5)`) isn't handled by `compileCall`'s dispatch yet, and a
+closure-typed function PARAMETER isn't wired up either - both real,
+separate, smaller follow-ons if ever needed, not silently folded in.
 
 ## 7. `own`/`shared`/`weak` smart pointers (real reference counting / move semantics)
 
