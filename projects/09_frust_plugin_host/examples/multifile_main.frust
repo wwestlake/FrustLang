@@ -1,0 +1,7 @@
+manifest "{\"name\":\"multifile_test\",\"version\":\"1.0.0\"}";
+
+use self::helper;
+
+pub fn run_it(x: i64) -> i64 = {
+    helper_double(x) + 1
+}

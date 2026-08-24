@@ -343,16 +343,25 @@ construction is unchanged from its prior heap-malloc-only behavior;
 
 ## 8. Multi-file plugins (`frust_plugin_host`)
 
-**Status: OPEN. Tooling/DX, not a core language gap - lower priority
-than 1-7.**
+**Status: DONE.**
 
-`frust_plugin_load()` reads exactly one `.frust` file - no
-`use self::`-style multi-file plugin support (unlike frate pods, which
-do support this via an explicit compiled file list in `lib.fr`).
-Confirmed directly: `ModuleLoader.cpp`'s `ResolveImports` treats
-`use self::X` as a no-op unless frate passes the referenced file in as
-a separate compiler argument - `frust_plugin_load` has no such
-mechanism. Real gap for any plugin bigger than one file.
+`frust_plugin_load()`'s primary file's own `use self::X;` lines now
+resolve against sibling files in the same directory (`X.frust` tried
+first - the plugin-file convention, then `X.fr` - the library/pod-file
+convention), merged directly into the compiled program. New shared
+helper `ResolveSelfUses` (`ModuleLoader.h`/`.cpp`) implements the
+resolution once; `ResolveImports`' existing pod-import self-use loop
+was refactored to call it too rather than keep a second, duplicate
+copy - which also fixed a real latent bug in that loop along the way
+(it checked `!errors.empty()` against the whole shared/accumulated
+errors vector rather than comparing counts before/after, the same
+class of bug already fixed once in the OUTER pod loop - meant one
+early self-use file failing inside a multi-file POD would silently
+poison every later self-use file in that same pod too). Verified with
+a real two-file plugin (a main file with `use self::helper;` calling a
+function only the sibling file declares) - hand-predicted result
+matched exactly. Full `frust_plugin_host` regression sweep (15
+examples, including the new one) and JUCE IDE rebuild both clean.
 
 ## 9. Bool-across-FFI convention
 

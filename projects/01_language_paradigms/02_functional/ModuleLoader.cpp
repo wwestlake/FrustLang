@@ -21,6 +21,51 @@ static Program* ParseSource(std::istream& input, AstArena& arena, std::vector<st
     return result;
 }
 
+bool ResolveSelfUses(Program* prog, AstArena& arena, const std::string& baseDir, std::vector<std::string>& errors) {
+    if (!prog) return false;
+    bool success = true;
+
+    // Snapshot first - the loop body appends to prog->decls, which
+    // would invalidate a live iterator over the same vector.
+    std::vector<Decl*> selfUseDecls;
+    for (auto* d : prog->decls) {
+        if (d->kind == DeclKind::Use && d->useDecl->isSelfUse) selfUseDecls.push_back(d);
+    }
+
+    for (auto* selfDecl : selfUseDecls) {
+        if (selfDecl->useDecl->pathSegments.empty()) continue;
+        std::string modName = selfDecl->useDecl->pathSegments.front();
+
+        juce::File base(baseDir);
+        juce::File candidate = base.getChildFile(juce::String(modName) + ".frust");
+        if (!candidate.existsAsFile()) {
+            candidate = base.getChildFile(juce::String(modName) + ".fr");
+        }
+        std::string modPath = candidate.getFullPathName().toStdString();
+        std::ifstream modFile(modPath);
+        if (!modFile.is_open()) {
+            errors.push_back("ModuleLoader: use self::" + modName + " names a missing file (tried .frust then .fr next to the importing file): " + modPath);
+            success = false;
+            continue;
+        }
+
+        // Same "errors is shared/accumulated across every self-use this
+        // call processes" reasoning as ResolveImports' own pod loop -
+        // compare the count before/after THIS file, not whether the
+        // shared vector is empty overall.
+        size_t errorsBefore = errors.size();
+        Program* modProg = ParseSource(modFile, arena, errors);
+        if (!modProg || errors.size() > errorsBefore) {
+            errors.push_back("ModuleLoader: failed to parse '" + modPath + "' for use self::" + modName);
+            success = false;
+            continue;
+        }
+        prog->decls.insert(prog->decls.end(), modProg->decls.begin(), modProg->decls.end());
+    }
+
+    return success;
+}
+
 bool ResolveImports(Program* prog, AstArena& arena, std::vector<std::string>& errors) {
     if (!prog) return false;
 
@@ -89,38 +134,16 @@ bool ResolveImports(Program* prog, AstArena& arena, std::vector<std::string>& er
         // lib.fr's own `use self::X;` lines name sibling files (frate's
         // explicit build-inclusion mechanism) that frate would pass to
         // frust_compiler directly as separate arguments for an in-pod
-        // build - cross-pod import has no such argument list, so it has
-        // to walk the same self-use decls itself and pull each file's
-        // declarations in, or a multi-file pod's actual content (almost
-        // all of it, for a pod like core where lib.fr is just the
-        // self-use list) would silently never get imported at all.
-        // Snapshot first - the loop body appends to podProg->decls, which
-        // would invalidate a live iterator over the same vector.
-        std::vector<Decl*> selfUseDecls;
-        for (auto* d : podProg->decls) {
-            if (d->kind == DeclKind::Use && d->useDecl->isSelfUse) selfUseDecls.push_back(d);
-        }
-        for (auto* selfDecl : selfUseDecls) {
-            if (selfDecl->useDecl->pathSegments.empty()) continue;
-
-            std::string modName = selfDecl->useDecl->pathSegments.front();
-            std::string modPath = cachedPodDir.getChildFile("src")
-                .getChildFile(juce::String(modName) + ".fr")
-                .getFullPathName().toStdString();
-            std::ifstream modFile(modPath);
-            if (!modFile.is_open()) {
-                errors.push_back("ModuleLoader: Pod '" + podName + "' - use self::" + modName + " names a missing file: " + modPath);
-                success = false;
-                continue;
-            }
-
-            Program* modProg = ParseSource(modFile, arena, errors);
-            if (!modProg || !errors.empty()) {
-                errors.push_back("ModuleLoader: Failed to parse " + modName + ".fr for pod '" + podName + "'");
-                success = false;
-                continue;
-            }
-            podProg->decls.insert(podProg->decls.end(), modProg->decls.begin(), modProg->decls.end());
+        // build - cross-pod import has no such argument list, so this
+        // has to walk the same self-use decls itself and pull each
+        // file's declarations in, or a multi-file pod's actual content
+        // (almost all of it, for a pod like core where lib.fr is just
+        // the self-use list) would silently never get imported at all.
+        // Shared with frust_plugin_host's own multi-file support
+        // (LANGUAGE_GAPS.md #8) - same resolution logic, just a
+        // different base directory.
+        if (!ResolveSelfUses(podProg, arena, cachedPodDir.getChildFile("src").getFullPathName().toStdString(), errors)) {
+            success = false;
         }
 
         // A pod's declared frate.json `namespace` (e.g. "frust::core")

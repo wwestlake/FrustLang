@@ -158,6 +158,16 @@ Program* ParsePluginSource(std::istream& input, AstArena& arena, std::vector<std
     return result;
 }
 
+// Parent directory of `path` (everything before the last '/' or '\',
+// or "." if there's no separator at all) - plain string manipulation
+// rather than pulling in juce::File here just for this; ModuleLoader's
+// own ResolveSelfUses (which this calls into) already depends on JUCE
+// internally, that dependency doesn't need to spread to this file too.
+std::string ParentDirOf(const std::string& path) {
+    size_t pos = path.find_last_of("/\\");
+    return (pos == std::string::npos) ? "." : path.substr(0, pos);
+}
+
 // Shared Phase 1 of frust_plugin_load()/frust_plugin_peek_manifest():
 // parse `path` and codegen it into a fresh, not-yet-linked
 // llvm::Module - reports the error (reportError) and returns false on
@@ -185,6 +195,18 @@ bool CompilePluginModule(const std::string& path,
     Program* prog = ParsePluginSource(file, arena, parseErrors);
     if (!parseErrors.empty() || !prog) {
         std::string msg = std::to_string(parseErrors.size()) + " error(s) loading '" + path + "'";
+        for (const auto& err : parseErrors) msg += "\n  " + err;
+        reportError(msg);
+        return false;
+    }
+
+    // Multi-file plugin support (LANGUAGE_GAPS.md #8) - `path`'s own
+    // `use self::X;` lines resolve against sibling files in the same
+    // directory (`X.frust` tried first, then `X.fr`), merged directly
+    // into `prog`. A no-op for a plugin with no self-use decls at all -
+    // every existing single-file plugin is unaffected.
+    if (!ResolveSelfUses(prog, arena, ParentDirOf(path), parseErrors)) {
+        std::string msg = std::to_string(parseErrors.size()) + " error(s) resolving 'use self::' for '" + path + "'";
         for (const auto& err : parseErrors) msg += "\n  " + err;
         reportError(msg);
         return false;
