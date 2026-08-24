@@ -99,6 +99,7 @@ ID     {IDCHAR}({IDCHAR}|{DIGIT})*
 
 {ID}  { return Parser::make_IDENT(std::string(yytext, yyleng), loc_); }
 
+"::<" { return Parser::make_TURBOFISH(loc_); }
 "::"  { return Parser::make_DCOLON(loc_); }
 ".."  { return Parser::make_DOTDOT(loc_); }
 "->"  { return Parser::make_ARROW(loc_); }

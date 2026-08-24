@@ -85,6 +85,17 @@
     SourceLoc ToSourceLoc(const Parser::location_type& loc) {
         return SourceLoc{ loc.begin.line, loc.begin.column };
     }
+    // A function declaration's name may be a qualified path
+    // (`fn Result::ok<T, E>(...)`, LANGUAGE_GAPS.md #5's constructor
+    // sugar) - joins ident_path's segments the exact same way
+    // compileCall already joins a Path CALLEE's segments when building
+    // its lookup key, so `Result::ok(x)` at a call site resolves to the
+    // identically-named declaration with zero extra machinery.
+    std::string JoinPath(const std::vector<std::string>& segments) {
+        std::string joined = segments.front();
+        for (size_t i = 1; i < segments.size(); ++i) joined += "::" + segments[i];
+        return joined;
+    }
     } // namespace
     } // namespace frust
 }
@@ -100,6 +111,7 @@
     TRUE "true" FALSE "false"
     LBRACE "{" RBRACE "}" LPAREN "(" RPAREN ")" LBRACKET "[" RBRACKET "]"
     COMMA "," SEMI ";" COLON ":" DOT "." DCOLON "::" DOTDOT ".."
+    TURBOFISH "::<"
     ARROW "->" FATARROW "=>" EQUAL "="
     EQEQ "==" NEQ "!=" LT "<" GT ">" LE "<=" GE ">="
     PLUS "+" MINUS "-" STAR "*" SLASH "/" PERCENT "%" BANG "!" AMP "&"
@@ -127,7 +139,7 @@
 %left "*" "/" "%"
 %precedence "as"
 %precedence UNARY_PREC
-%left "::" "." "(" "[" "{"
+%left "::" "::<" "." "(" "[" "{"
 
 %type <frust::Decl*> decl trailing_stmt_decl_opt
 %type <std::vector<frust::Decl*>> decl_list
@@ -235,17 +247,17 @@ entry_opt:  %empty { $$ = false; } | "entry"  { $$ = true; } ;
 // -----------------------------------------------------------------------
 
 function_decl:
-    pub_opt unsafe_opt extern_opt entry_opt "fn" IDENT "(" param_list_opt ")" return_type_opt "=" expr {
+    pub_opt unsafe_opt extern_opt entry_opt "fn" ident_path generic_params_opt "(" param_list_opt ")" return_type_opt "=" expr {
         $$ = arena.NewFunctionDecl();
         $$->isPub = $1; $$->isUnsafe = $2; $$->isExtern = $3; $$->isEntry = $4;
-        $$->name = $6; $$->params = std::move($8);
-        $$->returnType = $10; $$->body = $12; $$->loc = ToSourceLoc(@5);
+        $$->name = JoinPath($6); $$->genericParams = std::move($7); $$->params = std::move($9);
+        $$->returnType = $11; $$->body = $13; $$->loc = ToSourceLoc(@5);
     }
-  | pub_opt unsafe_opt extern_opt entry_opt "fn" IDENT "(" param_list_opt ")" return_type_opt ";" {
+  | pub_opt unsafe_opt extern_opt entry_opt "fn" ident_path generic_params_opt "(" param_list_opt ")" return_type_opt ";" {
         $$ = arena.NewFunctionDecl();
         $$->isPub = $1; $$->isUnsafe = $2; $$->isExtern = $3; $$->isEntry = $4;
-        $$->name = $6; $$->params = std::move($8);
-        $$->returnType = $10; $$->body = nullptr; $$->loc = ToSourceLoc(@5);
+        $$->name = JoinPath($6); $$->genericParams = std::move($7); $$->params = std::move($9);
+        $$->returnType = $11; $$->body = nullptr; $$->loc = ToSourceLoc(@5);
     }
 ;
 
@@ -603,6 +615,36 @@ postfix_expr:
     }
   | postfix_expr "[" expr "]" {
         $$ = arena.NewExpr(ExprKind::Index, $1->loc); $$->lhs = $1; $$->rhs = $3;
+    }
+  // Turbofish - explicit call-site type arguments for a generic free
+  // function (LANGUAGE_GAPS.md #4's remaining piece): `identity::<i64>(5)`.
+  // Frust has no type inference (every other generic-instantiation site
+  // - struct literals, Vector::new() - already requires an explicit,
+  // named type somewhere), so a generic function call needs its own
+  // explicit source, and a bare `<...>` right after the callee would be
+  // genuinely ambiguous with the "<"/">" comparison operators (the
+  // exact reason Rust needs turbofish too, not just "<>").
+  //
+  // "::<" is ONE token (frust.l), not "::" followed by "<" - tried and
+  // reverted the two-token version: `ident_path`'s own left-recursive
+  // `ident_path "::" IDENT` rule already owns every "::" that follows
+  // an identifier, and bison's default shift-preference on that
+  // shift/reduce conflict always wins, so a two-token "::" "<" rule
+  // here is provably unreachable (confirmed by a real syntax error,
+  // not theorized) - by the time the parser has shifted the plain "::"
+  // token, it's already committed to expecting another IDENT next, no
+  // matter what rule is written down here. Lexing "::<" as its own
+  // token sidesteps the ambiguity entirely: the grammar never sees a
+  // bare "::" immediately before "<" at all, so there's nothing left
+  // to conflict with ident_path's own rule.
+  //
+  // Doesn't build a Call itself: annotates the callee expr with its
+  // explicit type args, then the ordinary
+  // postfix_expr "(" arg_list_opt ")" rule above applies on top of it
+  // via postfix_expr's own left recursion, exactly as if this weren't
+  // a separate production at all.
+  | postfix_expr "::<" type_arg_list ">" {
+        $$ = $1; $$->explicitGenericArgs = std::move($3);
     }
   | primary_expr { $$ = $1; }
 ;

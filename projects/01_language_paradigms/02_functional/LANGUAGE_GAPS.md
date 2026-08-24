@@ -150,14 +150,23 @@ made during implementation, not pre-decided here.
 
 ## 4. Generics (real, user-definable types/functions)
 
-**Status: PARTIAL (structs) - 2026-08-23.** Generic STRUCTS are real -
-`struct Box<T> { value: T }`, `struct Pair<A, B> { first: A, second: B
-}` - monomorphized (real per-instantiation LLVM struct types, not type
-erasure/boxing), matching the project's own stated "zero-overhead,
-aiming for the iron" philosophy (`FRUST_LANG_SPEC.md` section 2.1).
-Generic FREE FUNCTIONS and generic `impl` methods are explicitly OUT
-OF SCOPE for this pass - a real, separate, larger follow-on (see
-below), not silently folded in.
+**Status: PARTIAL (structs + free functions; methods still open) -
+2026-08-24.** Generic STRUCTS are real - `struct Box<T> { value: T }`,
+`struct Pair<A, B> { first: A, second: B }` - monomorphized (real
+per-instantiation LLVM struct types, not type erasure/boxing),
+matching the project's own stated "zero-overhead, aiming for the iron"
+philosophy (`FRUST_LANG_SPEC.md` section 2.1). **Generic FREE
+FUNCTIONS are now real too**: `fn identity<T>(x: T) -> T`, called with
+explicit turbofish type arguments (`identity::<i64>(5)`) - Frust has
+no type inference, so a generic call needs its own explicit source,
+same as every other generic-instantiation site in this codebase.
+`fn Result::ok<T, E>(v: T) -> Result<T, E>` also works - a function's
+declared NAME may now be a qualified path (`ident_path` instead of a
+bare `IDENT`), which is what gives Result/Option their real
+constructor sugar (#5). Generic `impl` METHODS (`impl<T> Box<T> {
+fn get(self) -> T }`) remain genuinely not started - `impl_decl` still
+has no generic-parameter-list syntax at all; the qualified-free-
+function trick above covers what #5 actually needed without them.
 
 New grammar: `struct Name<T>` / `struct Name<A, B>` (`generic_params_opt`,
 a bare identifier list - distinct from `type_generic_args_opt`, which
@@ -187,10 +196,19 @@ Scope cuts, named honestly:
 - Nested generics (a field typed `Vector<T>` inside `struct Box<T>`)
   are not substituted - `resolveType` would resolve `T` as an unknown
   name and fall through to `i64`. Real, deferred limitation.
-- Generic free functions/methods (`fn identity<T>(x: T) -> T`,
-  `impl<T> Box<T> { ... }`) - not started. `struct_decl`/`function_decl`
-  still have no type-parameter list in the grammar for functions/impls,
-  only for `struct_decl` now.
+- Generic free functions now DONE (turbofish call syntax + lazy
+  monomorphization, mirroring the struct approach exactly - see the
+  updated status above). Generic `impl` methods remain not started -
+  `impl_decl` still has no type-parameter list in the grammar at all.
+- Monomorphization for explicit-generic-arg CALLS happens in a
+  dedicated pre-scan pass (`compileProgram`'s "Pass 1.5") BEFORE
+  regular function bodies compile, specifically because
+  `getOrCreateMonomorphizedFunction` is not safe to call reentrantly
+  (`compileFunction` doesn't save/restore `namedValues`/the builder's
+  insert point, only its own coroutine-context locals) - a generic
+  function's OWN body calling ANOTHER explicit-generic-arg function is
+  therefore not supported yet (a clear compile error, not silent
+  corruption, if it's ever attempted).
 
 Verified (`test_generics.frust`, `frust_compiler.exe` direct-run): two
 DIFFERENT instantiations of the same generic struct (`Box<i64>` and
@@ -198,13 +216,27 @@ DIFFERENT instantiations of the same generic struct (`Box<i64>` and
 per-type monomorphization, not one hardcoded case; a two-type-parameter
 struct (`Pair<i64, f32>`, the real stand-in shape for #5's eventual
 `Result<T, E>`) with two different field types also correct. Real,
-hand-predicted exit code matched exactly. Full existing
-`frust_plugin_host` regression suite and the JUCE IDE both rebuilt and
-re-verified clean.
+hand-predicted exit code matched exactly.
+
+Generic free functions verified separately (`test_generic_fn.frust`):
+`identity::<i64>(42)` and `identity::<f64>(3.5)` both correct in the
+SAME program (two different instantiations of one template, same
+"prove it's not one hardcoded case" discipline). Also required a real
+grammar fix found empirically, not theorized: a `postfix_expr "::" "<"
+type_arg_list ">"` rule was provably unreachable (confirmed by an
+actual syntax error) - `ident_path`'s own left-recursive `"::" IDENT`
+rule already owns every `::` following an identifier, and bison's
+default shift-preference always wins that conflict, so no amount of
+grammar-level cleverness at the `postfix_expr` level could ever reach
+the new rule. Fixed by lexing `"::<"` as its own single token
+(`frust.l`) - the ambiguity disappears entirely once the parser never
+sees a bare `::` immediately before `<` in the first place. Full
+`frust_plugin_host` regression suite (16 examples) and the JUCE IDE
+both rebuilt and re-verified clean.
 
 ## 5. Result/Option (structured error handling)
 
-**Status: PARTIAL - 2026-08-23.** `Result<T, E>`/`Option<T>` now exist
+**Status: DONE - 2026-08-24, constructor sugar included.** `Result<T, E>`/`Option<T>` now exist
 as real, usable generic structs -
 `06_frust_library/core/src/result.fr`/`option.fr` - built as real
 Frust code using #4's generics, not another compiler intrinsic like
@@ -227,15 +259,30 @@ fix relies on) only ever checked a struct's BARE name against
 Fixed by having `resolveStructTypeName` monomorphize and return the
 mangled name too, mirroring `resolveType`'s own generic-struct branch.
 
-Honest limitations, stated directly rather than worked around: no
-`Result::ok(x)`/`Option::some(x)` constructor sugar (needs generic FREE
-FUNCTIONS - explicitly out of scope for #4's structs-only pass this
-session) - construct via a direct struct literal instead
-(`Result { is_ok: true, ok_value: 42 }`); no enforced safety against
-reading `.ok_value` on an `Err`/`.value` on a `None` (same "no
-default-value story, caller's responsibility" stance every struct
-literal already has in this codebase). `06_frust_library/core`'s
-existing sentinel-return convention (null/-1/0) is UNCHANGED - adopting
+**Constructor sugar now real** (2026-08-24, once #4's generic free
+functions landed): `Result::ok`/`Result::err`/`Option::some`/
+`Option::none` are real generic free functions whose declared NAME is
+itself a qualified path (`fn Result::ok<T, E>(v: T) -> Result<T, E>`):
+
+```frust
+let r: Result<i64, String> = Result::ok::<i64, String>(42);
+let e: Result<i64, String> = Result::err::<i64, String>("division by zero");
+let o: Option<i64> = Option::some::<i64>(99);
+let n: Option<i64> = Option::none::<i64>();
+```
+
+Verified (`test_result_sugar.frust`/`test_option_sugar.frust`,
+`frust_compiler.exe` direct-run): both Ok/Err and Some/None branches,
+including the zero-argument `Option::none::<i64>()` case (T comes
+purely from the turbofish, no argument to infer it from) - hand-
+predicted exit codes matched exactly.
+
+Remaining honest limitation: no enforced safety against reading
+`.ok_value` on an `Err`/`.value` on a `None` (same "no default-value
+story, caller's responsibility" stance every struct literal already
+has in this codebase - real pattern matching would be the actual fix,
+already separately queued). `06_frust_library/core`'s existing
+sentinel-return convention (null/-1/0) is UNCHANGED - adopting
 `Result`/`Option` throughout that library is real, separate, not-yet-
 started follow-on work, named here so it isn't a silent surprise.
 

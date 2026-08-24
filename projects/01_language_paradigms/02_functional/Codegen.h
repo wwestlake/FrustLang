@@ -87,13 +87,27 @@ public:
         indexInterfaceDecls(prog);
         if (!compileManifestDecl(prog)) return false;
 
-        // Pass 1: declare every function/method *signature* up front, so
-        // calls resolve regardless of textual order - module.getFunction()
-        // lookups (compileCall, method dispatch) only succeed once a
-        // signature has been declared. Without this, sibling methods in the
-        // same impl block calling each other would be order-dependent.
+        // Generic free functions (LANGUAGE_GAPS.md #4's remaining piece) -
+        // mirrors indexStructs' own generic-struct handling: a generic
+        // function's bare name never gets a real signature declared
+        // (there's no single real llvm::Function for "identity" alone,
+        // only for a concrete instantiation like "identity<i64>") -
+        // remember the template here, monomorphize lazily per concrete
+        // call site instead (getOrCreateMonomorphizedFunction).
         for (auto* decl : prog.decls) {
-            if (decl->kind == DeclKind::Function) {
+            if (decl->kind == DeclKind::Function && !decl->functionDecl->genericParams.empty()) {
+                genericFunctionTemplates[decl->functionDecl->name] = decl->functionDecl;
+            }
+        }
+
+        // Pass 1: declare every (non-generic) function/method *signature*
+        // up front, so calls resolve regardless of textual order -
+        // module.getFunction() lookups (compileCall, method dispatch)
+        // only succeed once a signature has been declared. Without this,
+        // sibling methods in the same impl block calling each other
+        // would be order-dependent.
+        for (auto* decl : prog.decls) {
+            if (decl->kind == DeclKind::Function && decl->functionDecl->genericParams.empty()) {
                 declareFunctionSignature(*decl->functionDecl);
             } else if (decl->kind == DeclKind::Impl) {
                 for (auto* m : decl->implDecl->methods) declareFunctionSignature(*m);
@@ -116,9 +130,40 @@ public:
             if (!buildVtable(*decl->implDecl)) ok = false;
         }
 
-        // Pass 2: fill in bodies.
+        // Pass 1.5: pre-monomorphize every explicit-generic-arg call site
+        // (`identity::<i64>(x)`) found anywhere in a non-generic
+        // function/method body, BEFORE Pass 2's regular bodies compile -
+        // getOrCreateMonomorphizedFunction is deliberately not safe to
+        // call reentrantly (compileFunction doesn't save/restore
+        // namedValues or the builder's insert point, only its own
+        // coroutine-context locals), so every instantiation needed by the
+        // whole program has to exist before Pass 2 starts, not be
+        // triggered lazily from inside it. A generic function's OWN body
+        // calling another explicit-generic-arg function is a real,
+        // named limitation this misses - not scanned (see
+        // getOrCreateMonomorphizedFunction's own comment).
+        {
+            std::vector<std::pair<std::string, std::vector<std::string>>> genericCallSites;
+            for (auto* decl : prog.decls) {
+                if (decl->kind == DeclKind::Function && decl->functionDecl->genericParams.empty() && decl->functionDecl->body) {
+                    collectGenericCallSites(decl->functionDecl->body, genericCallSites);
+                } else if (decl->kind == DeclKind::Impl) {
+                    for (auto* m : decl->implDecl->methods) {
+                        if (m->body) collectGenericCallSites(m->body, genericCallSites);
+                    }
+                }
+            }
+            for (auto& site : genericCallSites) {
+                if (!getOrCreateMonomorphizedFunction(site.first, site.second)) ok = false;
+            }
+        }
+
+        // Pass 2: fill in (non-generic) bodies. Generic function templates
+        // are never compiled under their own bare name - only their
+        // monomorphized clones (Pass 1.5, above) are real functions.
         for (auto* decl : prog.decls) {
-            if (decl->kind == DeclKind::Function && (decl->functionDecl->body != nullptr || decl->functionDecl->isExtern)) {
+            if (decl->kind == DeclKind::Function && decl->functionDecl->genericParams.empty()
+                && (decl->functionDecl->body != nullptr || decl->functionDecl->isExtern)) {
                 if (!compileFunction(*decl->functionDecl)) ok = false;
             } else if (decl->kind == DeclKind::Impl) {
                 for (auto* m : decl->implDecl->methods) {
@@ -268,6 +313,66 @@ private:
     // sizeof) works on a monomorphized instantiation with zero further
     // special-casing.
     std::unordered_map<std::string, const StructDecl*> genericStructTemplates;
+
+    // `fn identity<T>(x: T) -> T` templates (LANGUAGE_GAPS.md #4's
+    // remaining piece) - mirrors genericStructTemplates exactly: name ->
+    // the AST declaration, no signature ever declared under the bare
+    // generic name (nothing for module.getFunction("identity") to find -
+    // only concrete instantiations like "identity<i64>" are real
+    // llvm::Functions, monomorphized lazily by getOrCreateMonomorphizedFunction).
+    std::unordered_map<std::string, const FunctionDecl*> genericFunctionTemplates;
+
+    // Monomorphized clones built by getOrCreateMonomorphizedFunction -
+    // declareFunctionSignature registers functionDeclsByName[name] =
+    // &fn unconditionally, so each clone must outlive the rest of
+    // codegen (a stack-local FunctionDecl would leave a dangling
+    // pointer there) - kept alive here for exactly that reason, never
+    // read back out through this vector itself.
+    std::vector<std::unique_ptr<FunctionDecl>> monomorphizedFunctionStorage;
+
+    // Active ONLY while compiling a monomorphized generic function's
+    // own signature/body (getOrCreateMonomorphizedFunction sets this,
+    // empty otherwise - a no-op for every ordinary function/struct).
+    // resolveType/resolveStructTypeName consult this first, so a type
+    // named exactly "T" resolves as whatever concrete type this
+    // instantiation substitutes it with.
+    std::unordered_map<std::string, std::string> currentGenericSubstitution;
+
+    // Recursively rebuilds `type` with every generic-parameter name
+    // (per currentGenericSubstitution) replaced, INCLUDING inside
+    // nested generic arguments (so `Result<T, E>` substitutes both T
+    // and E, not just a bare `T`) - never mutates the original AST
+    // node (shared across every call site); returns it UNCHANGED if
+    // nothing in the subtree needs substituting, to avoid needless
+    // allocation. Replacement nodes are owned by `storage`, which the
+    // caller must keep alive for as long as the returned pointer (or
+    // anything resolved from it) is in use.
+    const TypeExpr* substituteGenericType(const TypeExpr* type, std::vector<std::unique_ptr<TypeExpr>>& storage) {
+        if (!type || currentGenericSubstitution.empty()) return type;
+
+        auto subIt = currentGenericSubstitution.find(type->name);
+        bool nameChanges = subIt != currentGenericSubstitution.end();
+
+        std::vector<TypeArg> newArgs;
+        bool argsChange = false;
+        for (auto& arg : type->genericArgs) {
+            if (arg.isIntConst || !arg.type) { newArgs.push_back(arg); continue; }
+            const TypeExpr* substitutedArg = substituteGenericType(arg.type, storage);
+            if (substitutedArg != arg.type) argsChange = true;
+            TypeArg newArg = arg;
+            newArg.type = const_cast<TypeExpr*>(substitutedArg);
+            newArgs.push_back(newArg);
+        }
+
+        if (!nameChanges && !argsChange) return type;
+
+        auto replacement = std::make_unique<TypeExpr>(*type);
+        if (nameChanges) replacement->name = subIt->second;
+        replacement->genericArgs = std::move(newArgs);
+        const TypeExpr* result = replacement.get();
+        storage.push_back(std::move(replacement));
+        return result;
+    }
 
     void indexInterfaceDecls(const Program& prog) {
         for (auto* decl : prog.decls) {
@@ -595,6 +700,67 @@ private:
         return structTy;
     }
 
+    // Lazily monomorphizes a generic FREE FUNCTION the first time a
+    // specific instantiation is actually needed (a call site with
+    // explicit `::<...>` type arguments) - mirrors
+    // getOrCreateMonomorphizedStruct exactly, one level up: memoized by
+    // module.getFunction(mangled) instead of a separate map, since an
+    // llvm::Function IS the memo. Substitution works through
+    // currentGenericSubstitution (consulted by resolveType/
+    // resolveStructTypeName) rather than rewriting the template's AST,
+    // so declareFunctionSignature/compileFunction run completely
+    // unmodified on a clone whose only real difference from the
+    // template is its mangled name and an empty genericParams (so nothing
+    // downstream mistakes it for still-generic).
+    //
+    // Deliberately NOT reentrant-safe against being triggered from
+    // WITHIN another function's own body compilation (compileFunction
+    // doesn't save/restore namedValues/the builder's insert point, only
+    // its own coroutine-context locals) - a named, real v1 limitation:
+    // every explicit-generic-arg call site in the whole program is
+    // pre-scanned and monomorphized BEFORE Pass 2's regular function
+    // bodies compile (see compileProgram's new step), specifically so
+    // this is never called mid-compilation of anything else. A generic
+    // function's OWN body calling ANOTHER explicit-generic-arg function
+    // therefore isn't supported yet - compileCall's dispatch will
+    // report a clear "not found" error rather than silently corrupting
+    // whichever function was mid-compilation when it happened.
+    llvm::Function* getOrCreateMonomorphizedFunction(const std::string& baseName,
+                                                       const std::vector<std::string>& concreteArgNames) {
+        std::string mangled = monomorphizedStructName(baseName, concreteArgNames); // same "Name<a,b>" mangling shape
+        if (llvm::Function* existing = module.getFunction(mangled)) return existing;
+
+        auto templateIt = genericFunctionTemplates.find(baseName);
+        if (templateIt == genericFunctionTemplates.end()) {
+            std::cerr << "frust: codegen error: '" << baseName << "' is not a generic function\n";
+            return nullptr;
+        }
+        const FunctionDecl& templateDecl = *templateIt->second;
+        if (templateDecl.genericParams.size() != concreteArgNames.size()) {
+            std::cerr << "frust: codegen error: '" << baseName << "' expects "
+                       << templateDecl.genericParams.size() << " type argument(s), got "
+                       << concreteArgNames.size() << "\n";
+            return nullptr;
+        }
+
+        auto mono = std::make_unique<FunctionDecl>(templateDecl);
+        mono->name = mangled;
+        mono->genericParams.clear();
+        FunctionDecl* monoPtr = mono.get();
+        monomorphizedFunctionStorage.push_back(std::move(mono));
+
+        currentGenericSubstitution.clear();
+        for (size_t i = 0; i < templateDecl.genericParams.size(); ++i) {
+            currentGenericSubstitution[templateDecl.genericParams[i]] = concreteArgNames[i];
+        }
+
+        declareFunctionSignature(*monoPtr);
+        llvm::Function* result = compileFunction(*monoPtr);
+
+        currentGenericSubstitution.clear();
+        return result;
+    }
+
     // Which Frust struct type (if any) a given expression statically is,
     // sourced from namedValueStructType rather than from the compiled LLVM
     // value's type (impossible under opaque pointers - see the comment on
@@ -620,6 +786,39 @@ private:
             // and method dispatch shouldn't care which allocation
             // strategy produced the pointer.
             return inferStructTypeName(expr->lhs);
+        }
+        if (expr->kind == ExprKind::Call && expr->lhs && !expr->lhs->explicitGenericArgs.empty()) {
+            // An explicit-generic-arg call (`Result::ok::<i64,String>(v)`)
+            // whose declared return type names a (possibly generic)
+            // struct - LANGUAGE_GAPS.md #4/#5. Builds the substitution
+            // from THIS call site's own explicit args and resolves the
+            // template's return type through it directly, rather than
+            // relying on currentGenericSubstitution (which isn't active
+            // here - this runs while compiling the CALLER's body, long
+            // after the callee's own monomorphization already finished
+            // and reset it).
+            std::string targetName;
+            if (expr->lhs->kind == ExprKind::Identifier) {
+                targetName = expr->lhs->text;
+            } else if (expr->lhs->kind == ExprKind::Path) {
+                targetName = expr->lhs->pathSegments.front();
+                for (size_t i = 1; i < expr->lhs->pathSegments.size(); ++i) targetName += "::" + expr->lhs->pathSegments[i];
+            }
+            auto templateIt = genericFunctionTemplates.find(targetName);
+            if (templateIt != genericFunctionTemplates.end()
+                && templateIt->second->genericParams.size() == expr->lhs->explicitGenericArgs.size()) {
+                auto savedSubstitution = currentGenericSubstitution;
+                currentGenericSubstitution.clear();
+                for (size_t i = 0; i < templateIt->second->genericParams.size(); ++i) {
+                    auto& arg = expr->lhs->explicitGenericArgs[i];
+                    if (!arg.isIntConst && arg.type) {
+                        currentGenericSubstitution[templateIt->second->genericParams[i]] = arg.type->name;
+                    }
+                }
+                auto result = resolveStructTypeName(templateIt->second->returnType);
+                currentGenericSubstitution = savedSubstitution;
+                return result;
+            }
         }
         if (expr->kind == ExprKind::Call && expr->lhs && expr->lhs->kind == ExprKind::Identifier) {
             // A plain free-function call whose declared return type names
@@ -695,6 +894,20 @@ private:
         if (depth > 16) {
             std::cerr << "frust: codegen error: type alias cycle involving '" << type->name << "'\n";
             return llvm::Type::getInt64Ty(context);
+        }
+
+        // Generic function type-parameter substitution (LANGUAGE_GAPS.md
+        // #4's remaining piece) - active only while
+        // getOrCreateMonomorphizedFunction is compiling one specific
+        // instantiation's signature/body (empty otherwise, so this is a
+        // no-op for every ordinary type). storage must outlive this
+        // whole call - it does, since the recursive resolveType call
+        // below runs and returns before this stack frame's storage is
+        // destroyed.
+        if (!currentGenericSubstitution.empty()) {
+            std::vector<std::unique_ptr<TypeExpr>> storage;
+            const TypeExpr* substituted = substituteGenericType(type, storage);
+            if (substituted != type) return resolveType(substituted, depth + 1);
         }
 
         // `raw* T` is always a pointer, regardless of what T names -
@@ -780,6 +993,15 @@ private:
     // namedValueStructType's declaration).
     std::optional<std::string> resolveStructTypeName(const TypeExpr* type, int depth = 0) {
         if (!type || depth > 16) return std::nullopt;
+
+        // Same generic-substitution reasoning as resolveType's own -
+        // see that function's comment.
+        if (!currentGenericSubstitution.empty()) {
+            std::vector<std::unique_ptr<TypeExpr>> storage;
+            const TypeExpr* substituted = substituteGenericType(type, storage);
+            if (substituted != type) return resolveStructTypeName(substituted, depth + 1);
+        }
+
         auto aliasIt = typeAliases.find(type->name);
         if (aliasIt != typeAliases.end()) return resolveStructTypeName(aliasIt->second, depth + 1);
         if (structTypes.count(type->name)) return type->name;
@@ -1151,7 +1373,15 @@ private:
                         bool allTypeArgs = true;
                         for (auto& arg : expr->typeAnnotation->genericArgs) {
                             if (arg.isIntConst || !arg.type) { allTypeArgs = false; break; }
-                            concreteArgNames.push_back(arg.type->name);
+                            // Substitute a generic-function type parameter
+                            // (e.g. `Result<T, E>` written inside
+                            // Result::ok<T,E>'s own body) through
+                            // currentGenericSubstitution - reads the raw
+                            // AST name directly rather than going through
+                            // resolveType/resolveStructTypeName, so it
+                            // needs its own explicit lookup here.
+                            auto subIt = currentGenericSubstitution.find(arg.type->name);
+                            concreteArgNames.push_back(subIt != currentGenericSubstitution.end() ? subIt->second : arg.type->name);
                         }
                         if (!allTypeArgs) {
                             std::cerr << "frust: codegen error: '" << expr->typeAnnotation->name
@@ -2101,6 +2331,49 @@ private:
             return compileIndirectCall(expr);
         }
 
+        // Explicit-generic-arg call (`identity::<i64>(5)`,
+        // `Result::ok::<i64,String>(v)` - LANGUAGE_GAPS.md #4's
+        // remaining piece). The monomorphized clone was already built
+        // by compileProgram's Pass 1.5 pre-scan (never lazily here -
+        // getOrCreateMonomorphizedFunction isn't reentrant-safe against
+        // running mid-compilation of another function's body); a lookup
+        // miss means either a nested generic-in-generic call (a real,
+        // named, unscanned limitation) or a genuine unknown function.
+        if (!expr.lhs->explicitGenericArgs.empty() && genericFunctionTemplates.count(targetName)) {
+            std::vector<std::string> concreteArgNames;
+            for (auto& arg : expr.lhs->explicitGenericArgs) {
+                if (arg.isIntConst || !arg.type) {
+                    std::cerr << "frust: codegen error: '" << targetName << "'s explicit type arguments must be types, not integers\n";
+                    return nullptr;
+                }
+                concreteArgNames.push_back(arg.type->name);
+            }
+            std::string mangled = monomorphizedStructName(targetName, concreteArgNames);
+            llvm::Function* monoCallee = module.getFunction(mangled);
+            if (!monoCallee) {
+                std::cerr << "frust: codegen error: '" << mangled << "' was never monomorphized - a generic "
+                           << "function calling another explicit-generic-arg function from its own body "
+                           << "isn't supported yet\n";
+                return nullptr;
+            }
+            if (monoCallee->arg_size() != expr.args.size()) {
+                std::cerr << "frust: codegen error: '" << mangled << "' expects " << monoCallee->arg_size()
+                           << " argument(s), got " << expr.args.size() << "\n";
+                return nullptr;
+            }
+            std::vector<llvm::Value*> args;
+            auto argTypeIt = monoCallee->arg_begin();
+            for (auto* a : expr.args) {
+                auto* v = compileExpr(a);
+                if (!v) return nullptr;
+                v = coerceToType(v, argTypeIt->getType());
+                if (!v) return nullptr;
+                args.push_back(v);
+                ++argTypeIt;
+            }
+            return builder.CreateCall(monoCallee, args, monoCallee->getReturnType()->isVoidTy() ? "" : "calltmp");
+        }
+
         llvm::Function* callee = module.getFunction(targetName);
         if (!callee) {
             // Not a known top-level function - if it's a local/param
@@ -2840,6 +3113,43 @@ private:
         fat = builder.CreateInsertValue(fat, concretePtr, {0});
         fat = builder.CreateInsertValue(fat, it->second, {1});
         return fat;
+    }
+
+    // Recursively finds every explicit-generic-arg call site
+    // (`identity::<i64>(x)`) in a function/method body, for
+    // compileProgram's Pass 1.5 pre-monomorphization sweep. Same
+    // recursive-walk shape as hasPerform/collectFreeVariables. Only
+    // records a site when the callee actually names a KNOWN generic
+    // function template - an explicit-generic-arg call to something
+    // that isn't one is left alone here (compileCall will report its
+    // own real error when it actually tries to compile that call).
+    void collectGenericCallSites(const Expr* node, std::vector<std::pair<std::string, std::vector<std::string>>>& sites) {
+        if (!node) return;
+        if (node->kind == ExprKind::Call && node->lhs && !node->lhs->explicitGenericArgs.empty()) {
+            std::string targetName;
+            if (node->lhs->kind == ExprKind::Identifier) {
+                targetName = node->lhs->text;
+            } else if (node->lhs->kind == ExprKind::Path) {
+                targetName = node->lhs->pathSegments.front();
+                for (size_t i = 1; i < node->lhs->pathSegments.size(); ++i) targetName += "::" + node->lhs->pathSegments[i];
+            }
+            if (!targetName.empty() && genericFunctionTemplates.count(targetName)) {
+                std::vector<std::string> concreteArgNames;
+                bool allTypeArgs = true;
+                for (auto& arg : node->lhs->explicitGenericArgs) {
+                    if (arg.isIntConst || !arg.type) { allTypeArgs = false; break; }
+                    concreteArgNames.push_back(arg.type->name);
+                }
+                if (allTypeArgs) sites.push_back({targetName, concreteArgNames});
+            }
+        }
+        collectGenericCallSites(node->lhs, sites);
+        collectGenericCallSites(node->rhs, sites);
+        collectGenericCallSites(node->condExpr, sites);
+        collectGenericCallSites(node->elseExpr, sites);
+        for (auto* s : node->statements) collectGenericCallSites(s, sites);
+        for (auto* a : node->args) collectGenericCallSites(a, sites);
+        for (auto& hc : node->handleCases) collectGenericCallSites(hc.body, sites);
     }
 
     // Recursively collects free-variable references in a closure body -

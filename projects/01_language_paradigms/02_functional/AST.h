@@ -149,6 +149,7 @@ struct Expr {
     std::vector<StructFieldInit> fields; // StructLiteral
     std::vector<HandleCase> handleCases; // Handle
     std::vector<Param> params; // Closure params (typeAnnotation = declared return type, lhs = body)
+    std::vector<TypeArg> explicitGenericArgs; // Call - `f::<i64>(x)`'s explicit type arguments
 };
 
 // ---------------------------------------------------------------------
@@ -162,6 +163,7 @@ struct FunctionDecl {
     bool isExtern = false;
     bool isEntry = false;
     std::vector<Param> params;
+    std::vector<std::string> genericParams; // `fn identity<T>(...)` - bare names, mirrors StructDecl::genericParams
     TypeExpr* returnType = nullptr; // null => inferred/unit
     Expr* body = nullptr;           // null => prototype-only declaration
     SourceLoc loc;
