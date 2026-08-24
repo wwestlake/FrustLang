@@ -239,3 +239,12 @@ set_target_properties(frust_plugin_host_multifile_plugin_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
 )
+
+# Verification harness for LANGUAGE_GAPS.md #9 (bool-across-FFI
+# convention) - see bool_ffi_example.cpp/bool_ffi_plugin.frust.
+add_executable(frust_plugin_host_bool_ffi_example examples/bool_ffi_example.cpp)
+target_link_libraries(frust_plugin_host_bool_ffi_example PRIVATE frust_plugin_host)
+set_target_properties(frust_plugin_host_bool_ffi_example PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
+)

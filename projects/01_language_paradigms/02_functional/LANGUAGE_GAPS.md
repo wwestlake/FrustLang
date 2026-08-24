@@ -365,18 +365,23 @@ examples, including the new one) and JUCE IDE rebuild both clean.
 
 ## 9. Bool-across-FFI convention
 
-**Status: OPEN - minor, contained either way.**
+**Status: DONE - verified clean, no restriction needed.**
 
-No prior example anywhere in this codebase had ever returned a Frust
-`bool` (LLVM i1) across the C ABI to a host before this session -
-building the IDE's four real plugins (`linter`/`metrics`/
-`plugin_generator`/`symbol_finder`, 2026-08-22) deliberately avoided
-it (untested register-width ABI behavior) in favor of `i64` (0/1)
-everywhere, matching every other host-visible boolean result in this
-codebase. Either formalize `i64` (0/1) as the documented convention
-for anything crossing the FFI boundary, or actually verify/fix the i1
-ABI lowering properly and lift the restriction. Minor either way -
-named so it isn't silently rediscovered again.
+Never empirically tested before this session (the IDE's four real
+plugins, 2026-08-22, deliberately avoided it in favor of `i64` 0/1,
+untested register-width ABI behavior being the concern). Tested for
+real rather than just documenting the avoidance: a Frust `bool` (LLVM
+`i1`) crosses the real C ABI cleanly in BOTH directions - a C++ caller
+reading a Frust function's returned `bool` gets the exact byte
+(`0x01`/`0x00`, no dirty bits above bit 0, not just "truthy"), and a
+Frust `extern fn` passing a `bool` ARGUMENT to a real host-registered
+C function also arrives clean. Verified with a dedicated harness that
+checks the raw byte pattern via `memcpy`, not just C++ truthiness
+(which would silently mask a dirty-upper-bits bug, since any nonzero
+byte reads as true). **No convention change needed** - `bool` was
+already safe to use directly across the FFI boundary the whole time;
+existing code using `i64` 0/1 doesn't need retrofitting, it just never
+needed the workaround in the first place.
 
 ---
 

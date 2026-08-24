@@ -1,0 +1,23 @@
+manifest "{\"name\":\"bool_ffi_test\",\"version\":\"1.0.0\",\"requiredHostFunctions\":[{\"name\":\"host_bool_to_i64\"}]}";
+
+pub fn returns_true() -> bool = {
+    true
+}
+
+pub fn returns_false() -> bool = {
+    false
+}
+
+// Round-trips a Frust bool THROUGH a real host-registered C ABI
+// function (host_bool_to_i64: bool -> i64) and back - exercises the
+// Frust->C direction (passing a bool argument across the boundary),
+// not just C->Frust (a bool return value).
+extern fn host_bool_to_i64(b: bool) -> i64;
+
+pub fn round_trip_true() -> i64 = {
+    host_bool_to_i64(true)
+}
+
+pub fn round_trip_false() -> i64 = {
+    host_bool_to_i64(false)
+}
