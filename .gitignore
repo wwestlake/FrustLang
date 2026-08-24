@@ -1,0 +1,42 @@
+# Build directories
+build/
+build-linux/
+verify_build/
+bin/
+lib/
+out/
+.vs/
+.vscode/
+*.user
+*.suo
+
+# LLVM & dependency artifacts
+llvm-project/
+llvm-build/
+llvm-install/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Frust compiler debug IR dumps (regenerated on every run)
+output.ll
+output_pre_opt.ll
+output_post_opt.ll
+output.obj
+
+# Frate build/package output
+*.frpod
+
+# Captured process output
+stdout.txt
+stderr.txt
+
+# process_task.fr's file-based IPC convention (task-id-named input/
+# output files) - written to whatever the cwd was when a multiprocessing
+# test ran, real scratch, never meant to be tracked.
+/*_in.txt
+/*_out.txt
+
+# Node.js (07_vscode_frust)
+node_modules/
