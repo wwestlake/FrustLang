@@ -210,12 +210,22 @@ int PluginsPanel::selectedDiscoveredIndex() const
 
 void PluginsPanel::scanBuiltInPluginsFolder()
 {
-    // FRUST_IDE_SOURCE_DIR is a compile-time constant (CMakeLists.txt)
-    // pointing at this project's own source directory - the built
-    // .exe runs from bin/Debug/, nowhere near the source tree, so a
-    // relative path or the working directory can't be trusted to find
-    // plugins/ reliably.
-    juce::File pluginsDir = juce::File(FRUST_IDE_SOURCE_DIR).getChildFile("plugins");
+    // Two real cases, checked in order:
+    // 1. Packaged/distributed exe: plugins/ ships alongside frust_ide.exe
+    //    itself (bin/Release/plugins/), found relative to the running
+    //    executable's OWN location - works on any machine, since it
+    //    never depends on where this was originally built.
+    // 2. Dev build: no plugins/ next to the exe yet (nobody's copied it
+    //    there), so fall back to FRUST_IDE_SOURCE_DIR, a compile-time
+    //    constant (CMakeLists.txt) pointing at this project's own source
+    //    directory - lets `plugins/` live in the source tree during
+    //    development without needing a copy step on every build.
+    juce::File pluginsDir = juce::File::getSpecialLocation(juce::File::currentExecutableFile)
+                                 .getParentDirectory()
+                                 .getChildFile("plugins");
+    if (!pluginsDir.isDirectory()) {
+        pluginsDir = juce::File(FRUST_IDE_SOURCE_DIR).getChildFile("plugins");
+    }
 
     discovered.clear();
 
