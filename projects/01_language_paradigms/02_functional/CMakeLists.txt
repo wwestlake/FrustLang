@@ -158,14 +158,15 @@ set_source_files_properties("${FRUST_PARSER_CPP}" "${FRUST_LEXER_CPP}" PROPERTIE
 # frust_runtime: the frust_* C exports core/src declares via extern fn and
 # calls directly (frust_print_str, frust_format_*, frust_buf_*, plus the
 # quote/unquote/build_time AST/JIT primitives). Extracted from what used to
-# be duplicated verbatim in frust_compiler's AND the IDE's own Main.cpp (see
-# Runtime.cpp's own header comment for the full history) - a real static
+# be duplicated verbatim in frust_compiler's AND the IDE's own Main.cpp - a real static
 # library now, so a frate build-produced standalone linked executable has
 # something to actually link these symbols from, not just JIT-time process-
 # image lookup. Every consumer (frust_compiler, the IDE, and frate's own AOT
-# link step) links this ONE copy instead of each defining its own.
+# link step) links this ONE copy instead of each defining its own. The basic
+# exports and optional LLVM-backed metaprogramming exports are separate object
+# files, so regular AOT programs do not pull LLVM unnecessarily.
 # ------------------------------------------------------------------------------
-add_library(frust_runtime STATIC Runtime.cpp)
+add_library(frust_runtime STATIC RuntimeBasic.cpp RuntimeMeta.cpp)
 target_include_directories(frust_runtime PRIVATE "${FRUST_GEN_DIR}" "${FRUST_FLEXLEXER_INCLUDE_DIR}")
 if(WIN32)
     target_compile_definitions(frust_runtime PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)

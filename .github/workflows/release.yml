@@ -194,16 +194,59 @@ jobs:
         run: |
           $stage = "artifacts\stage\frust-${{ steps.classify.outputs.version }}"
           New-Item -ItemType Directory -Force -Path "$stage\bin" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$stage\lib" | Out-Null
           New-Item -ItemType Directory -Force -Path "$stage\plugins" | Out-Null
           New-Item -ItemType Directory -Force -Path "$stage\stdlib" | Out-Null
 
           Copy-Item "bin\Release\frust_compiler.exe" "$stage\bin\"
           Copy-Item "bin\Release\frate.exe" "$stage\bin\"
           Copy-Item "bin\Release\frust_ide.exe" "$stage\bin\"
+          Copy-Item "lib\Release\frust_runtime.lib" "$stage\lib\"
+          Copy-Item "lib\Release\frust_lang.lib" "$stage\lib\"
+          Copy-Item "lib\Release\frust_plugin_host.lib" "$stage\lib\"
+          Copy-Item "lib\Release\frate_lib.lib" "$stage\lib\"
           Copy-Item "projects\02_juce_language_host\plugins\*" "$stage\plugins\" -Recurse
           Copy-Item "projects\06_frust_library\core" "$stage\stdlib\core" -Recurse
           Copy-Item "README.md" "$stage\"
           Copy-Item "LICENSE" "$stage\"
+
+      - name: Smoke test staged release package
+        shell: pwsh
+        run: |
+          $stage = Resolve-Path "artifacts\stage\frust-${{ steps.classify.outputs.version }}"
+          $probe = Join-Path $env:RUNNER_TEMP "frust-release-smoke"
+          Copy-Item $stage $probe -Recurse -Force
+          $env:FRATE_CACHE_DIR = Join-Path $env:RUNNER_TEMP "frate-release-smoke-cache"
+          $env:FRUST_LLVM_ROOT = "$env:RUNNER_TEMP\vcpkg-cache\vcpkg_installed\x64-windows"
+          $env:PATH = "$probe\bin;$env:PATH"
+
+          Push-Location $probe
+          & "$probe\bin\frate.exe" new release_smoke
+          if ($LASTEXITCODE -ne 0) { Pop-Location; throw "Packaged frate could not scaffold a pod." }
+          Push-Location "release_smoke"
+          & "$probe\bin\frate.exe" run
+          if ($LASTEXITCODE -ne 0) { Pop-Location; Pop-Location; throw "A pod built by the staged release package failed to run." }
+          Pop-Location
+
+          Push-Location "$probe\stdlib\core"
+          & "$probe\bin\frate.exe" package
+          if ($LASTEXITCODE -ne 0) { Pop-Location; Pop-Location; throw "Packaged frate could not package the bundled core pod." }
+          & "$probe\bin\frate.exe" install
+          if ($LASTEXITCODE -ne 0) { Pop-Location; Pop-Location; throw "Packaged frate could not install the bundled core pod." }
+          Pop-Location
+
+          Push-Location "release_smoke"
+          & "$probe\bin\frate.exe" add core 1.0.0
+          if ($LASTEXITCODE -ne 0) { Pop-Location; Pop-Location; throw "Packaged frate could not add the bundled core pod." }
+          Copy-Item "$env:GITHUB_WORKSPACE\examples\tutorial-first-program\src\main.fr" "src\main.fr" -Force
+          $output = & "$probe\bin\frate.exe" run 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0 -or $output -notmatch [regex]::Escape("Entrance Hall")) {
+            Pop-Location
+            Pop-Location
+            throw "The staged release package could not build and run the tutorial's core pod example. Output:`n$output"
+          }
+          Pop-Location
+          Pop-Location
 
           New-Item -ItemType Directory -Force -Path "artifacts" | Out-Null
           $zipName = "artifacts\frust-${{ steps.classify.outputs.tag }}-windows-x64.zip"

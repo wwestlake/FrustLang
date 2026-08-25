@@ -100,20 +100,22 @@ bool linkExecutable(const std::vector<juce::String>& objFiles, const juce::File&
                         // even though the outer vswhere call above succeeded).
                         juce::String vsWhereDir = juce::File(vsWherePath).getParentDirectory().getFullPathName();
 
-                        // frate.exe's own directory tells us where the repo's
-                        // bin/<Config>/ lives - lib/<Config>/ is a sibling of
-                        // that at the repo root, same Debug/Release name
-                        // either way, since frate.exe and frust_runtime.lib
-                        // are always built together from the same config.
+                        // Source builds use bin/<Config> beside lib/<Config>.
+                        // A release package instead has bin beside stdlib and
+                        // a flat lib directory at the package root.
                         juce::File frateExeDir = juce::File::getSpecialLocation(juce::File::currentExecutableFile).getParentDirectory();
-                        juce::String configName = frateExeDir.getFileName(); // "Debug" or "Release"
-                        juce::File repoRoot = frateExeDir.getParentDirectory().getParentDirectory();
-                        juce::File runtimeLib = repoRoot.getChildFile("lib").getChildFile(configName).getChildFile("frust_runtime.lib");
-                        juce::File pluginHostLib = repoRoot.getChildFile("lib").getChildFile(configName).getChildFile("frust_plugin_host.lib");
+                        juce::File installRoot = frateExeDir.getParentDirectory();
+                        bool packagedInstall = frateExeDir.getFileName() == "bin" && installRoot.getChildFile("stdlib").isDirectory();
+                        juce::String configName = packagedInstall ? "Release" : frateExeDir.getFileName();
+                        juce::File supportLibDir = packagedInstall
+                            ? installRoot.getChildFile("lib")
+                            : frateExeDir.getParentDirectory().getParentDirectory().getChildFile("lib").getChildFile(configName);
+                        juce::File runtimeLib = supportLibDir.getChildFile("frust_runtime.lib");
+                        juce::File pluginHostLib = supportLibDir.getChildFile("frust_plugin_host.lib");
 
                         if (!runtimeLib.existsAsFile()) {
                             std::cerr << "Error: frust_runtime.lib not found at " << runtimeLib.getFullPathName()
-                                      << " - build frust_compiler first (it builds frust_runtime alongside it).\n";
+                                      << (packagedInstall ? " - this FRust release is incomplete.\n" : " - build frust_compiler first (it builds frust_runtime alongside it).\n");
                             return false;
                         }
 
@@ -154,8 +156,8 @@ bool linkExecutable(const std::vector<juce::String>& objFiles, const juce::File&
                         // verbatim from a real, already-working link (one
                         // of frust_plugin_host's own example executables),
                         // same libs, same order.
-                        juce::File frustLangLib = repoRoot.getChildFile("lib").getChildFile(configName).getChildFile("frust_lang.lib");
-                        juce::File frateLibLib = repoRoot.getChildFile("lib").getChildFile(configName).getChildFile("frate_lib.lib");
+                        juce::File frustLangLib = supportLibDir.getChildFile("frust_lang.lib");
+                        juce::File frateLibLib = supportLibDir.getChildFile("frate_lib.lib");
                         juce::File llvmLibDir = resolveLlvmLibDir(configName);
                         juce::StringArray llvmLibNames{
                             "LLVMOrcJIT", "LLVMExecutionEngine", "LLVMRuntimeDyld", "LLVMPasses", "LLVMCoroutines",
@@ -208,8 +210,8 @@ bool linkExecutable(const std::vector<juce::String>& objFiles, const juce::File&
                             });
                         }
                         linkArgs.addArray(configName == "Debug"
-                            ? juce::StringArray{"kernel32.lib", "msvcrtd.lib", "vcruntimed.lib", "ucrtd.lib"}
-                            : juce::StringArray{"kernel32.lib", "msvcrt.lib", "vcruntime.lib", "ucrt.lib"});
+                            ? juce::StringArray{"kernel32.lib", "legacy_stdio_definitions.lib", "msvcrtd.lib", "vcruntimed.lib", "ucrtd.lib"}
+                            : juce::StringArray{"kernel32.lib", "legacy_stdio_definitions.lib", "msvcrt.lib", "vcruntime.lib", "ucrt.lib"});
 
                         juce::File responseFile = finalBin.getParentDirectory().getChildFile("link.rsp");
                         responseFile.replaceWithText(linkArgs.joinIntoString("\n"));
