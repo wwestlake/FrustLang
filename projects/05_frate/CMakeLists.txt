@@ -94,6 +94,11 @@ target_link_libraries(frate_cli PRIVATE
     frate_lib
 )
 
+if(DEFINED FRUST_LLVM_ROOT)
+    target_compile_definitions(frate_cli PRIVATE
+        "FRUST_LLVM_ROOT=\"${FRUST_LLVM_ROOT}\"")
+endif()
+
 # See the frust compiler's CMakeLists.txt for what CMAKE_INSTALL_PREFIX
 # actually resolves to (the shared drive, on Linux).
 install(TARGETS frate_cli RUNTIME DESTINATION bin)

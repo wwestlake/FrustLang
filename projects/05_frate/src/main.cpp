@@ -32,6 +32,25 @@ juce::String loadIdeAuthToken() {
     return token;
 }
 
+static juce::File resolveLlvmLibDir(const juce::String& configName) {
+    // A release package cannot know where its user installed LLVM. CI and
+    // callers can supply that root explicitly; source builds retain the
+    // CMake-discovered root that built this frate executable as a fallback.
+    juce::String llvmRoot = juce::SystemStats::getEnvironmentVariable("FRUST_LLVM_ROOT", {});
+    if (llvmRoot.isEmpty()) {
+#ifdef FRUST_LLVM_ROOT
+        llvmRoot = FRUST_LLVM_ROOT;
+#endif
+    }
+
+    if (llvmRoot.isEmpty()) return {};
+
+    juce::File root(llvmRoot);
+    return configName == "Debug"
+        ? root.getChildFile("debug").getChildFile("lib")
+        : root.getChildFile("lib");
+}
+
 bool linkExecutable(const std::vector<juce::String>& objFiles, const juce::File& finalBin) {
     juce::ChildProcess linker;
 
@@ -137,8 +156,7 @@ bool linkExecutable(const std::vector<juce::String>& objFiles, const juce::File&
                         // same libs, same order.
                         juce::File frustLangLib = repoRoot.getChildFile("lib").getChildFile(configName).getChildFile("frust_lang.lib");
                         juce::File frateLibLib = repoRoot.getChildFile("lib").getChildFile(configName).getChildFile("frate_lib.lib");
-                        juce::String llvmLibDir = "D:/000 Creation Suite/apps/CreationEngine/vcpkg_installed/x64-windows/" +
-                                                   juce::String(configName == "Debug" ? "debug/lib" : "lib");
+                        juce::File llvmLibDir = resolveLlvmLibDir(configName);
                         juce::StringArray llvmLibNames{
                             "LLVMOrcJIT", "LLVMExecutionEngine", "LLVMRuntimeDyld", "LLVMPasses", "LLVMCoroutines",
                             "LLVMHipStdPar", "LLVMipo", "LLVMFrontendOpenMP", "LLVMFrontendOffloading", "LLVMLinker",
@@ -171,10 +189,15 @@ bool linkExecutable(const std::vector<juce::String>& objFiles, const juce::File&
                         linkArgs.add("\"" + frustLangLib.getFullPathName() + "\"");
                         bool needsPluginHost = pluginHostLib.existsAsFile();
                         if (needsPluginHost) {
+                            if (!llvmLibDir.exists()) {
+                                std::cerr << "Error: LLVM libraries are required to link this pod, but no usable LLVM library directory was found. "
+                                          << "Set FRUST_LLVM_ROOT to the vcpkg_installed\\x64-windows directory.\n";
+                                return false;
+                            }
                             linkArgs.add("\"" + pluginHostLib.getFullPathName() + "\"");
                             if (frateLibLib.existsAsFile()) linkArgs.add("\"" + frateLibLib.getFullPathName() + "\"");
                             for (auto& name : llvmLibNames) {
-                                linkArgs.add("\"" + llvmLibDir + "/" + name + ".lib\"");
+                                linkArgs.add("\"" + llvmLibDir.getChildFile(name + ".lib").getFullPathName() + "\"");
                             }
                             juce::String diaLib = "D:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\DIA SDK\\lib\\amd64\\diaguids.lib";
                             if (juce::File(diaLib).existsAsFile()) linkArgs.add("\"" + diaLib + "\"");
@@ -184,7 +207,9 @@ bool linkExecutable(const std::vector<juce::String>& objFiles, const juce::File&
                                 "user32.lib", "gdi32.lib", "winspool.lib", "oleaut32.lib", "comdlg32.lib"
                             });
                         }
-                        linkArgs.addArray(juce::StringArray{"kernel32.lib", "msvcrtd.lib", "vcruntimed.lib", "ucrtd.lib"});
+                        linkArgs.addArray(configName == "Debug"
+                            ? juce::StringArray{"kernel32.lib", "msvcrtd.lib", "vcruntimed.lib", "ucrtd.lib"}
+                            : juce::StringArray{"kernel32.lib", "msvcrt.lib", "vcruntime.lib", "ucrt.lib"});
 
                         juce::File responseFile = finalBin.getParentDirectory().getChildFile("link.rsp");
                         responseFile.replaceWithText(linkArgs.joinIntoString("\n"));
