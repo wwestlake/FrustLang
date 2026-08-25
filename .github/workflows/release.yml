@@ -80,8 +80,11 @@ jobs:
 
       - name: Install WinFlexBison (prebuilt binary, no compile)
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/lexxmark/winflexbison/releases/latest"
+          $headers = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = "application/vnd.github+json" }
+          $release = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/lexxmark/winflexbison/releases/latest"
           $asset = $release.assets | Where-Object { $_.name -like "*win_flex_bison*.zip" } | Select-Object -First 1
           if (-not $asset) {
             throw "Could not find a WinFlexBison release zip asset."
