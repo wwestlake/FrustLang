@@ -513,6 +513,49 @@ already safe to use directly across the FFI boundary the whole time;
 existing code using `i64` 0/1 doesn't need retrofitting, it just never
 needed the workaround in the first place.
 
+## 10. Real block-level lexical scoping
+
+**Status: OPEN - found 2026-08-24, answering a real Quora question
+("What are the scoping rules for Frust?").**
+
+Confirmed by direct read of `Codegen.h`: `namedValues` (the
+name -> `llvm::Value*` table every `let`/parameter binds into) is a
+single flat `std::unordered_map`, cleared once at the start of each
+function/closure body (`namedValues.clear()`) - but never pushed/
+popped per nested block. That means Frust's actual current scoping is
+function-level, not block-level: a `let` declared inside an `if`/
+`while` body writes into the SAME map as the function's top-level
+bindings, and stays bound (visible, and still holding its value) for
+the rest of the function after that block ends - a name isn't removed
+or restored just because the block that introduced it exited.
+
+Two existing, narrower mechanisms already prove the right shape exists
+elsewhere in the codebase, just not generalized to every block:
+- Closures literals (#6) save/restore the ENTIRE `namedValues` map
+  around their own body compilation (`savedNamedValues`, `Codegen.h`
+  ~line 3242/3256) - coarse (whole-map swap, not scope-aware), but
+  proves save/restore around a nested compile is already a pattern
+  this codebase uses.
+- The coroutine-parameter-shadowing case (~line 2991-3012) saves and
+  restores individual NAMES around one nested compile - closer to what
+  real block scoping would need, but scoped narrowly to that one
+  feature, not a general per-block mechanism.
+
+Real fix, not attempted yet: give block compilation (wherever an
+`if`/`while`/bare `{ }` body is compiled) a save-the-changed-names/
+restore-on-exit step around itself - record which names in
+`namedValues` get newly added or overwritten inside the block, and
+restore the pre-block state (removing new names entirely, restoring
+prior values for shadowed ones) when the block's compilation returns -
+mirroring the closure literal's whole-map save/restore, but scoped per
+block rather than per closure.
+
+Why numbered here rather than folded into #6's "no shadowing
+awareness" limitation: closures' shadowing gap is about capture
+ANALYSIS misidentifying which outer names a closure body references;
+this is a more basic gap in the codegen's own scope tracking that
+affects `if`/`while` bodies even with no closures involved at all.
+
 ---
 
 ## Future features (NOT gaps - queued after all 9 items above close)
