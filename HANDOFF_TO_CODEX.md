@@ -61,21 +61,28 @@ own description and its commit message - short version:
 
 ## What's verified vs. not (see issue #9 for the live checklist)
 
-Verified: a scratch copy of the tutorial example produced a genuine
-standalone AOT-linked `.exe` via `frate build`/`frate run`, correct output,
-exit 0. JIT mode (Hello World, live metaprogramming) re-confirmed working
-after the `frust_runtime` extraction.
+**UPDATE, same session, after the full rebuild finished**: all three
+locally-checkable items below are now done, against the exact merged
+commit, not a scratch copy:
+- ✅ Full `frust_plugin_host` regression suite - all 16 examples,
+  `ALL_CHECKS_PASSED` on every one.
+- ✅ Fresh IDE Debug build + launch smoke test - builds clean, launches,
+  stays running.
+- ✅ The literal committed `examples/tutorial-first-program/` - `frate run`
+  against it (not a scratch copy) produces exactly the expected output
+  (`Entrance Hall` / `A cold stone hall...`), exit 0.
 
-**Not yet re-verified against the exact merged commit** (a long full
-LLVM+JUCE Debug rebuild was still running when PR #8 needed to be pushed -
-pushed anyway rather than risk losing the work):
-- Full `frust_plugin_host` regression suite (16 examples,
-  `projects/09_frust_plugin_host/examples/`)
-- Fresh IDE build + launch smoke test
-- The literal committed copy of `examples/tutorial-first-program/` (the
-  verified run used a scratch copy elsewhere, copied in right before the
-  rebuild raced it)
-- A real GitHub Actions run of the new tutorial-gate CI step
+**Still genuinely open** - the one item that needs a real GitHub Actions
+runner, can't be checked locally: a real CI run of
+`.github/workflows/release.yml`'s tutorial-gate step. That only fires on a
+`v*` tag push, which also publishes a real GitHub Release as a side effect
+- not something to trigger casually just to test the step. Whoever pushes
+the first real `v0.5.0` tag is the first real end-to-end test of it.
+
+Original verification note (kept for the record): a scratch copy of the
+tutorial example was checked first, before the full rebuild finished, and
+JIT mode (Hello World, live metaprogramming) was re-confirmed working
+right after the `frust_runtime` extraction, before this PR was pushed.
 
 **If you're picking this up because Claude ran out of tokens mid-verification:**
 check whether a Claude session already ran/reported on the above (look for
