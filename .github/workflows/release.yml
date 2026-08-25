@@ -1,0 +1,174 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout FrustLang (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Fetch JUCE
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch 8.0.7 https://github.com/juce-framework/JUCE.git "$env:RUNNER_TEMP\JUCE"
+
+      - name: Restore prebuilt LLVM from S3 (no build, ever)
+        shell: pwsh
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-2
+        run: |
+          # Same real, already-built LLVM (vcpkg's x64-windows triplet) the
+          # Creation Suite apps pull from this same S3 path - Frust core's
+          # CMakeLists.txt hardcodes a dev-machine path to this exact vcpkg
+          # install (see CMakePresets.json's windows-vcpkg preset), so this
+          # step downloads and extracts the identical artifact rather than
+          # building LLVM from source on the runner, same as CreationEngine's
+          # own release pipeline does.
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\vcpkg-cache" | Out-Null
+          aws s3 cp s3://creation-suite-build-cache/vcpkg-cache/llvm-vcpkg-x64-windows.tar "$env:RUNNER_TEMP\llvm.tar"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to download the prebuilt LLVM archive from S3."
+          }
+          tar -xf "$env:RUNNER_TEMP\llvm.tar" -C "$env:RUNNER_TEMP\vcpkg-cache"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to extract the prebuilt LLVM archive."
+          }
+          Remove-Item "$env:RUNNER_TEMP\llvm.tar" -Force
+          if (-not (Test-Path "$env:RUNNER_TEMP\vcpkg-cache\vcpkg_installed\x64-windows")) {
+            throw "vcpkg_installed\x64-windows missing after extraction."
+          }
+
+      - name: Satisfy LLVM's baked-in DIA SDK path
+        shell: pwsh
+        run: |
+          # Same fixup CreationEngine's pipeline needs - this is the
+          # identical vcpkg-built LLVM, whose exported CMake config
+          # (LLVMDebugInfoPDB) hardcodes an absolute path to diaguids.lib
+          # from the machine that built it.
+          $expected = "D:\Program Files\Microsoft Visual Studio\2022\Enterprise\DIA SDK\lib\amd64\diaguids.lib"
+          if (Test-Path $expected) {
+            Write-Host "Already present at expected path."
+          } else {
+            $found = Get-ChildItem -Path "C:\Program Files*\Microsoft Visual Studio" -Recurse -Filter "diaguids.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $found) {
+              throw "Could not find diaguids.lib anywhere on this runner."
+            }
+            New-Item -ItemType Directory -Force -Path (Split-Path $expected) | Out-Null
+            Copy-Item -Path $found.FullName -Destination $expected -Force
+            Write-Host "Copied $($found.FullName) -> $expected"
+          }
+
+      - name: Install WinFlexBison (prebuilt binary, no compile)
+        shell: pwsh
+        run: |
+          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/lexxmark/winflexbison/releases/latest"
+          $asset = $release.assets | Where-Object { $_.name -like "*win_flex_bison*.zip" } | Select-Object -First 1
+          if (-not $asset) {
+            throw "Could not find a WinFlexBison release zip asset."
+          }
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "$env:RUNNER_TEMP\winflexbison.zip"
+          New-Item -ItemType Directory -Force -Path "C:\tools\winflexbison" | Out-Null
+          Expand-Archive -Path "$env:RUNNER_TEMP\winflexbison.zip" -DestinationPath "C:\tools\winflexbison" -Force
+          if (-not (Test-Path "C:\tools\winflexbison\win_bison.exe")) {
+            throw "win_bison.exe missing after WinFlexBison extraction."
+          }
+
+      - name: Classify release
+        id: classify
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          if ($tag -notmatch '^v(?<version>\d+\.\d+\.\d+)(?:-(?<channel>[0-9A-Za-z.-]+))?$') {
+            throw "Tag '$tag' must look like v0.5.0 (optionally v0.5.0-beta.1)."
+          }
+          $versionText = $Matches.version
+          $explicitChannel = $Matches.channel
+          $prerelease = "false"
+          if ($explicitChannel) {
+            $prerelease = "true"
+          } else {
+            $major = [int]($versionText.Split('.')[0])
+            if ($major -eq 0) { $prerelease = "true" }
+          }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "tag=$tag"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$versionText"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "prerelease=$prerelease"
+
+      - name: Configure and build frust_compiler + frate
+        shell: pwsh
+        run: |
+          $llvmPrefix = "$env:RUNNER_TEMP\vcpkg-cache\vcpkg_installed\x64-windows\share\llvm"
+          cmake -S "projects/01_language_paradigms/02_functional" -B "build-core" -A x64 `
+            -DCMAKE_PREFIX_PATH="$llvmPrefix" `
+            -DFLEX_EXECUTABLE="C:\tools\winflexbison\win_flex.exe" `
+            -DBISON_EXECUTABLE="C:\tools\winflexbison\win_bison.exe" `
+            -DFRUST_WINFLEXBISON_DIR="C:\tools\winflexbison"
+          if ($LASTEXITCODE -ne 0) { throw "CMake configure (frust_compiler) failed." }
+          cmake --build "build-core" --config Release
+          if ($LASTEXITCODE -ne 0) { throw "Build (frust_compiler) failed." }
+
+      - name: Configure and build the IDE
+        shell: pwsh
+        run: |
+          $llvmPrefix = "$env:RUNNER_TEMP\vcpkg-cache\vcpkg_installed\x64-windows\share\llvm"
+          cmake -S "projects/02_juce_language_host" -B "build-ide" -A x64 `
+            -DCMAKE_PREFIX_PATH="$llvmPrefix" `
+            -DFLEX_EXECUTABLE="C:\tools\winflexbison\win_flex.exe" `
+            -DBISON_EXECUTABLE="C:\tools\winflexbison\win_bison.exe" `
+            -DFRUST_WINFLEXBISON_DIR="C:\tools\winflexbison" `
+            -DJUCE_PATH="$env:RUNNER_TEMP\JUCE"
+          if ($LASTEXITCODE -ne 0) { throw "CMake configure (IDE) failed." }
+          cmake --build "build-ide" --config Release
+          if ($LASTEXITCODE -ne 0) { throw "Build (IDE) failed." }
+
+      - name: Stage release package
+        shell: pwsh
+        run: |
+          $stage = "artifacts\stage\frust-${{ steps.classify.outputs.version }}"
+          New-Item -ItemType Directory -Force -Path "$stage\bin" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$stage\plugins" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$stage\stdlib" | Out-Null
+
+          Copy-Item "bin\Release\frust_compiler.exe" "$stage\bin\"
+          Copy-Item "bin\Release\frate.exe" "$stage\bin\"
+          Copy-Item "bin\Release\frust_ide.exe" "$stage\bin\"
+          Copy-Item "projects\02_juce_language_host\plugins\*" "$stage\plugins\" -Recurse
+          Copy-Item "projects\06_frust_library\core" "$stage\stdlib\core" -Recurse
+          Copy-Item "README.md" "$stage\"
+          Copy-Item "LICENSE" "$stage\"
+
+          New-Item -ItemType Directory -Force -Path "artifacts" | Out-Null
+          $zipName = "artifacts\frust-${{ steps.classify.outputs.tag }}-windows-x64.zip"
+          Compress-Archive -Path "$stage\*" -DestinationPath $zipName -Force
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: frust-release
+          path: artifacts/*
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Frust ${{ steps.classify.outputs.version }}
+          prerelease: ${{ steps.classify.outputs.prerelease }}
+          files: artifacts/*
+          body: |
+            Windows x64 build of the Frust compiler, `frate`, and the JUCE-based IDE.
+
+            Requires the [Microsoft Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe) on the target machine.
+
+            See the [wiki](https://github.com/wwestlake/FrustLang/wiki) for a full language tutorial.
