@@ -32,7 +32,7 @@ and the gaps document says exactly what's still open.
   of generics, not a compiler intrinsic.
 - **Real interface dispatch** (`interface` / `impl X for Y`) via fat
   pointers, no hidden allocation.
-- **`shared<T>`** with real strong reference counting and automatic
+- **`shared`** with real strong reference counting and automatic
   scope-exit drop - deliberately designed to fail toward *leaking*,
   never toward a double-free, when ownership can't be proven
   statically. `own`/`raw` pointers exist alongside it for explicit,
@@ -100,7 +100,7 @@ resolve.
 [`FRUST_LANG_SPEC.md`](projects/01_language_paradigms/02_functional/FRUST_LANG_SPEC.md)
 and treated as a real constraint, not a slogan: it's the reason
 generics are monomorphized rather than type-erased, and the reason
-`shared<T>`'s reference counting has a hard scope limit (own's
+`shared`'s reference counting has a hard scope limit (own's
 automatic-free was deliberately left unimplemented rather than risk a
 double-free in code that works today) instead of reaching for a
 general-purpose GC.

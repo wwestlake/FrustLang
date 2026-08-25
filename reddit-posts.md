@@ -66,22 +66,28 @@ fn run_step(a: Automation, x: f32) -> f32 = { a.tick(x) }
 
 ---
 
-#### 2. `shared<T>` — reference counting without a garbage collector
+#### 2. `shared` — reference counting without a garbage collector
 
 Frust's memory model is explicit, not GC'd: `own` is single-ownership with automatic
-drop at scope end, and `shared<T>` is deterministic reference counting — retain on
+drop at scope end, and `shared` is deterministic reference counting — retain on
 copy, release on scope exit, deallocate the instant the count hits zero. No
 stop-the-world pause, no background collector thread, and no ambiguity about when a
 destructor runs. You always know exactly when cleanup happens by reading the code.
 
 ```frust
 fn main() -> i64 = {
-    let a: shared<Counter> = shared Counter { value: 0 };
+    let a: shared Counter = shared Counter { value: 0 };
     let b = a;                 // retain - refcount 2
     // both drop at end of scope, refcount hits 0, real free happens here
     0
 }
 ```
+
+(Corrected 2026-08-24: the type annotation is `shared Counter`, a bare
+prefix keyword before the plain type name — `shared<Counter>` isn't
+valid Frust syntax. Caught before this post went out; see
+`LANGUAGE_GAPS.md`'s "CRITICAL BUGS" section for the full story of how
+this was found.)
 
 ---
 
