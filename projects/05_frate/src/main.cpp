@@ -54,15 +54,18 @@ static juce::File resolveLlvmLibDir(const juce::String& configName) {
 bool linkExecutable(const std::vector<juce::String>& objFiles, const juce::File& finalBin) {
     juce::ChildProcess linker;
 
-    // Check if clang is in path
-    juce::ChildProcess checkClang;
+    // On Windows the MSVC path below supplies FRust's runtime and LLVM
+    // libraries. Clang remains the linker path for non-Windows builds.
     bool clangFound = false;
+#if !JUCE_WINDOWS
+    juce::ChildProcess checkClang;
     if (checkClang.start(juce::StringArray("clang", "--version"))) {
         checkClang.waitForProcessToFinish(2000);
         if (checkClang.getExitCode() == 0) {
             clangFound = true;
         }
     }
+#endif
     
     if (clangFound) {
         juce::StringArray linkerArgs;
