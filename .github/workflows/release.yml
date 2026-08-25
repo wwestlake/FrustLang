@@ -152,6 +152,7 @@ jobs:
           # linking, or its output ever drifts from what the wiki claims,
           # that's the tutorial silently lying - fail here, nothing ships.
           $bin = "bin\Release"
+          $env:FRUST_LLVM_ROOT = "$env:RUNNER_TEMP\vcpkg-cache\vcpkg_installed\x64-windows"
 
           Push-Location "projects\06_frust_library\core"
           & "$PWD\..\..\..\$bin\frate.exe" package

@@ -13,6 +13,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(LLVM CONFIG REQUIRED)
 message(STATUS "FrustCompiler: Found LLVM ${LLVM_PACKAGE_VERSION} at ${LLVM_DIR}")
 
+# frate's AOT linker needs LLVM only when a pod pulls in the plugin host.
+# Keep the build's discovered install root as a fallback; packaged builds can
+# override it at runtime with FRUST_LLVM_ROOT.
+get_filename_component(FRUST_LLVM_SHARE_DIR "${LLVM_DIR}" DIRECTORY)
+get_filename_component(FRUST_LLVM_ROOT "${FRUST_LLVM_SHARE_DIR}" DIRECTORY)
+
 list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
 include(AddLLVM)
 add_definitions(${LLVM_DEFINITIONS})
