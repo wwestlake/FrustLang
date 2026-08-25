@@ -1,0 +1,10 @@
+{
+  "name": "tutorial_dungeon_locked_exit",
+  "version": "1.0.0",
+  "type": "bin",
+  "description": "Build a Tiny Dungeon, chapter 3: use a condition to describe a locked exit.",
+  "exports": [],
+  "dependencies": [
+    { "name": "core", "version": "1.0.0" }
+  ]
+}

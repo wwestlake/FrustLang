@@ -161,20 +161,33 @@ jobs:
           if ($LASTEXITCODE -ne 0) { Pop-Location; throw "frate install (core) failed." }
           Pop-Location
 
-          Push-Location "examples\tutorial-first-program"
-          $output = & "$PWD\..\..\$bin\frate.exe" run 2>&1 | Out-String
-          $exitCode = $LASTEXITCODE
-          Pop-Location
+          $frate = (Resolve-Path "$bin\frate.exe").Path
 
-          Write-Host $output
+          $tutorials = @(
+            @{ Path = "examples\tutorial-first-program"; Expected = @("Entrance Hall", "A cold stone hall. Torches flicker on the walls.") },
+            @{ Path = "examples\tutorial-dungeon\02-room-voice"; Expected = @("The Map Room", "Someone labeled the danger zone 'probably fine.'") },
+            @{ Path = "examples\tutorial-dungeon\03-locked-exit"; Expected = @("A brass cellar door", "The door is locked. It is enjoying this.") },
+            @{ Path = "examples\tutorial-dungeon\04-turn-loop"; Expected = @("The lantern flickers on turn:", "3") }
+          )
 
-          if ($exitCode -ne 0) {
-            throw "Tutorial example failed to build/run (exit $exitCode). The wiki tutorial is broken - fix it before this can ship."
+          foreach ($tutorial in $tutorials) {
+            Push-Location $tutorial.Path
+            $output = & $frate run 2>&1 | Out-String
+            $exitCode = $LASTEXITCODE
+            Pop-Location
+
+            Write-Host $output
+
+            if ($exitCode -ne 0) {
+              throw "Tutorial example '$($tutorial.Path)' failed to build/run (exit $exitCode). The wiki tutorial is broken - fix it before this can ship."
+            }
+            foreach ($expected in $tutorial.Expected) {
+              if ($output -notmatch [regex]::Escape($expected)) {
+                throw "Tutorial example '$($tutorial.Path)' ran but did not print expected text '$expected'. Got:`n$output"
+              }
+            }
           }
-          if ($output -notmatch [regex]::Escape("Entrance Hall") -or $output -notmatch [regex]::Escape("A cold stone hall. Torches flicker on the walls.")) {
-            throw "Tutorial example ran but produced unexpected output. Expected exactly the First Program lesson's text - got:`n$output"
-          }
-          Write-Host "Tutorial example verified - output matches the wiki exactly."
+          Write-Host "All tutorial examples verified - output matches the wiki."
 
       - name: Stage release package
         shell: pwsh
