@@ -5,6 +5,6 @@
   "description": "Build a Tiny Dungeon, chapter 3: use a condition to describe a locked exit.",
   "exports": [],
   "dependencies": [
-    { "name": "core", "version": "1.0.0" }
+    { "name": "core", "version": "1.0.1" }
   ]
 }

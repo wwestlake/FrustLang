@@ -5,6 +5,6 @@
   "description": "GitHub wiki tutorial's First Program lesson, kept in the repo and built+run by CI - if this stops working, the tutorial is lying to readers, and the whole build fails.",
   "exports": [],
   "dependencies": [
-    { "name": "core", "version": "1.0.0" }
+    { "name": "core", "version": "1.0.1" }
   ]
 }

@@ -5,6 +5,6 @@
   "description": "Build a Tiny Dungeon, chapter 2: give a room a description function.",
   "exports": [],
   "dependencies": [
-    { "name": "core", "version": "1.0.0" }
+    { "name": "core", "version": "1.0.1" }
   ]
 }
