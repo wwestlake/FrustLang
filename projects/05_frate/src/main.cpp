@@ -12,6 +12,10 @@
 #include "PodMetadataJson.h"
 #include <map>
 
+#ifndef FRUST_BUILD_VERSION
+#define FRUST_BUILD_VERSION "development"
+#endif
+
 // The CLI has no login flow of its own - it reads the token the IDE's
 // DesktopAuthSession already persisted from its OAuth sign-in, so signing
 // in once via the IDE lets both the Producer panel and `frate publish` work.
@@ -564,9 +568,15 @@ void printUsage() {
     std::cout << "  frate add <pod_name> <version>   Add a dependency to frate.json in current dir\n";
     std::cout << "  frate publish [license]          Publish the packaged .frpod to registry (default license: MIT)\n";
     std::cout << "  frate cache-dir [path]           Show the current pod cache folder, or set a new one\n";
+    std::cout << "  frate --version                  Show the installed Frate version\n";
 }
 
 int main(int argc, char** argv) {
+    if (argc == 2 && (std::string(argv[1]) == "--version" || std::string(argv[1]) == "-v")) {
+        std::cout << "Frate " << FRUST_BUILD_VERSION << "\n";
+        return 0;
+    }
+
     if (argc < 2) {
         printUsage();
         return 1;

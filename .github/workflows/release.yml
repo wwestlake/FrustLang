@@ -127,7 +127,8 @@ jobs:
             -DJUCE_PATH="$env:RUNNER_TEMP\JUCE" `
             -DFLEX_EXECUTABLE="C:\tools\winflexbison\win_flex.exe" `
             -DBISON_EXECUTABLE="C:\tools\winflexbison\win_bison.exe" `
-            -DFRUST_WINFLEXBISON_DIR="C:\tools\winflexbison"
+            -DFRUST_WINFLEXBISON_DIR="C:\tools\winflexbison" `
+            -DFRUST_BUILD_VERSION="${{ steps.classify.outputs.version }}"
           if ($LASTEXITCODE -ne 0) { throw "CMake configure (frust_compiler) failed." }
           cmake --build "build-core" --config Release
           if ($LASTEXITCODE -ne 0) { throw "Build (frust_compiler) failed." }
@@ -141,7 +142,8 @@ jobs:
             -DFLEX_EXECUTABLE="C:\tools\winflexbison\win_flex.exe" `
             -DBISON_EXECUTABLE="C:\tools\winflexbison\win_bison.exe" `
             -DFRUST_WINFLEXBISON_DIR="C:\tools\winflexbison" `
-            -DJUCE_PATH="$env:RUNNER_TEMP\JUCE"
+            -DJUCE_PATH="$env:RUNNER_TEMP\JUCE" `
+            -DFRUST_BUILD_VERSION="${{ steps.classify.outputs.version }}"
           if ($LASTEXITCODE -ne 0) { throw "CMake configure (IDE) failed." }
           cmake --build "build-ide" --config Release
           if ($LASTEXITCODE -ne 0) { throw "Build (IDE) failed." }

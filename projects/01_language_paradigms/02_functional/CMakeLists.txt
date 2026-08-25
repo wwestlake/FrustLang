@@ -4,6 +4,10 @@ project(FrustCompiler VERSION 0.1.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Release builds receive the tag version from the workflow. Source builds
+# remain honest about not being a packaged release.
+set(FRUST_BUILD_VERSION "development" CACHE STRING "FRust CLI build version")
+
 # ------------------------------------------------------------------------------
 # Locate LLVM - no hardcoded machine-specific paths here. CMAKE_PREFIX_PATH
 # (and, on Windows, FLEX_EXECUTABLE/BISON_EXECUTABLE/FRUST_WINFLEXBISON_DIR
@@ -171,6 +175,11 @@ target_include_directories(frust_runtime PRIVATE "${FRUST_GEN_DIR}" "${FRUST_FLE
 if(WIN32)
     target_compile_definitions(frust_runtime PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
+if(MSVC)
+    # RuntimeBasic.cpp and RuntimeMeta.cpp share the target PDB in Debug.
+    # /FS serializes that PDB write when MSBuild compiles them concurrently.
+    target_compile_options(frust_runtime PRIVATE /FS)
+endif()
 target_link_libraries(frust_runtime PRIVATE frust_lang ${FRUST_LLVM_LIBS})
 
 # ------------------------------------------------------------------------------
@@ -180,6 +189,8 @@ target_link_libraries(frust_runtime PRIVATE frust_lang ${FRUST_LLVM_LIBS})
 # one-shot-evaluate() API is all a host app like the JUCE IDE needs.
 # ------------------------------------------------------------------------------
 add_executable(frust_compiler Main.cpp)
+target_compile_definitions(frust_compiler PRIVATE
+    "FRUST_BUILD_VERSION=\"${FRUST_BUILD_VERSION}\"")
 
 # Main.cpp's FRUST_RUNTIME_EXPORT symbols (frust_format_i64 etc.) need to be
 # visible to the JIT's runtime symbol lookup against this process's own

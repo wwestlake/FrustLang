@@ -4,6 +4,10 @@ project(frate_lib VERSION 0.1.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# A standalone Frate configure has no parent compiler project to provide
+# this value; packaged releases override it from their tag.
+set(FRUST_BUILD_VERSION "development" CACHE STRING "FRust CLI build version")
+
 # ------------------------------------------------------------------------------
 # Locate JUCE Framework - via JUCE_PATH (env var or -DJUCE_PATH=...), not a
 # hardcoded machine-specific path. Set per-platform in CMakePresets.json
@@ -89,6 +93,8 @@ add_executable(frate_cli
     src/main.cpp
 )
 set_target_properties(frate_cli PROPERTIES OUTPUT_NAME "frate")
+target_compile_definitions(frate_cli PRIVATE
+    "FRUST_BUILD_VERSION=\"${FRUST_BUILD_VERSION}\"")
 
 target_link_libraries(frate_cli PRIVATE
     frate_lib

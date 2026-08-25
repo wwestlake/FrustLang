@@ -52,6 +52,10 @@
 #include <llvm/Support/FileSystem.h>
 #include <llvm/TargetParser/Host.h>
 
+#ifndef FRUST_BUILD_VERSION
+#define FRUST_BUILD_VERSION "development"
+#endif
+
 namespace frust {
 namespace {
 
@@ -566,6 +570,11 @@ void RunRepl() {
 } // namespace frust
 
 int main(int argc, char** argv) {
+    if (argc == 2 && (std::string(argv[1]) == "--version" || std::string(argv[1]) == "-v")) {
+        std::cout << "FRust compiler " << FRUST_BUILD_VERSION << "\n";
+        return 0;
+    }
+
     llvm::InitializeNativeTarget();
     llvm::InitializeNativeTargetAsmPrinter();
     llvm::InitializeNativeTargetAsmParser();
