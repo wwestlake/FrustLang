@@ -4,6 +4,13 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Version tag to validate (for package naming only)"
+        required: true
+        default: "v0.5.0"
+        type: string
 
 permissions:
   contents: write
@@ -90,7 +97,8 @@ jobs:
         id: classify
         shell: pwsh
         run: |
-          $tag = $env:GITHUB_REF_NAME
+          # Manual runs validate a prospective release without publishing it.
+          $tag = "${{ inputs.release_tag || github.ref_name }}"
           if ($tag -notmatch '^v(?<version>\d+\.\d+\.\d+)(?:-(?<channel>[0-9A-Za-z.-]+))?$') {
             throw "Tag '$tag' must look like v0.5.0 (optionally v0.5.0-beta.1)."
           }
@@ -113,6 +121,7 @@ jobs:
           $llvmPrefix = "$env:RUNNER_TEMP\vcpkg-cache\vcpkg_installed\x64-windows\share\llvm"
           cmake -S "projects/01_language_paradigms/02_functional" -B "build-core" -A x64 `
             -DCMAKE_PREFIX_PATH="$llvmPrefix" `
+            -DJUCE_PATH="$env:RUNNER_TEMP\JUCE" `
             -DFLEX_EXECUTABLE="C:\tools\winflexbison\win_flex.exe" `
             -DBISON_EXECUTABLE="C:\tools\winflexbison\win_bison.exe" `
             -DFRUST_WINFLEXBISON_DIR="C:\tools\winflexbison"
@@ -193,6 +202,7 @@ jobs:
           path: artifacts/*
 
       - name: Publish GitHub release
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
           name: Frust ${{ steps.classify.outputs.version }}
