@@ -210,6 +210,8 @@ jobs:
           Copy-Item "lib\Release\frate_lib.lib" "$stage\lib\"
           Copy-Item "projects\02_juce_language_host\plugins\*" "$stage\plugins\" -Recurse
           Copy-Item "projects\06_frust_library\core" "$stage\stdlib\core" -Recurse
+          Copy-Item "projects\06_frust_library\plugin" "$stage\stdlib\plugin" -Recurse
+          Copy-Item "projects\06_frust_library\meta" "$stage\stdlib\meta" -Recurse
           Copy-Item "README.md" "$stage\"
           Copy-Item "LICENSE" "$stage\"
 
@@ -231,13 +233,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { Pop-Location; Pop-Location; throw "A pod built by the staged release package failed to run." }
           Pop-Location
 
-          Push-Location "$probe\stdlib\core"
-          & "$probe\bin\frate.exe" package
-          if ($LASTEXITCODE -ne 0) { Pop-Location; Pop-Location; throw "Packaged frate could not package the bundled core pod." }
-          & "$probe\bin\frate.exe" install
-          if ($LASTEXITCODE -ne 0) { Pop-Location; Pop-Location; throw "Packaged frate could not install the bundled core pod." }
-          Pop-Location
-
           Push-Location "release_smoke"
           & "$probe\bin\frate.exe" add core 1.0.0
           if ($LASTEXITCODE -ne 0) { Pop-Location; Pop-Location; throw "Packaged frate could not add the bundled core pod." }
@@ -247,6 +242,11 @@ jobs:
             Pop-Location
             Pop-Location
             throw "The staged release package could not build and run the tutorial's core pod example. Output:`n$output"
+          }
+          if ((Get-Content "build\link.rsp" -Raw) -match "frust_plugin_host\.lib|LLVM[A-Za-z0-9_]*\.lib") {
+            Pop-Location
+            Pop-Location
+            throw "A basic core application pulled optional plugin or LLVM libraries into its link step."
           }
           Pop-Location
           Pop-Location
