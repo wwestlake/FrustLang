@@ -147,3 +147,21 @@ host stack, not just the one new example).
   CI pipeline (`.github/workflows/release.yml`) that would build and publish
   it exists and is believed correct, but has never been triggered by a real
   tag push.
+- **`v0.5.0` tag pushed** (2026-08-25, same session as everything above) -
+  the very first real run of the CI release pipeline, triggered live. Check
+  https://github.com/wwestlake/FrustLang/actions for the result if it isn't
+  already reflected in a comment on issue #9 or a later handoff note - this
+  session's token budget ran out before it could see the run through to
+  completion (a real 20-60+ minute Windows CI build, first time ever run).
+  The workflow itself doesn't depend on this session staying alive - it's
+  running entirely on GitHub's own infrastructure regardless.
+- **New idea, spec being developed in a separate session (not this repo
+  yet)**: a .NET host for Frust, so it could be embedded in a .NET app.
+  Assessed as genuinely feasible - `frust_plugin_host`'s API is already a
+  clean `extern "C"` C ABI, exactly what .NET's P/Invoke needs. The one real
+  gap: it's only ever been built as a static `.lib` so far, never a `.dll` -
+  P/Invoke needs a real dynamic library to load at runtime, so step one
+  would be adding a DLL build target (a modest CMake addition, not a
+  redesign, since the API surface is already right). Not started - whoever
+  picks this up should look for the actual spec first (being written
+  elsewhere) before designing anything.
