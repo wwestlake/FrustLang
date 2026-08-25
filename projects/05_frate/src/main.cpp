@@ -72,9 +72,126 @@ bool linkExecutable(const std::vector<juce::String>& objFiles, const juce::File&
                 if (vsPath.isNotEmpty()) {
                     juce::String vsDevCmd = vsPath + "\\Common7\\Tools\\VsDevCmd.bat";
                     if (juce::File(vsDevCmd).existsAsFile()) {
-                        juce::String linkCmd = "call \"" + vsDevCmd + "\" -arch=x64 && link.exe /OUT:\"" + finalBin.getFullPathName() + "\" /ENTRY:main";
-                        for (auto& obj : objFiles) linkCmd += " \"" + obj + "\"";
-                        
+                        // VsDevCmd.bat itself shells out to a bare `vswhere.exe`
+                        // internally - the full path above only satisfies OUR
+                        // call to it, not VsDevCmd's own. Put vswhere's
+                        // directory on PATH for this child process so
+                        // VsDevCmd's internal call resolves too (confirmed
+                        // failure mode: "'vswhere.exe' is not recognized",
+                        // even though the outer vswhere call above succeeded).
+                        juce::String vsWhereDir = juce::File(vsWherePath).getParentDirectory().getFullPathName();
+
+                        // frate.exe's own directory tells us where the repo's
+                        // bin/<Config>/ lives - lib/<Config>/ is a sibling of
+                        // that at the repo root, same Debug/Release name
+                        // either way, since frate.exe and frust_runtime.lib
+                        // are always built together from the same config.
+                        juce::File frateExeDir = juce::File::getSpecialLocation(juce::File::currentExecutableFile).getParentDirectory();
+                        juce::String configName = frateExeDir.getFileName(); // "Debug" or "Release"
+                        juce::File repoRoot = frateExeDir.getParentDirectory().getParentDirectory();
+                        juce::File runtimeLib = repoRoot.getChildFile("lib").getChildFile(configName).getChildFile("frust_runtime.lib");
+                        juce::File pluginHostLib = repoRoot.getChildFile("lib").getChildFile(configName).getChildFile("frust_plugin_host.lib");
+
+                        if (!runtimeLib.existsAsFile()) {
+                            std::cerr << "Error: frust_runtime.lib not found at " << runtimeLib.getFullPathName()
+                                      << " - build frust_compiler first (it builds frust_runtime alongside it).\n";
+                            return false;
+                        }
+
+                        // frust_compiler's own .o files (from LLVM codegen,
+                        // not cl.exe) carry no /DEFAULTLIB directives, so
+                        // link.exe pulls in NOTHING automatically - every
+                        // system lib a core/src/*.fr file's extern fn needs
+                        // (CreateThread, InitializeCriticalSection, time,
+                        // getenv, exit, _spawnv, ...) has to be named
+                        // explicitly.
+                        //
+                        // Deliberately NOT /ENTRY:main - that bypasses the
+                        // CRT's own startup (mainCRTStartup), which is what
+                        // actually initializes the runtime (locale,
+                        // exception tables, static constructors like
+                        // std::cout's) before anything real can run. Every
+                        // mainstream compiled language (Rust, Swift, C/C++)
+                        // lets the platform's normal startup happen and
+                        // just provides a real `main` for it to call - Go's
+                        // the outlier, and only because it ships its own
+                        // complete alternate runtime instead of the C one,
+                        // a much bigger, deliberate investment. Frust's
+                        // compiled main() (i64, zero args) isn't literally
+                        // C's `int main(void)`, but at the x86-64 calling
+                        // convention level that's harmless - the CRT's own
+                        // default entry point just needs a symbol literally
+                        // named "main" to call, which the object already
+                        // has, unused argc/argv registers or a wider return
+                        // width doesn't matter for a callee that ignores/
+                        // doesn't need them.
+                        //
+                        // When core's events.fr/services.fr get pulled in
+                        // (any `import core, "..."`), frust_plugin_host.lib
+                        // brings its ENTIRE dependency graph with it - all
+                        // of LLVM's OrcJIT/CodeGen/MC component libs plus
+                        // several JUCE-needed Windows libs (COM, shell).
+                        // This exact list is not guessed - it's extracted
+                        // verbatim from a real, already-working link (one
+                        // of frust_plugin_host's own example executables),
+                        // same libs, same order.
+                        juce::File frustLangLib = repoRoot.getChildFile("lib").getChildFile(configName).getChildFile("frust_lang.lib");
+                        juce::File frateLibLib = repoRoot.getChildFile("lib").getChildFile(configName).getChildFile("frate_lib.lib");
+                        juce::String llvmLibDir = "D:/000 Creation Suite/apps/CreationEngine/vcpkg_installed/x64-windows/" +
+                                                   juce::String(configName == "Debug" ? "debug/lib" : "lib");
+                        juce::StringArray llvmLibNames{
+                            "LLVMOrcJIT", "LLVMExecutionEngine", "LLVMRuntimeDyld", "LLVMPasses", "LLVMCoroutines",
+                            "LLVMHipStdPar", "LLVMipo", "LLVMFrontendOpenMP", "LLVMFrontendOffloading", "LLVMLinker",
+                            "LLVMVectorize", "LLVMJITLink", "LLVMOrcTargetProcess", "LLVMOrcShared", "LLVMWindowsDriver",
+                            "LLVMOption", "LLVMX86CodeGen", "LLVMAsmPrinter", "LLVMCFGuard", "LLVMGlobalISel",
+                            "LLVMIRPrinter", "LLVMInstrumentation", "LLVMSelectionDAG", "LLVMCodeGen", "LLVMTarget",
+                            "LLVMBitWriter", "LLVMScalarOpts", "LLVMAggressiveInstCombine", "LLVMInstCombine",
+                            "LLVMObjCARCOpts", "LLVMTransformUtils", "LLVMAnalysis", "LLVMProfileData", "LLVMSymbolize",
+                            "LLVMDebugInfoDWARF", "LLVMDebugInfoPDB", "LLVMObject", "LLVMIRReader", "LLVMBitReader",
+                            "LLVMAsmParser", "LLVMCore", "LLVMRemarks", "LLVMBitstreamReader", "LLVMTextAPI",
+                            "LLVMDebugInfoMSF", "LLVMDebugInfoBTF", "LLVMX86AsmParser", "LLVMX86Desc", "LLVMCodeGenTypes",
+                            "LLVMMCParser", "LLVMX86Disassembler", "LLVMX86Info", "LLVMMCDisassembler", "LLVMMC",
+                            "LLVMBinaryFormat", "LLVMTargetParser", "LLVMDebugInfoCodeView", "LLVMSupport", "LLVMDemangle"
+                        };
+
+                        // The full argument list (objects + this many LLVM
+                        // libs) blows straight past cmd.exe's ~8191-char
+                        // command-line limit - link.exe's own answer to
+                        // that, same as every other MSVC tool, is a
+                        // response file (one argument per line, @-prefixed
+                        // on the actual command line instead of the real
+                        // arguments). Keeps the cmd.exe-visible line short
+                        // regardless of how many libraries this ends up
+                        // needing.
+                        juce::StringArray linkArgs;
+                        linkArgs.add("/OUT:\"" + finalBin.getFullPathName() + "\"");
+                        linkArgs.add("/SUBSYSTEM:CONSOLE");
+                        for (auto& obj : objFiles) linkArgs.add("\"" + obj + "\"");
+                        linkArgs.add("\"" + runtimeLib.getFullPathName() + "\"");
+                        linkArgs.add("\"" + frustLangLib.getFullPathName() + "\"");
+                        bool needsPluginHost = pluginHostLib.existsAsFile();
+                        if (needsPluginHost) {
+                            linkArgs.add("\"" + pluginHostLib.getFullPathName() + "\"");
+                            if (frateLibLib.existsAsFile()) linkArgs.add("\"" + frateLibLib.getFullPathName() + "\"");
+                            for (auto& name : llvmLibNames) {
+                                linkArgs.add("\"" + llvmLibDir + "/" + name + ".lib\"");
+                            }
+                            juce::String diaLib = "D:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\DIA SDK\\lib\\amd64\\diaguids.lib";
+                            if (juce::File(diaLib).existsAsFile()) linkArgs.add("\"" + diaLib + "\"");
+                            linkArgs.addArray(juce::StringArray{
+                                "psapi.lib", "shell32.lib", "ole32.lib", "uuid.lib", "advapi32.lib", "ws2_32.lib",
+                                "delayimp.lib", "-delayload:shell32.dll", "-delayload:ole32.dll",
+                                "user32.lib", "gdi32.lib", "winspool.lib", "oleaut32.lib", "comdlg32.lib"
+                            });
+                        }
+                        linkArgs.addArray(juce::StringArray{"kernel32.lib", "msvcrtd.lib", "vcruntimed.lib", "ucrtd.lib"});
+
+                        juce::File responseFile = finalBin.getParentDirectory().getChildFile("link.rsp");
+                        responseFile.replaceWithText(linkArgs.joinIntoString("\n"));
+
+                        juce::String linkCmd = "set \"PATH=%PATH%;" + vsWhereDir + "\" && call \"" + vsDevCmd +
+                                                "\" -arch=x64 && link.exe @\"" + responseFile.getFullPathName() + "\"";
+
                         juce::String fullCmd = "cmd.exe /c \"" + linkCmd + "\"";
                         if (linker.start(fullCmd)) {
                             juce::String linkerOut = linker.readAllProcessOutput();
@@ -134,6 +251,94 @@ static bool collectSelfUseFiles(const juce::File& entryFile, juce::Array<juce::F
     return true;
 }
 
+// `import <pod>, "<version>";` (real cross-pod import, distinct from the
+// always-inert `use somepod;`) - scans entryFile's text for import lines,
+// resolves each to a cached pod directory, and merges THAT pod's own full
+// self-use file set in, giving real name resolution across a pod boundary
+// with no extern fn needed by hand. "current" reads the version from
+// thisPodConfig's own declared dependencies (frate.json), so the version
+// doesn't have to be duplicated in source when it's already in the
+// manifest - matches the version already resolved/installed for a normal
+// dependency, no new resolver capability needed for that case.
+//
+// Deliberately NOT transitive: an imported pod's OWN import lines (if it
+// has any) aren't followed - same "not transitive" stance frate already
+// takes for plain dependencies (FRATE_SPEC.md 5.1). A real, separate
+// follow-on if it's ever actually needed, not assumed here.
+static bool collectImportedPodFiles(const juce::File& entryFile, const frate::FrateConfig& thisPodConfig,
+                                     frate::FrateCache& cache, juce::Array<juce::File>& sourceFiles,
+                                     juce::StringArray& importedPodNames, juce::String& errorOut) {
+    juce::StringArray lines = juce::StringArray::fromLines(entryFile.loadFileAsString());
+    for (const auto& rawLine : lines) {
+        juce::String line = rawLine.upToFirstOccurrenceOf("//", false, false).trim();
+        if (!line.startsWith("import ")) continue;
+
+        if (!line.endsWith(";")) {
+            errorOut = "Malformed 'import' directive (missing ';'): " + rawLine.trim();
+            return false;
+        }
+
+        // "import <pod>, \"<version>\";" -> pod name up to the comma,
+        // version the quoted text after it.
+        juce::String body = line.substring(juce::String("import").length(), line.length() - 1).trim();
+        int commaIdx = body.indexOfChar(',');
+        if (commaIdx < 0) {
+            errorOut = "Malformed 'import' directive (expected 'import <pod>, \"<version>\";'): " + rawLine.trim();
+            return false;
+        }
+        juce::String podName = body.substring(0, commaIdx).trim();
+        juce::String versionQuoted = body.substring(commaIdx + 1).trim();
+        if (!versionQuoted.startsWith("\"") || !versionQuoted.endsWith("\"") || versionQuoted.length() < 2) {
+            errorOut = "Malformed 'import' directive (version must be a quoted string): " + rawLine.trim();
+            return false;
+        }
+        juce::String version = versionQuoted.substring(1, versionQuoted.length() - 1);
+
+        if (version == "current") {
+            bool found = false;
+            for (const auto& dep : thisPodConfig.getDependencies()) {
+                if (juce::String(dep.name) == podName) {
+                    version = dep.version;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                errorOut = "import " + podName + ", \"current\" - '" + podName +
+                           "' isn't a declared dependency of this pod (run 'frate add " +
+                           podName.toStdString() + " <version>' first)";
+                return false;
+            }
+        }
+
+        if (!cache.isCached(podName.toStdString(), version.toStdString())) {
+            errorOut = "import " + podName + ", \"" + version + "\" - not cached. Run 'frate install' first.";
+            return false;
+        }
+
+        juce::File podDir = cache.getCachedPodDir(podName.toStdString(), version.toStdString());
+        juce::File podFrateJson = podDir.getChildFile("frate.json");
+        frate::FrateConfig importedConfig;
+        if (!importedConfig.load(podFrateJson)) {
+            errorOut = "import " + podName + ", \"" + version + "\" - couldn't read " + podFrateJson.getFullPathName();
+            return false;
+        }
+        const auto& importedMeta = importedConfig.getMetadata();
+        juce::String importedEntryPoint = (importedMeta.type == "lib") ? "src/lib.fr" : "src/main.fr";
+        juce::File importedEntry = podDir.getChildFile(importedEntryPoint);
+        if (!importedEntry.existsAsFile()) {
+            errorOut = "import " + podName + ", \"" + version + "\" - entry point not found: " + importedEntry.getFullPathName();
+            return false;
+        }
+
+        if (!collectSelfUseFiles(importedEntry, sourceFiles, errorOut)) {
+            return false;
+        }
+        importedPodNames.add(podName);
+    }
+    return true;
+}
+
 bool buildPod(const juce::File& podDir, bool isRun, const std::map<std::string, juce::File>& localWorkspaceMap, std::vector<juce::String>& workspaceObjFiles) {
     juce::File frateJson = podDir.getChildFile("frate.json");
     if (!frateJson.existsAsFile()) {
@@ -161,8 +366,25 @@ bool buildPod(const juce::File& podDir, bool isRun, const std::map<std::string, 
     std::cout << "Compiling dependencies for " << meta.name << "...\n";
     frate::FrateCache cache;
     std::vector<juce::String> objFiles;
-    
+
+    // Resolve `import <pod>, "<version>";` lines FIRST - an imported pod's
+    // source gets merged directly into this compilation unit (see
+    // collectImportedPodFiles' own comment), so it must NOT also go
+    // through the object-file-link path below - that would define every
+    // one of its symbols twice (once from the merged source, once from
+    // its separately-compiled .o) and fail to link.
+    juce::Array<juce::File> importedSourceFiles;
+    juce::StringArray importedPodNames;
+    {
+        juce::String importErr;
+        if (!collectImportedPodFiles(entryFile, config, cache, importedSourceFiles, importedPodNames, importErr)) {
+            std::cerr << "Error: " << importErr << "\n";
+            return false;
+        }
+    }
+
     for (const auto& dep : config.getDependencies()) {
+        if (importedPodNames.contains(dep.name)) continue;
         juce::File depDir;
         if (localWorkspaceMap.count(dep.name) > 0) {
             depDir = localWorkspaceMap.at(dep.name);
@@ -206,6 +428,7 @@ bool buildPod(const juce::File& podDir, bool isRun, const std::map<std::string, 
         std::cerr << "Error: " << collectError << "\n";
         return false;
     }
+    sourceFiles.addArray(importedSourceFiles);
 
     juce::File buildDir = podDir.getChildFile("build");
     buildDir.createDirectory();
@@ -275,6 +498,7 @@ void printUsage() {
     std::cout << "  frate update                     Fetch remote dependencies into local cache\n";
     std::cout << "  frate add <pod_name> <version>   Add a dependency to frate.json in current dir\n";
     std::cout << "  frate publish [license]          Publish the packaged .frpod to registry (default license: MIT)\n";
+    std::cout << "  frate cache-dir [path]           Show the current pod cache folder, or set a new one\n";
 }
 
 int main(int argc, char** argv) {
@@ -285,6 +509,13 @@ int main(int argc, char** argv) {
 
     std::string command = argv[1];
     juce::File currentDir = juce::File::getCurrentWorkingDirectory();
+
+    // Only the commands that actually touch FrateCache need the cache
+    // folder resolved - asking on `frate new`/`add`/`package`/`publish`
+    // would be a pointless interruption for something they never use.
+    if (command == "build" || command == "run" || command == "install" || command == "update") {
+        frate::FrateCache::promptForCacheRootIfUnset();
+    }
 
     if (command == "new") {
         if (argc < 3) {
@@ -544,6 +775,19 @@ int main(int argc, char** argv) {
         } else {
             std::cerr << "Error: Failed to publish metadata. Check if this version already exists.\n";
             return 1;
+        }
+    }
+    else if (command == "cache-dir") {
+        if (argc < 3) {
+            std::cout << frate::FrateCache::resolveDefaultCacheRoot().getFullPathName() << "\n";
+        } else {
+            juce::File newRoot{ juce::String(argv[2]) };
+            if (frate::FrateCache::setCacheRoot(newRoot)) {
+                std::cout << "Cache folder set to " << newRoot.getFullPathName() << "\n";
+            } else {
+                std::cerr << "Error: couldn't save that choice - is this frate.exe's own directory writable?\n";
+                return 1;
+            }
         }
     }
     else {

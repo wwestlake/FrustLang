@@ -1,0 +1,19 @@
+// Wiki tutorial's "First Program" lesson - kept here verbatim (not just
+// in prose on the wiki page) so CI actually builds and runs it on every
+// change to the compiler/frate/core. If this ever stops compiling or
+// stops printing exactly what's expected, the tutorial is lying to
+// readers - the release build fails, nothing ships broken.
+
+import core, "current";
+
+struct Room { name: String, description: String }
+
+fn main() -> i64 = {
+    let start: Room = Room {
+        name: "Entrance Hall",
+        description: "A cold stone hall. Torches flicker on the walls."
+    };
+    println_str(start.name);
+    println_str(start.description);
+    0
+}

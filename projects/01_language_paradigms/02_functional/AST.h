@@ -259,6 +259,26 @@ struct UseDecl {
     // compilation unit either way) - it does NOT namespace-qualify
     // anything. pathSegments holds just the one file/module name.
     bool isSelfUse = false;
+
+    // `import core, "current";` - a real cross-POD import (a separate
+    // frate dependency, not a sibling file in this same pod - that's
+    // isSelfUse above). Unlike a plain `use somepod;` (parses, but is a
+    // complete no-op everywhere - Codegen.h has zero handling of
+    // DeclKind::Use, and frate's own file-collection only ever looked
+    // for "use self::" lines), `import` is real: frate resolves
+    // pathSegments[0] (the pod name) + importVersion, then merges the
+    // target pod's own declared file set into this compilation the same
+    // way isSelfUse already does for a sibling file - giving real,
+    // extern-free name resolution across a pod boundary for the first
+    // time. importVersion is either an explicit exact version string or
+    // the literal "current" (use whatever version this pod's own
+    // frate.json already declares as a dependency - no new resolver
+    // capability needed for that case). A version RANGE pattern
+    // (e.g. "1.2.*") is real, deliberately-deferred follow-on work -
+    // frate's resolver only does exact-match today.
+    bool isImport = false;
+    std::string importVersion;
+
     SourceLoc loc;
 };
 

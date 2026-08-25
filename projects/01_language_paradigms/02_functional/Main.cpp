@@ -9,6 +9,17 @@
 // JITDylib-wide symbol per binding or a persistent module, which is a
 // follow-up, not part of this first JIT pass.
 
+// frust_runtime's exported symbols (frust_print_str etc., Runtime.cpp) are
+// never called directly from this file's own C++ code - only found by name
+// at JIT time. Static-lib linking pulls in a .obj only if something
+// references a symbol inside it; with nothing here doing that, the linker
+// would happily drop Runtime.cpp's .obj entirely, silently breaking JIT
+// symbol resolution. /INCLUDE forces it in regardless - one symbol is
+// enough, since it drags the whole .obj (every function in it) along.
+#if defined(_WIN32)
+#pragma comment(linker, "/include:frust_print_str")
+#endif
+
 #include <atomic>
 #include <cstdio>
 #include <fstream>
@@ -338,247 +349,11 @@ void CallAndPrint(const FunctionDecl& fn, void* addr) {
     }
 }
 
-// Runtime backing for the frust-library `core` pod (extern-declared there,
-// matching these exact signatures/names). Exported from this process's own
-// image so LLVM ORC JIT's default
-// DynamicLibrarySearchGenerator::GetForCurrentProcess() resolves them at
-// JIT time - works for `frust_compiler <file>` and the IDE's REPL (which
-// needs the identical set exported from ITS OWN process image too, see
-// projects/02_juce_language_host/Source/Main.cpp - keep both in sync).
-//
-// NOT yet usable from a `frate build`-produced standalone linked
-// executable - that needs an actual runtime .lib for the linker to pull
-// these symbols from, which doesn't exist yet (AOT/"hard iron mode"
-// compilation is explicitly deferred, same as FRATE_SPEC.md already notes
-// for frate build in general).
-//
-// __declspec(dllexport) is MSVC-only - GCC/Clang don't recognize it at
-// all (a hard compile error, not a harmless no-op). FRUST_RUNTIME_EXPORT
-// is the portable equivalent: dllexport on Windows, explicit default
-// visibility on Linux (matches ELF's default for extern "C" symbols
-// anyway, but stated explicitly so it stays correct even if this file is
-// ever built with -fvisibility=hidden).
-#if defined(_WIN32)
-#define FRUST_RUNTIME_EXPORT extern "C" __declspec(dllexport)
-#else
-#define FRUST_RUNTIME_EXPORT extern "C" __attribute__((visibility("default")))
-#endif
-
-FRUST_RUNTIME_EXPORT void frust_print_f64(double val) {
-    std::cout << val << "\n";
-}
-FRUST_RUNTIME_EXPORT void frust_print_str(const char* val) {
-    std::cout << val << "\n";
-}
-
-// Formatting backs core's format_*/concat functions, which println_i64/
-// f64/bool are themselves built from (format -> String, then
-// println_str) rather than each having their own direct-print C export.
-// Frust has no string ownership/allocation of its own yet, so these hand
-// back a pointer into a small rotating pool of static buffers rather than
-// a heap allocation - good enough for "format a couple of values and
-// concat/print them in one expression," NOT safe to stash a returned
-// String past a handful of further format/concat calls (same class of
-// caveat as C's strtok/ctime). kFormatBufferCount is comfortably more than
-// any realistic single expression's nesting depth.
-namespace {
-constexpr int kFormatBufferCount = 16;
-// Was 64 - too small for realistic use (a real absolute Windows path
-// alone silently truncated inside frust_str_concat's snprintf, causing
-// a downstream "cannot open" on the truncated path during
-// process_task.fr's multiprocessing work). 512 gives real headroom for
-// paths/messages while staying a trivial per-slot cost (16 slots * 512
-// bytes = 8KB thread_local, negligible).
-constexpr size_t kFormatBufferSize = 512;
-thread_local char formatBufferPool[kFormatBufferCount][kFormatBufferSize];
-thread_local int formatBufferIndex = 0;
-
-char* nextFormatBuffer() {
-    char* buf = formatBufferPool[formatBufferIndex];
-    formatBufferIndex = (formatBufferIndex + 1) % kFormatBufferCount;
-    return buf;
-}
-} // namespace
-
-FRUST_RUNTIME_EXPORT const char* frust_format_i64(int64_t val) {
-    char* buf = nextFormatBuffer();
-    std::snprintf(buf, kFormatBufferSize, "%lld", static_cast<long long>(val));
-    return buf;
-}
-FRUST_RUNTIME_EXPORT const char* frust_format_f64(double val) {
-    char* buf = nextFormatBuffer();
-    std::snprintf(buf, kFormatBufferSize, "%g", val);
-    return buf;
-}
-FRUST_RUNTIME_EXPORT const char* frust_format_bool(bool val) {
-    return val ? "true" : "false"; // static literals - always valid, no pool slot needed
-}
-FRUST_RUNTIME_EXPORT const char* frust_str_concat(const char* a, const char* b) {
-    char* buf = nextFormatBuffer();
-    std::snprintf(buf, kFormatBufferSize, "%s%s", a, b);
-    return buf;
-}
-
-// Indexed scalar read/write into an arbitrary buffer (e.g. one returned
-// by mem.fr's alloc()). This is the one primitive Frust's own codegen is
-// still missing (no pointer-dereference/indexed-write support - see
-// UnaryOp::Deref's "not supported yet" branch in Codegen.h, and
-// compileAssign only handling struct-field LHS, not Index), so it's
-// exposed the same way frust_format_*/frust_print_str already are: a
-// small fixed-arity C helper a Frust `extern fn` can call directly.
-// idx is an element index (not a byte offset) - matches core/mem.fr's
-// existing alloc()-returns-a-buffer convention. No bounds checking, same
-// "caller's problem" stance as raw C pointer arithmetic.
-FRUST_RUNTIME_EXPORT int64_t frust_buf_get_i64(const int64_t* base, int64_t idx) {
-    return base[idx];
-}
-FRUST_RUNTIME_EXPORT void frust_buf_set_i64(int64_t* base, int64_t idx, int64_t val) {
-    base[idx] = val;
-}
-
-// Pointer-slot sibling of the above - lets a Frust buffer hold other
-// pointers (another buffer's address, a struct's address, etc.) without
-// needing a pointer<->i64 cast Frust's coerceToType doesn't implement.
-// Exists specifically so a struct constructed in one function's stack
-// frame can be safely handed off to a spawned thread that outlives that
-// frame: pack its would-be fields into a heap buffer via this instead.
-FRUST_RUNTIME_EXPORT void* frust_buf_get_ptr(void* const* base, int64_t idx) {
-    return base[idx];
-}
-FRUST_RUNTIME_EXPORT void frust_buf_set_ptr(void** base, int64_t idx, void* val) {
-    base[idx] = val;
-}
-
-// ---------------------------------------------------------------------
-// Live AST metaprogramming runtime (FRUST_LANG_SPEC.md 1.1: `quote`/
-// `unquote`/`build_time`). Codegen.h's buildQuoteTree() compiles a
-// `quote { ... }` block into calls to the frust_ast_* functions below -
-// so when a running Frust program actually executes a quote block, it
-// builds a REAL frust::Expr tree, live, using whatever values are live
-// at that moment (unquote's operand is ordinary compiled code, not
-// something resolved ahead of time). frust_jit_eval_f32 is the "run it
-// now" primitive: wraps that tree as a one-parameter function, hands it
-// to the SAME Codegen/LLJIT pipeline RunViaJit already uses, and calls
-// the result - the whole generate-compile-run loop happening inside the
-// already-running process, no rebuild, no restart.
-namespace {
-
-// Backs every runtime-constructed quote-tree node for the life of the
-// process. Deliberately never freed - v1 scope, same as several other
-// process-lifetime runtime structures here. Revisit with a real
-// reclaim/arena-per-call strategy if a program ends up calling this in
-// a hot loop; for the "generate a specialized function occasionally, in
-// response to something changing" use case this is built for, the
-// volume is inherently bounded.
-AstArena& quoteRuntimeArena() {
-    static AstArena arena;
-    return arena;
-}
-
-std::atomic<uint64_t> jitEvalCounter{0};
-
-} // namespace
-
-FRUST_RUNTIME_EXPORT void* frust_ast_lit_f64(double val) {
-    Expr* e = quoteRuntimeArena().NewExpr(ExprKind::FloatLiteral, SourceLoc{});
-    e->floatValue = val;
-    return e;
-}
-
-FRUST_RUNTIME_EXPORT void* frust_ast_param(const char* name) {
-    Expr* e = quoteRuntimeArena().NewExpr(ExprKind::Identifier, SourceLoc{});
-    e->text = name ? name : "";
-    return e;
-}
-
-FRUST_RUNTIME_EXPORT void* frust_ast_binary(int32_t opCode, void* lhs, void* rhs) {
-    Expr* e = quoteRuntimeArena().NewExpr(ExprKind::Binary, SourceLoc{});
-    e->binaryOp = static_cast<BinaryOp>(opCode);
-    e->lhs = reinterpret_cast<Expr*>(lhs);
-    e->rhs = reinterpret_cast<Expr*>(rhs);
-    return e;
-}
-
-FRUST_RUNTIME_EXPORT void* frust_ast_unary(int32_t opCode, void* operand) {
-    Expr* e = quoteRuntimeArena().NewExpr(ExprKind::Unary, SourceLoc{});
-    e->unaryOp = static_cast<UnaryOp>(opCode);
-    e->lhs = reinterpret_cast<Expr*>(operand);
-    return e;
-}
-
-// The "run it now" primitive. `astPtr` is a tree already fully built by
-// the calls above (built bottom-up, so by the time this runs every
-// node's children are already populated) - wraps it as the body of a
-// synthesized one-f32-parameter function named "x" (the spec's own
-// example's convention - see the plan's stated v1 scope: full generality
-// needs function-pointer/closure support Frust doesn't have yet, so this
-// makes the actual call itself, in C++, with a fixed signature), compiles
-// and JITs it fresh, and calls it immediately.
-FRUST_RUNTIME_EXPORT float frust_jit_eval_f32(void* astPtr, float x) {
-    if (!astPtr) {
-        std::cerr << "frust: frust_jit_eval_f32 called with a null ASTExpr\n";
-        return 0.0f;
-    }
-    Expr* treeRoot = reinterpret_cast<Expr*>(astPtr);
-
-    AstArena& arena = quoteRuntimeArena();
-    SourceLoc loc;
-
-    TypeExpr* f32Type = arena.NewType(loc);
-    f32Type->name = "f32";
-
-    Param xParam;
-    xParam.name = "x";
-    xParam.type = f32Type;
-    xParam.loc = loc;
-
-    FunctionDecl* fn = arena.NewFunctionDecl();
-    fn->name = "__frust_jit_gen_" + std::to_string(jitEvalCounter.fetch_add(1));
-    fn->isPub = true;
-    fn->params.push_back(xParam);
-    fn->returnType = f32Type;
-    fn->body = treeRoot;
-
-    Decl* decl = arena.NewDecl(DeclKind::Function);
-    decl->functionDecl = fn;
-
-    Program* prog = arena.NewProgram();
-    prog->decls.push_back(decl);
-
-    auto genContext = std::make_unique<llvm::LLVMContext>();
-    auto genModule = std::make_unique<llvm::Module>("frust_jit_eval", *genContext);
-
-    Codegen codegen(*genContext, *genModule);
-    if (!codegen.compileProgram(*prog)) {
-        std::cerr << "frust: frust_jit_eval_f32: generated code failed codegen\n";
-        return 0.0f;
-    }
-
-    auto jitOrErr = llvm::orc::LLJITBuilder().create();
-    if (!jitOrErr) {
-        std::cerr << "frust: frust_jit_eval_f32: JIT init failed: " << llvm::toString(jitOrErr.takeError()) << "\n";
-        return 0.0f;
-    }
-    auto jit = std::move(*jitOrErr);
-
-    auto generator = llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(jit->getDataLayout().getGlobalPrefix());
-    if (generator) jit->getMainJITDylib().addGenerator(std::move(*generator));
-
-    llvm::orc::ThreadSafeModule tsm(std::move(genModule), std::move(genContext));
-    if (auto err = jit->addIRModule(std::move(tsm))) {
-        std::cerr << "frust: frust_jit_eval_f32: JIT module load failed: " << llvm::toString(std::move(err)) << "\n";
-        return 0.0f;
-    }
-
-    auto sym = jit->lookup(fn->name);
-    if (!sym) {
-        std::cerr << "frust: frust_jit_eval_f32: JIT lookup failed: " << llvm::toString(sym.takeError()) << "\n";
-        return 0.0f;
-    }
-
-    auto fnPtr = sym->toPtr<float(*)(float)>();
-    return fnPtr(x);
-}
+// Runtime backing for the frust-library `core` pod (frust_print_str,
+// frust_format_*, frust_buf_*, frust_ast_*, frust_jit_eval_f32) now
+// lives in Runtime.cpp, compiled into the frust_runtime static library -
+// see that file for the full history. frust_compiler links frust_runtime
+// (CMakeLists.txt) instead of defining these itself.
 
 void optimizeModule(llvm::Module& M) {
     llvm::LoopAnalysisManager LAM;

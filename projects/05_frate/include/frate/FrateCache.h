@@ -12,11 +12,44 @@ public:
 
     bool isCached(const std::string& name, const std::string& version) const;
     juce::File getCachedPodDir(const std::string& name, const std::string& version) const;
-    
+
     // Extracts a .frpod zip file into the cache directory for its name and version
     bool installFromPackage(const juce::File& frpodFile, const std::string& name, const std::string& version);
 
+    // Where the cache root actually lives, checked in this order:
+    //   1. FRATE_CACHE_DIR environment variable, if set (highest priority,
+    //      always available - scripting/CI escape hatch).
+    //   2. A path saved in <the running executable's own directory>/
+    //      frate_settings.json, if that file exists (written once by
+    //      promptForCacheRootIfUnset() below - see that function for why
+    //      this deliberately lives next to the exe rather than in
+    //      %APPDATA%).
+    //   3. Otherwise, <the running executable's own directory>/cache -
+    //      for a from-source build this naturally lands under the repo's
+    //      own bin/Debug or bin/Release; for an extracted release zip it
+    //      lands wherever the user chose to extract it. Never %APPDATA%
+    //      by default.
+    static juce::File resolveDefaultCacheRoot();
+
+    // CLI-only: if no cache location has ever been chosen (no
+    // frate_settings.json next to the exe, and FRATE_CACHE_DIR isn't
+    // set), prompts the user once via stdin/stdout for a folder, then
+    // persists the choice (an empty answer accepts the resolveDefault-
+    // CacheRoot() fallback, persisted explicitly so this never prompts
+    // again). Never call this from a GUI context - it blocks on
+    // std::cin, which a windowed app has no way to satisfy.
+    static void promptForCacheRootIfUnset();
+
+    // Explicitly sets and persists the cache root (the `frate cache-dir
+    // <path>` command). Creates the directory if it doesn't exist yet.
+    // Returns false only if frate_settings.json itself couldn't be
+    // written (e.g. the exe's own directory isn't writable) - the
+    // directory creation succeeding or not is independent of that.
+    static bool setCacheRoot(const juce::File& newRoot);
+
 private:
+    static juce::File settingsFilePath();
+
     juce::File cacheRoot;
 };
 

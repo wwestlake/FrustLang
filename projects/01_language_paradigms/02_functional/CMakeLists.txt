@@ -149,6 +149,24 @@ set_source_files_properties("${FRUST_PARSER_CPP}" "${FRUST_LEXER_CPP}" PROPERTIE
     COMPILE_OPTIONS "$<IF:$<CXX_COMPILER_ID:MSVC>,/W0,-w>")
 
 # ------------------------------------------------------------------------------
+# frust_runtime: the frust_* C exports core/src declares via extern fn and
+# calls directly (frust_print_str, frust_format_*, frust_buf_*, plus the
+# quote/unquote/build_time AST/JIT primitives). Extracted from what used to
+# be duplicated verbatim in frust_compiler's AND the IDE's own Main.cpp (see
+# Runtime.cpp's own header comment for the full history) - a real static
+# library now, so a frate build-produced standalone linked executable has
+# something to actually link these symbols from, not just JIT-time process-
+# image lookup. Every consumer (frust_compiler, the IDE, and frate's own AOT
+# link step) links this ONE copy instead of each defining its own.
+# ------------------------------------------------------------------------------
+add_library(frust_runtime STATIC Runtime.cpp)
+target_include_directories(frust_runtime PRIVATE "${FRUST_GEN_DIR}" "${FRUST_FLEXLEXER_INCLUDE_DIR}")
+if(WIN32)
+    target_compile_definitions(frust_runtime PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+target_link_libraries(frust_runtime PRIVATE frust_lang ${FRUST_LLVM_LIBS})
+
+# ------------------------------------------------------------------------------
 # frust_compiler: the CLI front end (file mode + a small REPL loop) on top
 # of frust_lang. File mode needs Codegen/LLVM directly (to find and JIT-run
 # a whole file's `main`), which is a CLI-only concern - ReplSession's public
@@ -172,7 +190,7 @@ target_include_directories(frust_compiler PRIVATE
 if(WIN32)
     target_compile_definitions(frust_compiler PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
-target_link_libraries(frust_compiler PRIVATE frust_lang ${FRUST_LLVM_LIBS})
+target_link_libraries(frust_compiler PRIVATE frust_lang frust_runtime ${FRUST_LLVM_LIBS})
 
 # ------------------------------------------------------------------------------
 # Install - on Linux, CMAKE_INSTALL_PREFIX is set by the "linux" preset to
@@ -184,3 +202,4 @@ target_link_libraries(frust_compiler PRIVATE frust_lang ${FRUST_LLVM_LIBS})
 # ------------------------------------------------------------------------------
 install(TARGETS frust_compiler RUNTIME DESTINATION bin)
 install(TARGETS frust_lang ARCHIVE DESTINATION lib)
+install(TARGETS frust_runtime ARCHIVE DESTINATION lib)

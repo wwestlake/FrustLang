@@ -101,7 +101,7 @@
 }
 
 %token
-    FN "fn" PUB "pub" UNSAFE "unsafe" EXTERN "extern" ENTRY "entry" USE "use" LET "let" MUT "mut" RETURN "return"
+    FN "fn" PUB "pub" UNSAFE "unsafe" EXTERN "extern" ENTRY "entry" USE "use" IMPORT "import" LET "let" MUT "mut" RETURN "return"
     IF "if" ELSE "else" WHILE "while" LOOP "loop" FOR "for" BREAK "break" CONTINUE "continue"
     IMPL "impl" SELF "self" INTERFACE "interface" MANIFEST "manifest"
     STRUCT "struct" TYPE "type" EFFECT "effect" PERFORM "perform"
@@ -414,6 +414,19 @@ use_decl:
         $$ = arena.NewUseDecl();
         $$->isSelfUse = true;
         $$->pathSegments.push_back($4);
+        $$->loc = ToSourceLoc(@1);
+    }
+  | "import" IDENT "," STRING_LITERAL ";" {
+        // `import core, "current";` - a real cross-pod import, distinct
+        // from the plain `use core;` above (which parses but has always
+        // been a complete no-op - see AST.h's UseDecl::isImport comment
+        // for the full story). Reuses IDENT (not ident_path) for the pod
+        // name since a pod name is always a single bare identifier, same
+        // as "self" :: IDENT above.
+        $$ = arena.NewUseDecl();
+        $$->isImport = true;
+        $$->pathSegments.push_back($2);
+        $$->importVersion = $4;
         $$->loc = ToSourceLoc(@1);
     }
 ;

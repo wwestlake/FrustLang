@@ -5,78 +5,18 @@
 #include <cstdio>
 #include <iostream>
 
-// Same runtime helpers as frust_compiler's Main.cpp (see that file's
-// comment) - the IDE's embedded REPL (ConsolePanel -> frust::ReplSession)
-// JIT-executes Frust code inside THIS process, so it needs its own copy of
-// these exported symbols; nothing in the CLI executable's image is visible
-// here. Keep both copies in sync if the set changes.
+// Runtime helpers (frust_print_str, frust_format_*, frust_buf_*) now
+// live in Runtime.cpp (01_language_paradigms/02_functional), compiled
+// into the frust_runtime static library - the IDE links that instead of
+// defining its own copy (see CMakeLists.txt). Also gives frust_jit_eval_f32
+// (quote/unquote/build_time) for free, which the IDE never had before.
 //
-// __declspec(dllexport) is MSVC-only - see frust_compiler's Main.cpp for
-// the full explanation of FRUST_RUNTIME_EXPORT.
+// Same force-link concern as frust_compiler's Main.cpp - nothing here
+// calls these by name in C++, only the JIT finds them by symbol name, so
+// without this the linker could drop Runtime.cpp's .obj as unreferenced.
 #if defined(_WIN32)
-#define FRUST_RUNTIME_EXPORT extern "C" __declspec(dllexport)
-#else
-#define FRUST_RUNTIME_EXPORT extern "C" __attribute__((visibility("default")))
+#pragma comment(linker, "/include:frust_print_str")
 #endif
-
-FRUST_RUNTIME_EXPORT void frust_print_f64(double val) {
-    std::cout << val << "\n";
-}
-FRUST_RUNTIME_EXPORT void frust_print_str(const char* val) {
-    std::cout << val << "\n";
-}
-
-namespace {
-constexpr int kFormatBufferCount = 16;
-// Kept identical to frust_compiler's Main.cpp - see that file's comment
-// (a real absolute path silently truncated at 64 bytes).
-constexpr size_t kFormatBufferSize = 512;
-thread_local char formatBufferPool[kFormatBufferCount][kFormatBufferSize];
-thread_local int formatBufferIndex = 0;
-
-char* nextFormatBuffer() {
-    char* buf = formatBufferPool[formatBufferIndex];
-    formatBufferIndex = (formatBufferIndex + 1) % kFormatBufferCount;
-    return buf;
-}
-} // namespace
-
-FRUST_RUNTIME_EXPORT const char* frust_format_i64(int64_t val) {
-    char* buf = nextFormatBuffer();
-    std::snprintf(buf, kFormatBufferSize, "%lld", static_cast<long long>(val));
-    return buf;
-}
-FRUST_RUNTIME_EXPORT const char* frust_format_f64(double val) {
-    char* buf = nextFormatBuffer();
-    std::snprintf(buf, kFormatBufferSize, "%g", val);
-    return buf;
-}
-FRUST_RUNTIME_EXPORT const char* frust_format_bool(bool val) {
-    return val ? "true" : "false";
-}
-FRUST_RUNTIME_EXPORT const char* frust_str_concat(const char* a, const char* b) {
-    char* buf = nextFormatBuffer();
-    std::snprintf(buf, kFormatBufferSize, "%s%s", a, b);
-    return buf;
-}
-
-// Kept identical to frust_compiler's Main.cpp - see that file's comment
-// for the full rationale (indexed scalar read/write into a raw buffer,
-// the one primitive Frust's own codegen is still missing).
-FRUST_RUNTIME_EXPORT int64_t frust_buf_get_i64(const int64_t* base, int64_t idx) {
-    return base[idx];
-}
-FRUST_RUNTIME_EXPORT void frust_buf_set_i64(int64_t* base, int64_t idx, int64_t val) {
-    base[idx] = val;
-}
-
-// Kept identical to frust_compiler's Main.cpp - see that file's comment.
-FRUST_RUNTIME_EXPORT void* frust_buf_get_ptr(void* const* base, int64_t idx) {
-    return base[idx];
-}
-FRUST_RUNTIME_EXPORT void frust_buf_set_ptr(void** base, int64_t idx, void* val) {
-    base[idx] = val;
-}
 
 class LagDaemonIDEApplication  : public juce::JUCEApplication
 {
