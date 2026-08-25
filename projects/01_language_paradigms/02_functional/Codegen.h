@@ -1977,19 +1977,36 @@ private:
         llvm::StructType* structTy = typeIt->second;
         auto& fieldIndex = structFieldIndex[typeName];
 
-        // Alloca'd in the entry block (same pattern `mut` locals already
-        // use) rather than at the current insert point - keeps every
-        // struct's storage mem2reg-friendly and independent of how deep
-        // inside nested blocks the literal happens to appear. This
-        // pointer does NOT survive the enclosing function returning - see
-        // compileHeapStructLiteral for the `own`/`raw` alternative that
-        // does.
-        llvm::Function* theFunction = builder.GetInsertBlock()->getParent();
-        llvm::IRBuilder<> tmpBuilder(&theFunction->getEntryBlock(), theFunction->getEntryBlock().begin());
-        llvm::AllocaInst* alloca = tmpBuilder.CreateAlloca(structTy, nullptr, typeName);
+        // CRITICAL BUG FIX (LANGUAGE_GAPS.md "CRITICAL BUGS", 2026-08-24):
+        // this used to stack-alloca in the constructing function's own
+        // entry block - fine as long as the literal never left that
+        // function, but silently WRONG the instant it did (returned, or
+        // stored somewhere that outlives the frame): the pointer became
+        // dangling the moment the function returned, and reads through it
+        // picked up whatever the now-reused stack slot happened to hold
+        // next - not a compile error, just quietly corrupted field data.
+        // Confirmed by direct repro: `fn make_point(x,y) -> Point =
+        // { Point { x: x, y: y } }` then reading the returned value's
+        // fields back wrong (both fields read the SAME garbage value).
+        // Every struct in this language is pointer-represented
+        // (resolveType: "structs are always passed/held by pointer"), so
+        // a bare literal's storage has to genuinely outlive the
+        // constructing function to be safe in general - stack allocation
+        // can't deliver that. Fixed by mallocing instead (the same
+        // no-refcount-header path `own`/`raw` already use via
+        // compileHeapStructLiteral below) - matches this project's own
+        // stated risk tolerance elsewhere ("worst case is always a LEAK,
+        // never a double-free or use-after-free", LANGUAGE_GAPS.md #7):
+        // a plain struct literal now behaves exactly like an implicit
+        // `own`, at the cost of never being freed (same already-accepted
+        // limitation `own` itself has - no auto-free yet, LANGUAGE_GAPS.md
+        // #7) rather than risking silent corruption.
+        uint64_t payloadSize = module.getDataLayout().getTypeAllocSize(structTy);
+        llvm::Value* sizeV = llvm::ConstantInt::get(llvm::Type::getInt64Ty(context), payloadSize);
+        llvm::Value* payloadPtr = builder.CreateCall(getMallocFn(), {sizeV});
 
-        if (!initStructFields(expr, typeName, structTy, fieldIndex, alloca)) return nullptr;
-        return alloca;
+        if (!initStructFields(expr, typeName, structTy, fieldIndex, payloadPtr)) return nullptr;
+        return payloadPtr;
     }
 
     // `own StructName { ... }` / `raw StructName { ... }` (ExprKind::

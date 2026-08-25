@@ -45,6 +45,7 @@ the signal to stop and just build the Windows version.
 7. If it's a submodule (`projects/06_frust_library`, its own repo at `wwestlake/frust-library`), commit+push inside the submodule first, THEN commit+push the parent repo's pointer bump. Two separate pushes, always in that order.
 8. If you told the user a rule/process applies going forward, write it into this file, not just into your own private memory. This file is what's authoritative and visible in the repo — private memory is a supplement, never a substitute.
 9. Keep `LANGUAGE_GAPS.md` (`projects/01_language_paradigms/02_functional/`) current the moment an item's status changes - this document existing isn't enough on its own, the standing failure mode it was built to fix is real progress happening underneath it while the doc goes stale.
+10. Wiki/tutorial/doc examples are a real use-case test of the compiler, not just prose: run every example through `frust_compiler.exe` (hand-predicted output vs. actual) before it goes in a page. If an example reveals a real bug - not just an already-documented gap - stop the doc work immediately, log it in `LANGUAGE_GAPS.md`'s "CRITICAL BUGS" section if it's silent/incorrect-output-class (jumps the queue ahead of normal numbered gaps), fix it, verify the fix, then resume using the corrected pattern. Don't quietly route around a found bug with a "safer" example instead.
 
 ## Git discipline
 
