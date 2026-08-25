@@ -51,7 +51,8 @@ static juce::File resolveLlvmLibDir(const juce::String& configName) {
         : root.getChildFile("lib");
 }
 
-bool linkExecutable(const std::vector<juce::String>& objFiles, const juce::File& finalBin) {
+bool linkExecutable(const std::vector<juce::String>& objFiles, const juce::File& finalBin,
+                    bool needsPluginHost, bool needsLiveMetaprogramming) {
     juce::ChildProcess linker;
 
     // On Windows the MSVC path below supplies FRust's runtime and LLVM
@@ -192,15 +193,23 @@ bool linkExecutable(const std::vector<juce::String>& objFiles, const juce::File&
                         for (auto& obj : objFiles) linkArgs.add("\"" + obj + "\"");
                         linkArgs.add("\"" + runtimeLib.getFullPathName() + "\"");
                         linkArgs.add("\"" + frustLangLib.getFullPathName() + "\"");
-                        bool needsPluginHost = pluginHostLib.existsAsFile();
-                        if (needsPluginHost) {
+                        const bool needsLlvmRuntime = needsPluginHost || needsLiveMetaprogramming;
+                        if (needsPluginHost && !pluginHostLib.existsAsFile()) {
+                            std::cerr << "Error: This pod uses the FRust plugin runtime, but frust_plugin_host.lib was not found at "
+                                      << pluginHostLib.getFullPathName() << "\n";
+                            return false;
+                        }
+
+                        if (needsLlvmRuntime) {
                             if (!llvmLibDir.exists()) {
                                 std::cerr << "Error: LLVM libraries are required to link this pod, but no usable LLVM library directory was found. "
                                           << "Set FRUST_LLVM_ROOT to the vcpkg_installed\\x64-windows directory.\n";
                                 return false;
                             }
-                            linkArgs.add("\"" + pluginHostLib.getFullPathName() + "\"");
-                            if (frateLibLib.existsAsFile()) linkArgs.add("\"" + frateLibLib.getFullPathName() + "\"");
+                            if (needsPluginHost) {
+                                linkArgs.add("\"" + pluginHostLib.getFullPathName() + "\"");
+                                if (frateLibLib.existsAsFile()) linkArgs.add("\"" + frateLibLib.getFullPathName() + "\"");
+                            }
                             for (auto& name : llvmLibNames) {
                                 linkArgs.add("\"" + llvmLibDir.getChildFile(name + ".lib").getFullPathName() + "\"");
                             }
@@ -279,6 +288,19 @@ static bool collectSelfUseFiles(const juce::File& entryFile, juce::Array<juce::F
         sourceFiles.add(modFile);
     }
     return true;
+}
+
+// The compiler emits one object for all selected source files, so Frate can
+// select optional native runtimes from the APIs the pod actually uses.
+static bool sourceUsesAnySymbol(const juce::Array<juce::File>& sourceFiles,
+                                const juce::StringArray& symbols) {
+    for (const auto& file : sourceFiles) {
+        const juce::String source = file.loadFileAsString();
+        for (const auto& symbol : symbols) {
+            if (source.contains(symbol)) return true;
+        }
+    }
+    return false;
 }
 
 // `import <pod>, "<version>";` (real cross-pod import, distinct from the
@@ -498,7 +520,14 @@ bool buildPod(const juce::File& podDir, bool isRun, const std::map<std::string, 
     
     if (meta.type == "bin") {
         std::cout << "Linking executable...\n";
-        if (!linkExecutable(objFiles, finalBin)) {
+        const bool needsPluginHost = sourceUsesAnySymbol(sourceFiles, {
+            "frust_register_event_handler", "frust_fire_event",
+            "frust_register_service", "frust_lookup_service"
+        });
+        const bool needsLiveMetaprogramming = sourceUsesAnySymbol(sourceFiles, {
+            "frust_jit_eval_f32"
+        });
+        if (!linkExecutable(objFiles, finalBin, needsPluginHost, needsLiveMetaprogramming)) {
             return false;
         }
         
