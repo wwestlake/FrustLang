@@ -1,4 +1,5 @@
 #include <frate/FrateCache.h>
+#include <frate/FrateConfig.h>
 #include <iostream>
 
 namespace frate {
@@ -113,6 +114,22 @@ bool FrateCache::installFromPackage(const juce::File& frpodFile, const std::stri
     juce::ZipFile zip(frpodFile);
     auto result = zip.uncompressTo(targetDir);
     return result.wasOk();
+}
+
+bool FrateCache::installBundledPodIfAvailable(const std::string& name, const std::string& version) {
+    if (isCached(name, version) || !isPackagedInstallation()) return isCached(name, version);
+
+    juce::File executableDirectory = juce::File::getSpecialLocation(juce::File::currentExecutableFile).getParentDirectory();
+    juce::File bundledPod = executableDirectory.getParentDirectory().getChildFile("stdlib").getChildFile(name);
+    FrateConfig config;
+    if (!bundledPod.isDirectory() || !config.load(bundledPod.getChildFile("frate.json"))) return false;
+
+    const auto& metadata = config.getMetadata();
+    if (metadata.name != name || metadata.version != version) return false;
+
+    juce::File target = getCachedPodDir(name, version);
+    target.getParentDirectory().createDirectory();
+    return bundledPod.copyDirectoryTo(target);
 }
 
 } // namespace frate

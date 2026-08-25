@@ -342,7 +342,10 @@ static bool collectImportedPodFiles(const juce::File& entryFile, const frate::Fr
         }
 
         if (!cache.isCached(podName.toStdString(), version.toStdString())) {
-            errorOut = "import " + podName + ", \"" + version + "\" - not cached. Run 'frate install' first.";
+            cache.installBundledPodIfAvailable(podName.toStdString(), version.toStdString());
+        }
+        if (!cache.isCached(podName.toStdString(), version.toStdString())) {
+            errorOut = "import " + podName + ", \"" + version + "\" - not cached. Run 'frate update' first.";
             return false;
         }
 
@@ -420,7 +423,10 @@ bool buildPod(const juce::File& podDir, bool isRun, const std::map<std::string, 
             depDir = localWorkspaceMap.at(dep.name);
         } else {
             if (!cache.isCached(dep.name, dep.version)) {
-                std::cerr << "Error: Dependency " << dep.name << " v" << dep.version << " is not cached. Run 'frate install' first.\n";
+                cache.installBundledPodIfAvailable(dep.name, dep.version);
+            }
+            if (!cache.isCached(dep.name, dep.version)) {
+                std::cerr << "Error: Dependency " << dep.name << " v" << dep.version << " is not cached. Run 'frate update' first.\n";
                 return false;
             }
             depDir = cache.getCachedPodDir(dep.name, dep.version);

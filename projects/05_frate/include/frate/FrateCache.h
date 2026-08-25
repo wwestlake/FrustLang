@@ -16,6 +16,11 @@ public:
     // Extracts a .frpod zip file into the cache directory for its name and version
     bool installFromPackage(const juce::File& frpodFile, const std::string& name, const std::string& version);
 
+    // Copies a pod bundled with a packaged FRust release's stdlib folder into
+    // the writable cache. Returns false when this is a source build, the pod
+    // is not bundled, or its manifest does not match the requested version.
+    bool installBundledPodIfAvailable(const std::string& name, const std::string& version);
+
     // Where the cache root actually lives, checked in this order:
     //   1. FRATE_CACHE_DIR environment variable, if set (highest priority,
     //      always available - scripting/CI escape hatch).

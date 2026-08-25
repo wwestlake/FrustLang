@@ -231,13 +231,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { Pop-Location; Pop-Location; throw "A pod built by the staged release package failed to run." }
           Pop-Location
 
-          Push-Location "$probe\stdlib\core"
-          & "$probe\bin\frate.exe" package
-          if ($LASTEXITCODE -ne 0) { Pop-Location; Pop-Location; throw "Packaged frate could not package the bundled core pod." }
-          & "$probe\bin\frate.exe" install
-          if ($LASTEXITCODE -ne 0) { Pop-Location; Pop-Location; throw "Packaged frate could not install the bundled core pod." }
-          Pop-Location
-
           Push-Location "release_smoke"
           & "$probe\bin\frate.exe" add core 1.0.0
           if ($LASTEXITCODE -ne 0) { Pop-Location; Pop-Location; throw "Packaged frate could not add the bundled core pod." }
