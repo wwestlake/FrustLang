@@ -14,6 +14,89 @@ Order below is dependency-driven (what unblocks what), not severity-
 ranked - decided 2026-08-22, explicitly the assistant's call to make
 ("I am not going to dictate order, you find the best order").
 
+## CRITICAL BUGS (found in the wild - jump the queue, fixed before anything else)
+
+### Struct-by-value function return silently corrupts field data
+
+**Status: DONE - 2026-08-24, found and fixed same day.** Not a gap
+(missing feature) - a real, silent correctness bug in something adjacent
+to LANGUAGE_GAPS.md #2, which remains correctly closed (see below). Found
+because a tutorial's first factory-function example needed real,
+hand-predicted values to be honest, and the values it actually got back
+were wrong.
+
+Reproduced, isolated (`isolate_struct2.frust`/`isolate_struct3.frust`,
+`frust_compiler.exe` direct-run): a struct constructed and returned
+DIRECTLY inline (`let p: Point = Point { x: 3, y: 4 };`, no function call
+crossing) reads back correctly (`p.x` = 3, `p.y` = 4). The IDENTICAL
+struct, constructed the same way but RETURNED FROM A FUNCTION
+(`fn make_point(x: i64, y: i64) -> Point = { Point { x: x, y: y } }`,
+called as `let p: Point = make_point(3, 4);`) reads back WRONG for BOTH
+fields - `p.x` and `p.y` both print the same garbage value (72 in the
+repro), not 3/4. Confirmed it's not a parameter-name-shadows-field-name
+issue (renaming the function's params to `ax`/`ay` - no collision with
+the struct's `x`/`y` field names at all - produces the identical wrong
+result).
+
+Root cause (confirmed by direct code read, `Codegen.h`): there is no
+`sret`/`byval`-style calling-convention handling anywhere in this file -
+grep for `sret`/`byval`/`StructRet` returns zero matches. Frust has never
+implemented real x86-64 ABI rules for returning an aggregate struct BY
+VALUE from a function (small structs need specific register-packing
+rules; larger ones need a hidden pointer parameter the caller supplies)
+- whatever's happening today produces silently wrong bits rather than a
+compile error. Struct-return TYPE tracking (gap #2 below) is unaffected
+and still correctly closed - the compiler knows `p` is a `Point`, field
+access resolves to the right NAMES, it's the underlying VALUE crossing
+the function-call boundary that's corrupted.
+
+**Why this matters more than a normal gap**: every other numbered item in
+this document either fails loudly (a clear compile error) or is an
+honestly-scoped missing feature. This is the first found case of SILENT
+data corruption in a pattern (a factory function returning a struct) that
+looks completely ordinary and would be one of the first things anyone
+writes. User's own call once informed: "this is a critical bug and
+oversite [sic]. Document it, stop working on the tutorial and go fix it
+immediately."
+
+**Fix**: `compileStructLiteral` (`Codegen.h`) used to stack-alloca a
+plain struct literal in the constructing function's own entry block -
+fine as long as the value never left that function, dangling the moment
+it did. Since every struct in this language is pointer-represented
+(`resolveType`: "structs are always passed/held by pointer"), a bare
+literal's storage genuinely has to outlive the constructing function to
+be safe in general - stack allocation can't deliver that no matter how
+carefully the rest of codegen is written. Fixed by mallocing instead (the
+same no-refcount-header path `own`/`raw` already use via
+`compileHeapStructLiteral`) - a plain struct literal now behaves exactly
+like an implicit `own`: never freed (same already-accepted limitation
+`own` itself has - no auto-free yet, see #7 below) rather than ever
+risking silent corruption. Matches this project's own stated risk
+tolerance elsewhere ("worst case is always a LEAK, never a double-free or
+use-after-free", #7) - a deliberate, precedented tradeoff, not a new one.
+
+Verified: the exact repro (`isolate_struct2.frust`/`isolate_struct3.frust`)
+now reads back correctly (`p.x`=3, `p.y`=4, matched exactly - previously
+both read 72). A combined feature-check program exercising structs,
+interface dispatch, generics, `shared`, `Vector<T>`, and closures together
+in one run (`tutorial_combined_check.frust`) produced every hand-predicted
+value correctly (3, 12, 42, 10, 100, 200, 1001, 0) end to end. Full
+existing `frust_plugin_host` regression suite (all 16 examples, Debug
+rebuild) and a full JUCE IDE Debug rebuild + launch smoke test both clean
+- this touched a core codegen path used by every plain struct literal in
+the language, so the full sweep (not just the new repro) was the actual
+bar for "done," per the standing rule.
+
+Also surfaced a real, separate documentation error while investigating:
+the earlier Reddit/Quora/LinkedIn `shared<T>` content (this session) used
+`shared<Counter>`-style angle-bracket type-annotation syntax, which isn't
+valid Frust - confirmed via direct grammar read (`type_ptr_prefix_opt`):
+`shared`/`own`/`raw`/`weak` are bare prefix keywords before a plain type
+name (`shared Counter`, no angle brackets), the same shape as every other
+smart-pointer type annotation. Already-published content wasn't corrected
+retroactively (out of scope of this fix); new content should use the
+correct bare form.
+
 ## CLOSED - moot
 
 **No platform-conditional compilation.** Originally blocked
