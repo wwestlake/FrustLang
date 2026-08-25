@@ -19,16 +19,12 @@ public:
     // Where the cache root actually lives, checked in this order:
     //   1. FRATE_CACHE_DIR environment variable, if set (highest priority,
     //      always available - scripting/CI escape hatch).
-    //   2. A path saved in <the running executable's own directory>/
-    //      frate_settings.json, if that file exists (written once by
-    //      promptForCacheRootIfUnset() below - see that function for why
-    //      this deliberately lives next to the exe rather than in
-    //      %APPDATA%).
+    //   2. A path saved in frate_settings.json, beside a from-source
+    //      executable or under %APPDATA%\FRust for a packaged install.
     //   3. Otherwise, <the running executable's own directory>/cache -
     //      for a from-source build this naturally lands under the repo's
-    //      own bin/Debug or bin/Release; for an extracted release zip it
-    //      lands wherever the user chose to extract it. Never %APPDATA%
-    //      by default.
+    //      own bin/Debug or bin/Release. A packaged install uses
+    //      %APPDATA%\FRust\cache so it remains writable under Program Files.
     static juce::File resolveDefaultCacheRoot();
 
     // CLI-only: if no cache location has ever been chosen (no
@@ -43,7 +39,7 @@ public:
     // Explicitly sets and persists the cache root (the `frate cache-dir
     // <path>` command). Creates the directory if it doesn't exist yet.
     // Returns false only if frate_settings.json itself couldn't be
-    // written (e.g. the exe's own directory isn't writable) - the
+    // written - the
     // directory creation succeeding or not is independent of that.
     static bool setCacheRoot(const juce::File& newRoot);
 

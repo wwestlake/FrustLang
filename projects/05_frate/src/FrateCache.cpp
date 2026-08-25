@@ -3,7 +3,20 @@
 
 namespace frate {
 
+namespace {
+bool isPackagedInstallation() {
+    juce::File executableDirectory = juce::File::getSpecialLocation(juce::File::currentExecutableFile).getParentDirectory();
+    return executableDirectory.getFileName() == "bin"
+        && executableDirectory.getParentDirectory().getChildFile("stdlib").isDirectory();
+}
+
+juce::File userSettingsDirectory() {
+    return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory).getChildFile("FRust");
+}
+} // namespace
+
 juce::File FrateCache::settingsFilePath() {
+    if (isPackagedInstallation()) return userSettingsDirectory().getChildFile("frate_settings.json");
     return juce::File::getSpecialLocation(juce::File::currentExecutableFile)
         .getParentDirectory()
         .getChildFile("frate_settings.json");
@@ -24,9 +37,9 @@ juce::File FrateCache::resolveDefaultCacheRoot() {
         }
     }
 
-    // Deliberately NOT %APPDATA% - see FrateCache.h's doc comment. Lands
-    // under the repo's own bin/Debug|Release for a from-source build, or
-    // wherever a release zip was extracted, never a fixed spot on C:.
+    if (isPackagedInstallation()) return userSettingsDirectory().getChildFile("cache");
+
+    // From-source builds keep their cache beside the matching build output.
     return juce::File::getSpecialLocation(juce::File::currentExecutableFile)
         .getParentDirectory()
         .getChildFile("cache");
@@ -50,9 +63,7 @@ void FrateCache::promptForCacheRootIfUnset() {
     if (juce::SystemStats::getEnvironmentVariable("FRATE_CACHE_DIR", {}).isNotEmpty()) return;
     if (settingsFilePath().existsAsFile()) return;
 
-    juce::File defaultRoot = juce::File::getSpecialLocation(juce::File::currentExecutableFile)
-                                  .getParentDirectory()
-                                  .getChildFile("cache");
+    juce::File defaultRoot = resolveDefaultCacheRoot();
 
     std::cout << "Frate hasn't been configured with a cache folder yet.\n"
               << "This is where downloaded/built pod dependencies are stored - shared\n"
