@@ -1,0 +1,21 @@
+// Build a Tiny Dungeon, chapter 3: an exit can be dramatic or merely open.
+
+import core, "current";
+
+struct Exit { label: String, locked: bool }
+
+fn describe_exit(exit: Exit) -> i64 = {
+    println_str(exit.label);
+    if (exit.locked) {
+        println_str("The door is locked. It is enjoying this.");
+    } else {
+        println_str("The door is open. Suspiciously open.");
+    };
+    0
+}
+
+fn main() -> i64 = {
+    let cellar_door: Exit = Exit { label: "A brass cellar door", locked: true };
+    describe_exit(cellar_door);
+    0
+}

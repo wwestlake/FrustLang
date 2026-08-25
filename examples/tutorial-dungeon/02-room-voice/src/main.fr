@@ -1,0 +1,20 @@
+// Build a Tiny Dungeon, chapter 2: one function knows how to introduce a room.
+
+import core, "current";
+
+struct Room { name: String, description: String }
+
+fn describe(room: Room) -> i64 = {
+    println_str(room.name);
+    println_str(room.description);
+    0
+}
+
+fn main() -> i64 = {
+    let map_room: Room = Room {
+        name: "The Map Room",
+        description: "Someone labeled the danger zone 'probably fine.'"
+    };
+    describe(map_room);
+    0
+}

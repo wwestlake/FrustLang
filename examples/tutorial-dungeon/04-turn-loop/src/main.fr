@@ -1,0 +1,21 @@
+// Build a Tiny Dungeon, chapter 4: enough turns to prove the dungeon is alive.
+
+import core, "current";
+
+struct Adventurer { name: String, lantern_turns: i64 }
+
+fn take_turns(adventurer: Adventurer) -> i64 = {
+    let mut turn: i64 = 1;
+    while (turn <= adventurer.lantern_turns) {
+        println_str("The lantern flickers on turn:");
+        println_i64(turn);
+        turn = turn + 1;
+    };
+    0
+}
+
+fn main() -> i64 = {
+    let agent_86: Adventurer = Adventurer { name: "Agent 86", lantern_turns: 3 };
+    take_turns(agent_86);
+    0
+}
