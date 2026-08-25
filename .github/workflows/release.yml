@@ -134,6 +134,38 @@ jobs:
           cmake --build "build-ide" --config Release
           if ($LASTEXITCODE -ne 0) { throw "Build (IDE) failed." }
 
+      - name: Build and run the tutorial example (gates the whole release)
+        shell: pwsh
+        run: |
+          # The GitHub wiki tutorial is a real promise to readers, not just
+          # prose - examples/tutorial-first-program/ is that promise kept
+          # as an actual buildable pod. If it stops compiling, stops
+          # linking, or its output ever drifts from what the wiki claims,
+          # that's the tutorial silently lying - fail here, nothing ships.
+          $bin = "bin\Release"
+
+          Push-Location "projects\06_frust_library\core"
+          & "$PWD\..\..\..\$bin\frate.exe" package
+          if ($LASTEXITCODE -ne 0) { Pop-Location; throw "frate package (core) failed." }
+          & "$PWD\..\..\..\$bin\frate.exe" install
+          if ($LASTEXITCODE -ne 0) { Pop-Location; throw "frate install (core) failed." }
+          Pop-Location
+
+          Push-Location "examples\tutorial-first-program"
+          $output = & "$PWD\..\..\$bin\frate.exe" run 2>&1 | Out-String
+          $exitCode = $LASTEXITCODE
+          Pop-Location
+
+          Write-Host $output
+
+          if ($exitCode -ne 0) {
+            throw "Tutorial example failed to build/run (exit $exitCode). The wiki tutorial is broken - fix it before this can ship."
+          }
+          if ($output -notmatch [regex]::Escape("Entrance Hall") -or $output -notmatch [regex]::Escape("A cold stone hall. Torches flicker on the walls.")) {
+            throw "Tutorial example ran but produced unexpected output. Expected exactly the First Program lesson's text - got:`n$output"
+          }
+          Write-Host "Tutorial example verified - output matches the wiki exactly."
+
       - name: Stage release package
         shell: pwsh
         run: |

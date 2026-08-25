@@ -120,6 +120,7 @@ target_compile_definitions(LagDaemonResearchIDE PRIVATE
 target_link_libraries(LagDaemonResearchIDE PRIVATE
     CreationDock
     frust_lang
+    frust_runtime
     frust_plugin_host
     ai_provider
     frate_lib

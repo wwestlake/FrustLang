@@ -51,6 +51,7 @@ ID     {IDCHAR}({IDCHAR}|{DIGIT})*
 "extern"     { return Parser::make_EXTERN(loc_); }
 "entry"      { return Parser::make_ENTRY(loc_); }
 "use"        { return Parser::make_USE(loc_); }
+"import"     { return Parser::make_IMPORT(loc_); }
 "if"         { return Parser::make_IF(loc_); }
 "else"       { return Parser::make_ELSE(loc_); }
 "while"      { return Parser::make_WHILE(loc_); }
