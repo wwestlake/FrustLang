@@ -95,6 +95,10 @@ target_sources(LagDaemonResearchIDE PRIVATE
     Source/TerminalPanel.cpp
     Source/TerminalInstance.h
     Source/TerminalInstance.cpp
+    Source/PersistentShellSession.h
+    Source/PersistentShellSession.cpp
+    Source/ShellTokeniser.h
+    Source/ShellTokeniser.cpp
     Source/ContextPanel.h
     Source/ContextPanel.cpp
     Source/AiChatPanel.h
