@@ -5,7 +5,7 @@
 #include <functional>
 #include <memory>
 
-class ConsolePanel : public juce::Component
+class ConsolePanel : public juce::Component, private juce::KeyListener
 {
 public:
     ConsolePanel();
@@ -46,6 +46,9 @@ private:
     void saveSessionToFile();
     void loadSessionFromFile();
     juce::File getSessionFile() const;
+    void appendPrompt();
+    void appendTranscriptText(const juce::String& text, juce::Colour colour);
+    bool keyPressed(const juce::KeyPress& key, juce::Component* source) override;
 
     juce::Label headerLabel { "Header", "Output & REPL Console" };
     juce::TextEditor consoleText;
@@ -63,6 +66,7 @@ private:
     // session (see ReplSession's header comment for how) and can be saved
     // to / loaded from a JSON file via saveSessionToFile()/loadSessionFromFile().
     std::unique_ptr<frust::ReplSession> replSession;
+    int inputStart = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ConsolePanel)
 };
