@@ -23,9 +23,11 @@ ConsolePanel::ConsolePanel()
     consoleText.setColour(juce::TextEditor::textColourId, juce::Colour(0xff00ff66));
     consoleText.setColour(juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
     consoleText.setColour(juce::TextEditor::focusedOutlineColourId, juce::Colours::transparentBlack);
-    consoleText.setText(bannerText + promptText);
+    consoleText.setText(bannerText);
     consoleText.onReturnKey = [this] { evaluateInput(); };
+    consoleText.addKeyListener(this);
     addAndMakeVisible(consoleText);
+    appendPrompt();
 
     clearButton.onClick = [this] { clearConsole(); };
     addAndMakeVisible(clearButton);
@@ -40,7 +42,10 @@ ConsolePanel::ConsolePanel()
     addAndMakeVisible(loadButton);
 }
 
-ConsolePanel::~ConsolePanel() = default;
+ConsolePanel::~ConsolePanel()
+{
+    consoleText.removeKeyListener(this);
+}
 
 void ConsolePanel::paint(juce::Graphics& g)
 {
@@ -69,14 +74,8 @@ void ConsolePanel::resized()
 
 void ConsolePanel::evaluateInput()
 {
-    // Not tracked via caret position - deliberately just takes everything
-    // after the last prompt in the buffer, so it still does the right
-    // thing even if the user clicked around before pressing Return.
     auto fullText = consoleText.getText();
-    auto lastPromptIndex = fullText.lastIndexOfIgnoreCase(promptText);
-    if (lastPromptIndex < 0) return;
-
-    auto input = fullText.substring(lastPromptIndex + promptText.length()).trim();
+    auto input = fullText.substring(inputStart).trim();
 
     juce::String output;
     if (input.isNotEmpty()) {
@@ -89,8 +88,8 @@ void ConsolePanel::evaluateInput()
         if (onSessionChanged) onSessionChanged();
     }
 
-    consoleText.setText(fullText + output + "\n" + promptText);
-    consoleText.moveCaretToEnd();
+    appendTranscriptText("\n" + output + "\n", juce::Colour(0xffd4d4d4));
+    appendPrompt();
 }
 
 void ConsolePanel::runScript(const juce::String& source, const juce::String& label)
@@ -149,18 +148,47 @@ void ConsolePanel::loadSessionFromFile()
 
 void ConsolePanel::logMessage(const juce::String& message)
 {
-    // Inserted before the live prompt line so it doesn't get swallowed into
-    // whatever the user is mid-typing.
     auto fullText = consoleText.getText();
-    auto lastPromptIndex = fullText.lastIndexOfIgnoreCase(promptText);
-    auto insertAt = lastPromptIndex >= 0 ? lastPromptIndex : fullText.length();
-
-    consoleText.setText(fullText.substring(0, insertAt) + message + "\n" + fullText.substring(insertAt));
+    consoleText.setText(fullText.substring(0, inputStart) + message + "\n" + fullText.substring(inputStart));
+    inputStart += message.length() + 1;
     consoleText.moveCaretToEnd();
 }
 
 void ConsolePanel::clearConsole()
 {
-    consoleText.setText(bannerText + promptText);
+    consoleText.setText(bannerText);
+    appendPrompt();
+}
+
+void ConsolePanel::appendPrompt()
+{
     consoleText.moveCaretToEnd();
+    consoleText.setColour(juce::TextEditor::textColourId, juce::Colour(0xff569cd6));
+    consoleText.insertTextAtCaret(promptText);
+    consoleText.setColour(juce::TextEditor::textColourId, juce::Colour(0xffd4d4d4));
+    inputStart = consoleText.getTotalNumChars();
+    consoleText.moveCaretToEnd();
+}
+
+void ConsolePanel::appendTranscriptText(const juce::String& text, juce::Colour colour)
+{
+    consoleText.moveCaretToEnd();
+    consoleText.setColour(juce::TextEditor::textColourId, colour);
+    consoleText.insertTextAtCaret(text);
+    consoleText.setColour(juce::TextEditor::textColourId, juce::Colour(0xffd4d4d4));
+}
+
+bool ConsolePanel::keyPressed(const juce::KeyPress& key, juce::Component* source)
+{
+    if (source != &consoleText) return false;
+    const auto caret = consoleText.getCaretPosition();
+    const auto selection = consoleText.getHighlightedRegion();
+    const bool destructive = key == juce::KeyPress::backspaceKey || key == juce::KeyPress::deleteKey
+        || ((key.getKeyCode() == 'x' || key.getKeyCode() == 'X') && key.getModifiers().isCommandDown());
+    if (destructive && (caret <= inputStart || (!selection.isEmpty() && selection.getStart() < inputStart))) return true;
+    if ((key.getTextCharacter() != 0 || destructive) && caret < inputStart) {
+        consoleText.moveCaretToEnd();
+        return destructive;
+    }
+    return false;
 }
