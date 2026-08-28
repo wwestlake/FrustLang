@@ -249,6 +249,17 @@ struct ComponentDecl {
     SourceLoc loc;
 };
 
+// A first-class visual-programming declaration. The wrapped function is the
+// executable truth; its typed parameters and result drive reflection, while
+// kind defines the graph shape the editor/compiler must honor.
+enum class NodeKind { Pure, Callable, Loop };
+
+struct NodeDecl {
+    NodeKind kind = NodeKind::Pure;
+    FunctionDecl* function = nullptr;
+    SourceLoc loc;
+};
+
 struct UseDecl {
     std::vector<std::string> pathSegments; // e.g. ["dsp_utils", "Gain"]
     // `use self::math;` - names a sibling file (src/math.fr) frate should
@@ -319,13 +330,14 @@ struct ManifestDecl {
 // constant, not a string literal duplicated in two files, so the two
 // sides can't silently drift apart.
 inline constexpr const char* kFrustPluginManifestGlobalName = "__frust_plugin_manifest";
+inline constexpr const char* kFrustNodeReflectionGlobalName = "__frust_node_reflection";
 
 // TopLevelStmt exists because the REPL accepts bare statements directly
 // (`let dist = 100.0 * Meter`, `dist / time`, per FRUST_LANG_SPEC.md's REPL
 // section) with no enclosing `fn`. Folding it into DeclKind rather than
 // giving Program a second, separately-ordered list keeps top-level ordering
 // uniform between files (all decls) and REPL input (all statements).
-enum class DeclKind { Function, Struct, TypeAlias, Effect, Component, Use, TopLevelStmt, Impl, Interface, Manifest };
+enum class DeclKind { Function, Struct, TypeAlias, Effect, Component, Node, Use, TopLevelStmt, Impl, Interface, Manifest };
 
 struct Decl {
     DeclKind kind;
@@ -334,6 +346,7 @@ struct Decl {
     TypeAliasDecl* typeAliasDecl = nullptr;
     EffectDecl* effectDecl = nullptr;
     ComponentDecl* componentDecl = nullptr;
+    NodeDecl* nodeDecl = nullptr;
     UseDecl* useDecl = nullptr;
     Expr* topLevelStmt = nullptr;
     ImplDecl* implDecl = nullptr;
@@ -391,6 +404,11 @@ public:
         return componentDecls_.back().get();
     }
 
+    NodeDecl* NewNodeDecl() {
+        nodeDecls_.push_back(std::make_unique<NodeDecl>());
+        return nodeDecls_.back().get();
+    }
+
     UseDecl* NewUseDecl() {
         useDecls_.push_back(std::make_unique<UseDecl>());
         return useDecls_.back().get();
@@ -430,6 +448,7 @@ private:
     std::vector<std::unique_ptr<TypeAliasDecl>> typeAliasDecls_;
     std::vector<std::unique_ptr<EffectDecl>> effectDecls_;
     std::vector<std::unique_ptr<ComponentDecl>> componentDecls_;
+    std::vector<std::unique_ptr<NodeDecl>> nodeDecls_;
     std::vector<std::unique_ptr<UseDecl>> useDecls_;
     std::vector<std::unique_ptr<ImplDecl>> implDecls_;
     std::vector<std::unique_ptr<InterfaceDecl>> interfaceDecls_;

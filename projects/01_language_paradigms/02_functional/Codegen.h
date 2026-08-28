@@ -86,6 +86,7 @@ public:
         indexEffectDecls(prog);
         indexInterfaceDecls(prog);
         if (!compileManifestDecl(prog)) return false;
+        if (!compileNodeReflection(prog)) return false;
 
         // Generic free functions (LANGUAGE_GAPS.md #4's remaining piece) -
         // mirrors indexStructs' own generic-struct handling: a generic
@@ -95,8 +96,9 @@ public:
         // remember the template here, monomorphize lazily per concrete
         // call site instead (getOrCreateMonomorphizedFunction).
         for (auto* decl : prog.decls) {
-            if (decl->kind == DeclKind::Function && !decl->functionDecl->genericParams.empty()) {
-                genericFunctionTemplates[decl->functionDecl->name] = decl->functionDecl;
+            const auto* function = functionFor(*decl);
+            if (function && !function->genericParams.empty()) {
+                genericFunctionTemplates[function->name] = function;
             }
         }
 
@@ -107,8 +109,9 @@ public:
         // sibling methods in the same impl block calling each other
         // would be order-dependent.
         for (auto* decl : prog.decls) {
-            if (decl->kind == DeclKind::Function && decl->functionDecl->genericParams.empty()) {
-                declareFunctionSignature(*decl->functionDecl);
+            const auto* function = functionFor(*decl);
+            if (function && function->genericParams.empty()) {
+                declareFunctionSignature(*function);
             } else if (decl->kind == DeclKind::Impl) {
                 for (auto* m : decl->implDecl->methods) declareFunctionSignature(*m);
             }
@@ -145,8 +148,9 @@ public:
         {
             std::vector<std::pair<std::string, std::vector<std::string>>> genericCallSites;
             for (auto* decl : prog.decls) {
-                if (decl->kind == DeclKind::Function && decl->functionDecl->genericParams.empty() && decl->functionDecl->body) {
-                    collectGenericCallSites(decl->functionDecl->body, genericCallSites);
+                const auto* function = functionFor(*decl);
+                if (function && function->genericParams.empty() && function->body) {
+                    collectGenericCallSites(function->body, genericCallSites);
                 } else if (decl->kind == DeclKind::Impl) {
                     for (auto* m : decl->implDecl->methods) {
                         if (m->body) collectGenericCallSites(m->body, genericCallSites);
@@ -162,9 +166,10 @@ public:
         // are never compiled under their own bare name - only their
         // monomorphized clones (Pass 1.5, above) are real functions.
         for (auto* decl : prog.decls) {
-            if (decl->kind == DeclKind::Function && decl->functionDecl->genericParams.empty()
-                && (decl->functionDecl->body != nullptr || decl->functionDecl->isExtern)) {
-                if (!compileFunction(*decl->functionDecl)) ok = false;
+            const auto* function = functionFor(*decl);
+            if (function && function->genericParams.empty()
+                && (function->body != nullptr || function->isExtern)) {
+                if (!compileFunction(*function)) ok = false;
             } else if (decl->kind == DeclKind::Impl) {
                 for (auto* m : decl->implDecl->methods) {
                     if (!compileFunction(*m)) ok = false;
@@ -175,6 +180,12 @@ public:
     }
 
 private:
+    static const FunctionDecl* functionFor(const Decl& decl) {
+        if (decl.kind == DeclKind::Function) return decl.functionDecl;
+        if (decl.kind == DeclKind::Node) return decl.nodeDecl->function;
+        return nullptr;
+    }
+
     llvm::LLVMContext& context;
     llvm::Module& module;
     llvm::IRBuilder<> builder;
@@ -407,6 +418,62 @@ private:
         llvm::Constant* jsonConst = llvm::ConstantDataArray::getString(context, found->json);
         new llvm::GlobalVariable(module, jsonConst->getType(), true,
             llvm::GlobalValue::PrivateLinkage, jsonConst, kFrustPluginManifestGlobalName);
+        return true;
+    }
+
+    static std::string nodeDataType(const TypeExpr* type) {
+        if (type == nullptr) return "int";
+        if (type->name == "f32" || type->name == "f64") return "float";
+        if (type->name == "i32" || type->name == "i64" || type->name == "usize") return "int";
+        if (type->name == "bool") return "bool";
+        if (type->name == "String" || type->name == "string") return "string";
+        return "int";
+    }
+
+    // Emits compiler-derived node metadata beside the plugin manifest. The
+    // host folds this into its public manifest only after source parsing and
+    // codegen have both succeeded, so hand-authored metadata cannot drift
+    // from a node's real function declaration.
+    bool compileNodeReflection(const Program& prog) {
+        std::vector<const NodeDecl*> nodes;
+        for (const auto* decl : prog.decls)
+            if (decl->kind == DeclKind::Node) nodes.push_back(decl->nodeDecl);
+        if (nodes.empty()) return true;
+
+        std::string json = "{\"nodes\":[";
+        for (size_t index = 0; index < nodes.size(); ++index) {
+            const auto& node = *nodes[index];
+            const auto& function = *node.function;
+            if (index != 0) json += ',';
+            const char* domain = node.kind == NodeKind::Pure ? "core" : "event";
+            json += "{\"typeName\":\"" + function.name + "\",\"displayName\":\"" + function.name
+                + "\",\"category\":\"Core\",\"description\":\"FRust declared node.\",\"frustEntryPoint\":\""
+                + function.name + "\",\"requiredCapabilities\":[],\"domain\":\"" + domain + "\",\"inputs\":[";
+            bool hasInput = false;
+            if (node.kind != NodeKind::Pure) {
+                json += "{\"name\":\"execute\",\"kind\":\"exec\"}";
+                hasInput = true;
+            }
+            for (size_t param = 0; param < function.params.size(); ++param) {
+                if (hasInput) json += ',';
+                json += "{\"name\":\"" + function.params[param].name + "\",\"kind\":\"data\",\"dataType\":\""
+                    + nodeDataType(function.params[param].type) + "\"}";
+                hasInput = true;
+            }
+            json += "],\"outputs\":[";
+            if (node.kind == NodeKind::Pure && function.returnType != nullptr) {
+                json += "{\"name\":\"value\",\"kind\":\"data\",\"dataType\":\"" + nodeDataType(function.returnType) + "\"}";
+            } else if (node.kind == NodeKind::Callable) {
+                json += "{\"name\":\"then\",\"kind\":\"exec\"}";
+            } else if (node.kind == NodeKind::Loop) {
+                json += "{\"name\":\"body\",\"kind\":\"exec\"},{\"name\":\"completed\",\"kind\":\"exec\"}";
+            }
+            json += "]}";
+        }
+        json += "]}";
+        llvm::Constant* reflection = llvm::ConstantDataArray::getString(context, json);
+        new llvm::GlobalVariable(module, reflection->getType(), true,
+            llvm::GlobalValue::PrivateLinkage, reflection, kFrustNodeReflectionGlobalName);
         return true;
     }
 
