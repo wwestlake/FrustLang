@@ -104,6 +104,20 @@ std::optional<PluginManifest> ParseManifestJson(const std::string& json, const s
             m.nodeLibraries.push_back(std::move(library));
         }
     }
+    if (obj->hasProperty("nodeSourceModules")) {
+        const juce::var modules = obj->getProperty("nodeSourceModules");
+        if (!modules.isArray()) {
+            std::cerr << "frust_plugin_host: manifest '" << contextLabel << "' has a non-array nodeSourceModules field\n";
+            return std::nullopt;
+        }
+        for (const auto& item : *modules.getArray()) {
+            if (!item.isString() || item.toString().isEmpty()) {
+                std::cerr << "frust_plugin_host: manifest '" << contextLabel << "' has an invalid node source module\n";
+                return std::nullopt;
+            }
+            m.nodeSourceModules.push_back(item.toString().toStdString());
+        }
+    }
     if (obj->hasProperty("intendedApplications") && obj->getProperty("intendedApplications").isArray()) {
         auto* arr = obj->getProperty("intendedApplications").getArray();
         for (auto& item : *arr) m.intendedApplications.push_back(item.toString().toStdString());

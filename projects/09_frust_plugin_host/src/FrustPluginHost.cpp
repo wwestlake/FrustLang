@@ -16,6 +16,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include <juce_core/juce_core.h>
+
 #include "AST.h"
 #include "ASTHash.h"
 #include "Codegen.h"
@@ -248,6 +250,53 @@ std::optional<std::string> ExtractManifestString(llvm::GlobalVariable& manifestG
     return manifestData->getAsCString().str();
 }
 
+llvm::GlobalVariable* FindNodeReflectionGlobal(llvm::Module& module) {
+    auto* gv = module.getGlobalVariable(kFrustNodeReflectionGlobalName, /*AllowInternal=*/true);
+    return (gv && gv->hasInitializer()) ? gv : nullptr;
+}
+
+bool MergeNodeReflection(frust_plugin_host::PluginManifest& manifest, llvm::Module& module, const std::string& context) {
+    // A node descriptor is executable-language reflection, not a second
+    // source of truth hidden in manifest JSON. Keeping this strict prevents a
+    // palette signature from drifting away from the FRust function it claims
+    // to call. The PluginManifest transport field remains the host ABI, but
+    // this load path is its sole producer.
+    if (!manifest.nodeLibraries.empty()) {
+        reportError("manifest '" + context + "' declares nodeLibraries directly; declare FRust 'node' functions instead");
+        return false;
+    }
+    auto* reflectionGV = FindNodeReflectionGlobal(module);
+    if (reflectionGV == nullptr) return true;
+    const auto reflection = ExtractManifestString(*reflectionGV);
+    if (!reflection) {
+        reportError("malformed node reflection constant in '" + context + "'");
+        return false;
+    }
+    juce::var value;
+    const auto result = juce::JSON::parse(*reflection, value);
+    if (result.failed() || !value.isObject()) {
+        reportError("invalid compiler-generated node reflection in '" + context + "'");
+        return false;
+    }
+    auto* object = value.getDynamicObject();
+    const auto nodes = object->getProperty("nodes");
+    if (!nodes.isArray()) {
+        reportError("compiler-generated node reflection has no nodes array in '" + context + "'");
+        return false;
+    }
+    juce::DynamicObject::Ptr descriptor(new juce::DynamicObject());
+    descriptor->setProperty("id", juce::String(manifest.name + ".nodes"));
+    descriptor->setProperty("displayName", juce::String(manifest.name));
+    descriptor->setProperty("description", "Compiler-reflected FRust node library.");
+    descriptor->setProperty("target", "behavior");
+    juce::Array<juce::var> sourceModules;
+    for (const auto& module : manifest.nodeSourceModules) sourceModules.add(juce::String(module));
+    descriptor->setProperty("sourceModules", sourceModules);
+    descriptor->setProperty("nodes", nodes);
+    manifest.nodeLibraries.push_back({ manifest.name + ".nodes", juce::JSON::toString(juce::var(descriptor.get()), true).toStdString() });
+    return true;
+}
+
 } // namespace
 
 struct FrustPluginHandleImpl {
@@ -297,6 +346,7 @@ FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_load(const char* path) {
             "(see stderr above for the JSON error)");
         return nullptr;
     }
+    if (!MergeNodeReflection(*parsedManifest, *module, path)) return nullptr;
     if (!frust_plugin_host::IsCompatible(*parsedManifest)) {
         reportError("refusing to load '" + std::string(path) + "': " +
             frust_plugin_host::LastIncompatibilityReason());
@@ -371,6 +421,7 @@ FRUST_PLUGIN_HOST_API FrustPluginManifestHandle frust_plugin_peek_manifest(const
             "(see stderr above for the JSON error)");
         return nullptr;
     }
+    if (!MergeNodeReflection(*parsedManifest, *module, path)) return nullptr;
     return frust_plugin_host::WrapManifest(std::move(*parsedManifest));
 }
 

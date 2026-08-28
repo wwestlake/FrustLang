@@ -105,7 +105,7 @@
     IF "if" ELSE "else" WHILE "while" LOOP "loop" FOR "for" BREAK "break" CONTINUE "continue"
     IMPL "impl" SELF "self" INTERFACE "interface" MANIFEST "manifest"
     STRUCT "struct" TYPE "type" EFFECT "effect" PERFORM "perform"
-    HANDLE "handle" RESUME "resume" WITH "with" COMPONENT "component"
+    HANDLE "handle" RESUME "resume" WITH "with" COMPONENT "component" NODE "node" PURE "pure" CALLABLE "callable"
     IN "in" OUT "out" BUILD_TIME "build_time" QUOTE "quote" UNQUOTE "unquote"
     AS "as" OWN "own" SHARED "shared" WEAK "weak" RAW "raw"
     TRUE "true" FALSE "false"
@@ -149,6 +149,7 @@
 %type <frust::TypeAliasDecl*> type_alias_decl
 %type <frust::EffectDecl*> effect_decl
 %type <frust::ComponentDecl*> component_decl
+%type <frust::NodeDecl*> node_decl
 %type <frust::UseDecl*> use_decl
 %type <frust::ImplDecl*> impl_decl
 %type <frust::FunctionDecl*> method_decl
@@ -223,6 +224,7 @@ decl:
   | type_alias_decl { $$ = arena.NewDecl(DeclKind::TypeAlias); $$->typeAliasDecl = $1; }
   | effect_decl     { $$ = arena.NewDecl(DeclKind::Effect); $$->effectDecl = $1; }
   | component_decl  { $$ = arena.NewDecl(DeclKind::Component); $$->componentDecl = $1; }
+  | node_decl       { $$ = arena.NewDecl(DeclKind::Node); $$->nodeDecl = $1; }
   | use_decl        { $$ = arena.NewDecl(DeclKind::Use); $$->useDecl = $1; }
   | impl_decl       { $$ = arena.NewDecl(DeclKind::Impl); $$->implDecl = $1; }
   | interface_decl  { $$ = arena.NewDecl(DeclKind::Interface); $$->interfaceDecl = $1; }
@@ -390,6 +392,21 @@ component_decl:
         $$->name = $2; $$->params = std::move($4); $$->interfaceName = $6; $$->loc = ToSourceLoc(@1);
         $$->ports = std::move($8.ports);
         $$->bodyStatements = std::move($8.stmts);
+    }
+;
+
+// Nodes reuse ordinary typed FRust functions as their executable body. The
+// source declaration, not an auxiliary JSON record, is the authoritative
+// signature that reflection exposes to graph tools.
+node_decl:
+    "node" "pure" function_decl {
+        $$ = arena.NewNodeDecl(); $$->kind = NodeKind::Pure; $$->function = $3; $$->loc = ToSourceLoc(@1);
+    }
+  | "node" "callable" function_decl {
+        $$ = arena.NewNodeDecl(); $$->kind = NodeKind::Callable; $$->function = $3; $$->loc = ToSourceLoc(@1);
+    }
+  | "node" "loop" function_decl {
+        $$ = arena.NewNodeDecl(); $$->kind = NodeKind::Loop; $$->function = $3; $$->loc = ToSourceLoc(@1);
     }
 ;
 interface_opt: %empty { $$ = {}; } | ":" IDENT { $$ = $2; } ;

@@ -107,10 +107,16 @@ struct PluginManifest {
     // resolve - see RequiredHostFunction above.
     std::vector<RequiredHostFunction> requiredHostFunctions;
 
-    // Optional graph node catalogs this plugin supplies. Each entry must be
-    // an object with a stable `id`; descriptorJson preserves the complete
-    // object for the application-level node system.
+    // Compiler-derived graph node catalogs this plugin supplies. The field is
+    // the host ABI transport shape; frust_plugin_load populates it from FRust
+    // `node` declarations and rejects hand-authored manifest catalogs.
     std::vector<PluginNodeLibrary> nodeLibraries;
+
+    // Source modules containing the plugin's `node` declarations. This is
+    // build layout metadata only: node signatures still come exclusively from
+    // compiler reflection. A generated graph imports these modules into its
+    // own root so calls remain within one FRust compilation unit.
+    std::vector<std::string> nodeSourceModules;
 
     // Which application(s) this plugin is built for - identity strings
     // ("lagdaemon-ide", whatever a host calls itself via

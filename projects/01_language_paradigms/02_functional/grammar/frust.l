@@ -76,6 +76,9 @@ ID     {IDCHAR}({IDCHAR}|{DIGIT})*
 "resume"     { return Parser::make_RESUME(loc_); }
 "with"       { return Parser::make_WITH(loc_); }
 "component"  { return Parser::make_COMPONENT(loc_); }
+"node"       { return Parser::make_NODE(loc_); }
+"pure"       { return Parser::make_PURE(loc_); }
+"callable"   { return Parser::make_CALLABLE(loc_); }
 "in"         { return Parser::make_IN(loc_); }
 "out"        { return Parser::make_OUT(loc_); }
 "build_time" { return Parser::make_BUILD_TIME(loc_); }
