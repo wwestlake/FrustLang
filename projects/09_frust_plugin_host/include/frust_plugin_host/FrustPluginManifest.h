@@ -60,6 +60,14 @@ struct RequiredHostFunction {
     std::string description;
 };
 
+// A plugin-owned node library. The descriptor remains JSON so FRust stays
+// host-neutral: an Engine, texture tool, or another application can each
+// validate the same declared catalog against its own graph implementation.
+struct PluginNodeLibrary {
+    std::string id;
+    std::string descriptorJson;
+};
+
 struct PluginManifest {
     std::string name;
     std::string version;
@@ -98,6 +106,11 @@ struct PluginManifest {
     // Host functions this plugin's extern fn declarations expect to
     // resolve - see RequiredHostFunction above.
     std::vector<RequiredHostFunction> requiredHostFunctions;
+
+    // Optional graph node catalogs this plugin supplies. Each entry must be
+    // an object with a stable `id`; descriptorJson preserves the complete
+    // object for the application-level node system.
+    std::vector<PluginNodeLibrary> nodeLibraries;
 
     // Which application(s) this plugin is built for - identity strings
     // ("lagdaemon-ide", whatever a host calls itself via
@@ -187,6 +200,10 @@ FRUST_PLUGIN_HOST_API const char* frust_plugin_manifest_description(FrustPluginM
 FRUST_PLUGIN_HOST_API int32_t frust_plugin_manifest_entry_point_count(FrustPluginManifestHandle handle);
 // index out of range returns NULL rather than crashing.
 FRUST_PLUGIN_HOST_API const char* frust_plugin_manifest_entry_point(FrustPluginManifestHandle handle, int32_t index);
+
+FRUST_PLUGIN_HOST_API int32_t frust_plugin_manifest_node_library_count(FrustPluginManifestHandle handle);
+FRUST_PLUGIN_HOST_API const char* frust_plugin_manifest_node_library_id(FrustPluginManifestHandle handle, int32_t index);
+FRUST_PLUGIN_HOST_API const char* frust_plugin_manifest_node_library_json(FrustPluginManifestHandle handle, int32_t index);
 
 // The plugin's actual loadable .frust source, relative to the manifest
 // file's own directory. Empty string if the manifest didn't declare one.

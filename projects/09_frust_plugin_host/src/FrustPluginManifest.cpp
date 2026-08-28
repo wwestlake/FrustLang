@@ -81,6 +81,29 @@ std::optional<PluginManifest> ParseManifestJson(const std::string& json, const s
             m.requiredHostFunctions.push_back(fn);
         }
     }
+    if (obj->hasProperty("nodeLibraries")) {
+        const juce::var libraries = obj->getProperty("nodeLibraries");
+        if (!libraries.isArray()) {
+            std::cerr << "frust_plugin_host: manifest '" << contextLabel << "' has a non-array nodeLibraries field\n";
+            return std::nullopt;
+        }
+        auto* arr = libraries.getArray();
+        for (const auto& item : *arr) {
+            if (!item.isObject()) {
+                std::cerr << "frust_plugin_host: manifest '" << contextLabel << "' has a non-object node library\n";
+                return std::nullopt;
+            }
+            auto* libraryObj = item.getDynamicObject();
+            PluginNodeLibrary library;
+            library.id = libraryObj->getProperty("id").toString().toStdString();
+            if (library.id.empty()) {
+                std::cerr << "frust_plugin_host: manifest '" << contextLabel << "' has a node library without an id\n";
+                return std::nullopt;
+            }
+            library.descriptorJson = juce::JSON::toString(item, true).toStdString();
+            m.nodeLibraries.push_back(std::move(library));
+        }
+    }
     if (obj->hasProperty("intendedApplications") && obj->getProperty("intendedApplications").isArray()) {
         auto* arr = obj->getProperty("intendedApplications").getArray();
         for (auto& item : *arr) m.intendedApplications.push_back(item.toString().toStdString());
@@ -178,6 +201,20 @@ FRUST_PLUGIN_HOST_API int32_t frust_plugin_manifest_entry_point_count(FrustPlugi
 FRUST_PLUGIN_HOST_API const char* frust_plugin_manifest_entry_point(FrustPluginManifestHandle handle, int32_t index) {
     if (!handle || index < 0 || static_cast<size_t>(index) >= handle->manifest.entryPoints.size()) return nullptr;
     return handle->manifest.entryPoints[static_cast<size_t>(index)].c_str();
+}
+
+FRUST_PLUGIN_HOST_API int32_t frust_plugin_manifest_node_library_count(FrustPluginManifestHandle handle) {
+    return handle ? static_cast<int32_t>(handle->manifest.nodeLibraries.size()) : 0;
+}
+
+FRUST_PLUGIN_HOST_API const char* frust_plugin_manifest_node_library_id(FrustPluginManifestHandle handle, int32_t index) {
+    if (!handle || index < 0 || static_cast<size_t>(index) >= handle->manifest.nodeLibraries.size()) return nullptr;
+    return handle->manifest.nodeLibraries[static_cast<size_t>(index)].id.c_str();
+}
+
+FRUST_PLUGIN_HOST_API const char* frust_plugin_manifest_node_library_json(FrustPluginManifestHandle handle, int32_t index) {
+    if (!handle || index < 0 || static_cast<size_t>(index) >= handle->manifest.nodeLibraries.size()) return nullptr;
+    return handle->manifest.nodeLibraries[static_cast<size_t>(index)].descriptorJson.c_str();
 }
 
 FRUST_PLUGIN_HOST_API const char* frust_plugin_manifest_source_file(FrustPluginManifestHandle handle) {
