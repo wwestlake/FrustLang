@@ -421,13 +421,29 @@ private:
         return true;
     }
 
+    // Real bug fixed here, found by direct audit rather than assumed
+    // correct: every branch this function couldn't match used to fall
+    // through to "int" unconditionally -- a bare generic node parameter
+    // (`node pure fn interpolate<T>(...) -> T`), a struct, `Vector<T>`,
+    // `Option<T>`, anything not one of the four primitives below, all
+    // silently reported as "int" with no error and no indication the
+    // claim was false. "any" is the correct fallback instead: it's
+    // node_system::DataType::Any on the host side, an already-existing,
+    // already-wired wildcard (IsConnectionCompatible already treats it as
+    // matching any concrete type on the other end of a wire) -- an honest
+    // "no precise type known" rather than a fabricated one. This also
+    // means a generic node's own type parameters reflect correctly with
+    // zero extra plumbing here: nothing about a name being one of the
+    // function's own genericParams needs checking separately, since an
+    // unrecognized name of ANY origin now degrades safely to the same
+    // honest wildcard instead of a specific false claim.
     static std::string nodeDataType(const TypeExpr* type) {
-        if (type == nullptr) return "int";
+        if (type == nullptr) return "any";
         if (type->name == "f32" || type->name == "f64") return "float";
         if (type->name == "i32" || type->name == "i64" || type->name == "usize") return "int";
         if (type->name == "bool") return "bool";
         if (type->name == "String" || type->name == "string") return "string";
-        return "int";
+        return "any";
     }
 
     // Emits compiler-derived node metadata beside the plugin manifest. The
