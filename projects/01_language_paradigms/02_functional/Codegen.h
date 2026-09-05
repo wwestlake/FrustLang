@@ -446,6 +446,21 @@ private:
         return "any";
     }
 
+    // Returns the matching entry of function.genericParams if `type` names
+    // one of the function's own type parameters (e.g. `T` in `node pure fn
+    // interpolate<T>(...) -> T`), else "". Lets reflection tell a NodeSystem
+    // consumer WHICH generic parameter a given pin corresponds to, so it can
+    // later resolve a per-instance concrete binding and emit the matching
+    // turbofish argument -- see genericParams below for the companion
+    // per-node list this keys into.
+    static std::string genericParamNameFor(const FunctionDecl& function, const TypeExpr* type) {
+        if (type == nullptr) return "";
+        for (const auto& param : function.genericParams) {
+            if (type->name == param) return param;
+        }
+        return "";
+    }
+
     // Emits compiler-derived node metadata beside the plugin manifest. The
     // host folds this into its public manifest only after source parsing and
     // codegen have both succeeded, so hand-authored metadata cannot drift
@@ -462,9 +477,16 @@ private:
             const auto& function = *node.function;
             if (index != 0) json += ',';
             const char* domain = node.kind == NodeKind::Pure ? "core" : "event";
+            std::string genericParamsJson = "[";
+            for (size_t g = 0; g < function.genericParams.size(); ++g) {
+                if (g != 0) genericParamsJson += ',';
+                genericParamsJson += "\"" + function.genericParams[g] + "\"";
+            }
+            genericParamsJson += "]";
             json += "{\"typeName\":\"" + function.name + "\",\"displayName\":\"" + function.name
                 + "\",\"category\":\"Core\",\"description\":\"FRust declared node.\",\"frustEntryPoint\":\""
-                + function.name + "\",\"requiredCapabilities\":[],\"domain\":\"" + domain + "\",\"inputs\":[";
+                + function.name + "\",\"requiredCapabilities\":[],\"genericParams\":" + genericParamsJson
+                + ",\"domain\":\"" + domain + "\",\"inputs\":[";
             bool hasInput = false;
             if (node.kind != NodeKind::Pure) {
                 json += "{\"name\":\"execute\",\"kind\":\"exec\"}";
@@ -472,13 +494,19 @@ private:
             }
             for (size_t param = 0; param < function.params.size(); ++param) {
                 if (hasInput) json += ',';
+                const std::string genericParam = genericParamNameFor(function, function.params[param].type);
                 json += "{\"name\":\"" + function.params[param].name + "\",\"kind\":\"data\",\"dataType\":\""
-                    + nodeDataType(function.params[param].type) + "\"}";
+                    + nodeDataType(function.params[param].type) + "\"";
+                if (!genericParam.empty()) json += ",\"genericParam\":\"" + genericParam + "\"";
+                json += "}";
                 hasInput = true;
             }
             json += "],\"outputs\":[";
             if (node.kind == NodeKind::Pure && function.returnType != nullptr) {
-                json += "{\"name\":\"value\",\"kind\":\"data\",\"dataType\":\"" + nodeDataType(function.returnType) + "\"}";
+                const std::string genericParam = genericParamNameFor(function, function.returnType);
+                json += "{\"name\":\"value\",\"kind\":\"data\",\"dataType\":\"" + nodeDataType(function.returnType) + "\"";
+                if (!genericParam.empty()) json += ",\"genericParam\":\"" + genericParam + "\"";
+                json += "}";
             } else if (node.kind == NodeKind::Callable) {
                 json += "{\"name\":\"then\",\"kind\":\"exec\"}";
             } else if (node.kind == NodeKind::Loop) {
