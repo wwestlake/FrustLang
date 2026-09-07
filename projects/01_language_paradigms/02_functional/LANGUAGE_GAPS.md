@@ -97,6 +97,60 @@ smart-pointer type annotation. Already-published content wasn't corrected
 retroactively (out of scope of this fix); new content should use the
 correct bare form.
 
+### `node` reflection silently mislabeled unrecognized/generic pin types as `"int"`, and never exposed a node's own genericness at all
+
+**Status: DONE - 2026-09-05.** Two related bugs in `compileNodeReflection`/
+`nodeDataType` (`Codegen.h`), found while verifying an earlier LLM's false
+claim that "generics + reflection already let a node be generic over its
+output type" - they don't, today, and this is why.
+
+**Bug 1 (fixed first, on its own):** `nodeDataType(const TypeExpr*)` only
+recognized four primitive type names (`f32`/`f64`, `i32`/`i64`/`usize`,
+`bool`, `String`/`string`); every other type - a bare generic node
+parameter (`node pure fn interpolate<T>(...) -> T`), a struct, `Vector<T>`,
+`Option<T>` - silently fell through to `"int"` with zero error, zero
+indication the claim was false. Fixed: both fallback branches now return
+`"any"` (`node_system::DataType::Any` on the host side - an already-
+existing, already-wired wildcard `IsConnectionCompatible` already treats
+as matching any concrete pin) - an honest "no precise type known" instead
+of a fabricated specific one. This alone was never logged here at the
+time it shipped, despite this file's own standing instruction (top of
+this document) to update the moment status changes - a real miss, caught
+directly by the person who owns this repo, not found independently.
+
+**Bug 2 (found investigating the first):** even with Bug 1 fixed,
+`compileNodeReflection` emitted *zero information about a node being
+generic at all* - no `genericParams` list, nothing tying a pin to a
+generic parameter name. A generic `node pure`/`node callable` declaration
+parsed and reflected without complaint, producing a syntactically valid
+manifest entry whose `frustEntryPoint` named a symbol that would never
+exist as a real, callable `llvm::Function` unless some unrelated turbofish
+call site elsewhere in the same program happened to monomorphize it -
+and even then the real symbol is mangled (`"identity<i64>"`, not
+`"identity"`), so nothing tied reflection's claim to the actual compiled
+result. Fixed: `compileNodeReflection` now emits a `"genericParams": [...]`
+array per node (straight from `FunctionDecl::genericParams`) and a
+`"genericParam": "T"` field on any pin whose `TypeExpr::name` matches one
+of the function's own generic parameter names - so a NodeSystem-side
+consumer can tell a node is generic, which parameter, and on which pins,
+instead of every generic pin looking identical to an ordinary untyped
+`Any` one.
+
+Verified (`FrustGenericNodeReflectionSmoke`, `apps/CreationEngine`,
+new): a real `node pure fn identity<T>(x: T) -> T` compiled through the
+full pipeline (`compileNodeReflection` -> `MergeNodeReflection` ->
+`PluginRuntime::nodeLibraries`), confirming the manifest JSON that
+actually reaches a host application carries `"genericParams": ["T"]` and
+`"genericParam": "T"` on both the input and output pins - not just that
+`compileNodeReflection`'s own intermediate JSON looks right in isolation.
+Neither bug's fix changes what a generic node's underlying FRust function
+compiles to (monomorphization still requires a real turbofish call site
+somewhere, per gap #4 below) - this closes the REFLECTION honesty gap
+specifically; NodeSystem-side consumption of `genericParams`/
+`genericParam` to actually resolve and emit a concrete instantiation per
+placed graph-node instance is separate, ongoing work outside this repo
+(`shared/NodeSystem`, the Creation-Suite monorepo).
+
 ## CLOSED - moot
 
 **No platform-conditional compilation.** Originally blocked
@@ -292,6 +346,18 @@ Scope cuts, named honestly:
   function's OWN body calling ANOTHER explicit-generic-arg function is
   therefore not supported yet (a clear compile error, not silent
   corruption, if it's ever attempted).
+- A generic `node pure`/`node callable` declaration (a Schematic node
+  generic over its pin type) reflects honestly now - see the CRITICAL
+  BUGS entry above ("`node` reflection silently mislabeled...") - but
+  there is still no compiler-side mechanism to REQUEST a specific
+  monomorphization other than a literal turbofish call site somewhere in
+  the compiled program; a NodeSystem-generated graph gets one "for free"
+  today because graph-to-FRust compilation emits real source text
+  (confirmed directly, `shared/NodeSystem/src/frust_codegen.cpp`), so a
+  generated turbofish call site is indistinguishable from a hand-written
+  one to Pass 1.5 - no new compiler API is needed for this, only for
+  NodeSystem itself to learn how to emit that call correctly per placed
+  node instance (separate, ongoing work outside this repo).
 
 Verified (`test_generics.frust`, `frust_compiler.exe` direct-run): two
 DIFFERENT instantiations of the same generic struct (`Box<i64>` and
