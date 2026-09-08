@@ -40,3 +40,12 @@ stderr.txt
 
 # Node.js (07_vscode_frust)
 node_modules/
+
+# GitHub wiki - a separate clone of wwestlake/FrustLang.wiki.git (own .git,
+# own remote), not part of this repo's history.
+/wiki/
+
+# Ad-hoc feature-verification scratch (IR dumps, copied frate.json) - same
+# regenerable-debug-output class as output_pre_opt.ll/output_post_opt.ll
+# above, just under a per-branch subdirectory instead of the repo root.
+/_verification/
