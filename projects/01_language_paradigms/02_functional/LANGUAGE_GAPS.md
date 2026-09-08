@@ -287,8 +287,97 @@ made during implementation, not pre-decided here.
 
 ## 4. Generics (real, user-definable types/functions)
 
-**Status: PARTIAL (structs + free functions; methods still open) -
-2026-08-24.** Generic STRUCTS are real - `struct Box<T> { value: T }`,
+**Status: DONE - generic `impl` methods landed 2026-09-08, closing the
+last open piece.** `impl<T> Box<T> { fn get(self) -> T }` - methods on
+a generic STRUCT or ENUM, monomorphized lazily the first time a method
+is actually called on a concrete instantiation (`getOrCreateMonomorphizedMethod`,
+mirroring `getOrCreateMonomorphizedFunction` exactly one level up:
+same lazy-per-call-site trigger, same mangled-name memoization via
+`module.getFunction`). New grammar: `impl_decl` gained a THIRD
+alternative requiring a literal `"<"` right after `"impl"` (not
+`generic_params_opt`, which has an `%empty` branch that would have
+conflicted with the existing interface-impl alternative's bare
+`"impl" IDENT "for" ...` - found empirically via `bison -Wall`, a real
+shift/reduce conflict, not theorized) - `"impl" "<" generic_param_list
+">" IDENT type_generic_args_opt "{" ...`, Rust-like syntax repeating
+the type args on the type name (`impl<T> Box<T>`), though only
+`generic_param_list` is the real source of truth (`type_generic_args_opt`
+is parsed and discarded, syntax parity only). Scoped to the plain
+inherent-impl form only - `impl<T> Iface for Box<T>` (a generic
+interface impl) is real, separate, out-of-scope-for-this-pass work.
+
+**Real bug found and fixed while building this**: unlike a generic free
+function (pre-scanned and monomorphized entirely in Pass 1.5, BEFORE
+any Pass-2 body starts compiling - see `getOrCreateMonomorphizedFunction`'s
+own comment on why that matters), a generic method's concrete
+instantiation can only be known once its receiver's static type is
+already known, which in general needs the CALLER's own body compilation
+already under way - so `getOrCreateMonomorphizedMethod` genuinely is
+called reentrantly, from inside `compileMethodCall`, itself mid-
+compilation of whatever function is calling the method.
+`compileFunction`'s unconditional `namedValues.clear()` (and its sibling
+side tables) was silently wiping the CALLER's own in-progress local
+variables the first time this was tested (`unknown identifier 'b1'` on
+a name that was very much still in scope). Fixed by save/restoring the
+full `namedValue*`/`sharedScopeStack`/builder-insertion-point state
+around the monomorphizing `compileFunction` call, mirroring
+`compileClosureLiteral`'s trampoline save/restore exactly, for the
+same reason.
+
+Two more real, smaller bugs found in the same pass, both from the same
+root cause (a monomorphized method's `FunctionDecl` is a SHALLOW copy
+of its template - `params[i].type`/`returnType` still point at the
+template's own shared, UNSUBSTITUTED `TypeExpr`s, e.g. bare `"T"`,
+outside the `currentGenericSubstitution` window that only exists while
+that specific method was being compiled): argument coercion at the call
+site (`compileMethodCall`) and struct/enum type INFERENCE for a
+method-call's result (`inferStructTypeName`/`inferEnumTypeName` - which
+previously didn't handle method-call results AT ALL, a separate,
+pre-existing gap for even non-generic methods, closed here for both at
+once via a new shared `inferMethodCallResultType`) both had to be
+changed to resolve through the SAME temporarily-established substitution
+`getOrCreateMonomorphizedMethod` itself uses, rather than trusting the
+stale template pointer directly.
+
+Also found, NOT fixed (real, separate, logged honestly): `compileFunction`'s
+method `self`-binding unconditionally assumed a struct receiver
+(`namedValueStructType["self"] = fn.selfTypeName`) - now fixed as part
+of this same pass to check `enumVariantIndex` first, since an impl
+block's `Self` type can now legitimately be an enum
+(`impl<T> Option2<T> { ... }`) too, not just a struct.
+
+**Two more real gaps found while testing, confirmed NOT new but not
+fixed here either:**
+- `if`/`while`/`for`'s condition has the SAME bare-identifier-vs-
+  struct-literal grammar ambiguity `match` had (see the algebraic-data-
+  types section above) - `if has1 { ... }` fails to parse for the exact
+  same reason `match has1 { ... }` did. Unfixed here (would require the
+  same parenthesization convention, a real breaking-change discussion
+  for how heavily `if`/`while` are already used unparenthesized
+  throughout every example in this repo) - worked around in this
+  session's own tests with `if has1 == true { ... }` instead.
+- `as` casting (`v as i64`) is not implemented for ANY type combination
+  at all - confirmed with a minimal, fully non-generic repro (`let v:
+  f64 = 3.5; (v as i64)`), "codegen does not support this expression
+  kind yet". Not a generics-specific gap, a general one, logged here
+  because this is where it was found.
+
+Verified (`test_generic_methods.frust`, `frust_compiler.exe` direct-run):
+`Box<T>` (a generic struct) with a T-returning method AND a T-typed-
+PARAMETER method (`replace`), exercised on two DIFFERENT concrete
+instantiations (`Box<i64>`/`Box<f64>`) in one program - proves real
+per-type monomorphization, not one hardcoded case, and proves
+substitution reaches both directions (param and return); `Option2<T>`
+(a generic ENUM) with a method whose body uses `match` on `self` -
+proves the mechanism works identically for enum receivers, and proves
+the `self`-binding fix. Hand-predicted value matched exactly. Full
+`frust_plugin_host` regression sweep (17 examples) and a JUCE IDE Debug
+rebuild + launch smoke test both clean.
+
+### Original struct + free-function generics (2026-08-24, kept for the record)
+
+**Status at the time: PARTIAL (structs + free functions; methods still
+open).** Generic STRUCTS are real - `struct Box<T> { value: T }`,
 `struct Pair<A, B> { first: A, second: B }` - monomorphized (real
 per-instantiation LLVM struct types, not type erasure/boxing),
 matching the project's own stated "zero-overhead, aiming for the iron"

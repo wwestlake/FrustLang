@@ -371,6 +371,13 @@ struct ImplDecl {
     // vtable for the (interfaceName, typeName) pair once these methods
     // are compiled.
     std::string interfaceName;
+
+    // `impl<T> Box<T> { ... }` - LANGUAGE_GAPS.md's generic-impl-methods
+    // work, mirrors StructDecl::genericParams exactly. Empty for an
+    // ordinary (non-generic) impl block. Scoped to the plain inherent-impl
+    // form only - interfaceName is never non-empty at the same time as
+    // this being non-empty (see the grammar's own comment).
+    std::vector<std::string> genericParams;
 };
 
 // `manifest "...";` - a plugin's own self-describing metadata (raw JSON

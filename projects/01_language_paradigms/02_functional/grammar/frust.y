@@ -350,6 +350,30 @@ impl_decl:
         // stamped onto each FunctionDecl here instead.
         for (auto* m : $$->methods) m->selfTypeName = $2;
     }
+  // `impl<T> Box<T> { fn get(self) -> T }` - LANGUAGE_GAPS.md's generic-
+  // impl-methods work. Deliberately its OWN alternative requiring a
+  // literal "<" (not `generic_params_opt`, which has an %empty branch) -
+  // using generic_params_opt here would make its ε-reduction compete with
+  // the interface-impl alternative's bare `"impl" IDENT "for" ...` shift
+  // right after "impl" (found empirically: `bison -Wall` reported 5
+  // shift/reduce conflicts, one more than this grammar's existing
+  // baseline of 4, tracked down to exactly this). Requiring the literal
+  // "<" up front sidesteps the ambiguity entirely - it's the ONLY
+  // impl_decl alternative starting with "<" right after "impl", so no
+  // lookahead conflict with the other two alternatives (which still
+  // share their own pre-existing, already-conflict-free "impl IDENT..."
+  // prefix, untouched by this addition). Scoped to the plain inherent-
+  // impl form only - `impl<T> Iface for Box<T>` (a generic interface
+  // impl) is a real, separate, out-of-scope-for-this-pass extension.
+  | "impl" "<" generic_param_list ">" IDENT type_generic_args_opt "{" method_decl_list "}" {
+        // type_generic_args_opt ($6) is Rust-like syntax parity only
+        // (`Box<T>` re-listing the same names generic_param_list already
+        // declared) - not consumed for anything functionally different,
+        // genericParams below is the real source of truth.
+        $$ = arena.NewImplDecl();
+        $$->typeName = $5; $$->genericParams = std::move($3); $$->methods = std::move($8); $$->loc = ToSourceLoc(@1);
+        for (auto* m : $$->methods) m->selfTypeName = $5;
+    }
   // `impl InterfaceName for TypeName { ... }` - this block also satisfies
   // InterfaceName's contract (Codegen.h emits a vtable for the pair).
   // Reuses "for" (already a token, for-loops) rather than a new keyword.

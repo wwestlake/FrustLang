@@ -71,6 +71,7 @@ public:
         indexTypeAliases(prog);
         indexStructs(prog); // must precede signature declaration below - param/return types can name a struct
         indexEnums(prog); // same reason, plus synthesizes variant constructor decls into enumVariantConstructorDecls (below)
+        indexGenericImplTemplates(prog); // LANGUAGE_GAPS.md's generic-impl-methods work - see that function's own comment
 
         // Every ordinary decl PLUS the synthesized enum-variant-constructor
         // decls (indexEnums, just above) - folded into one list so the
@@ -123,7 +124,15 @@ public:
             const auto* function = functionFor(*decl);
             if (function && function->genericParams.empty()) {
                 declareFunctionSignature(*function);
-            } else if (decl->kind == DeclKind::Impl) {
+            } else if (decl->kind == DeclKind::Impl && decl->implDecl->genericParams.empty()) {
+                // A generic impl block's methods (LANGUAGE_GAPS.md's
+                // generic-impl-methods work) are never declared under
+                // their bare "BaseType::method" name - there's no single
+                // real signature for it (a param/return typed `T` isn't a
+                // real type until a concrete receiver supplies one).
+                // indexGenericImplTemplates already remembered the
+                // template; getOrCreateMonomorphizedMethod builds a real
+                // signature lazily per concrete instantiation instead.
                 for (auto* m : decl->implDecl->methods) declareFunctionSignature(*m);
             }
         }
@@ -181,7 +190,7 @@ public:
             if (function && function->genericParams.empty()
                 && (function->body != nullptr || function->isExtern)) {
                 if (!compileFunction(*function)) ok = false;
-            } else if (decl->kind == DeclKind::Impl) {
+            } else if (decl->kind == DeclKind::Impl && decl->implDecl->genericParams.empty()) {
                 for (auto* m : decl->implDecl->methods) {
                     if (!compileFunction(*m)) ok = false;
                 }
@@ -375,6 +384,19 @@ private:
     // layout ever built for the bare generic name (getOrCreateMonomorphizedEnum
     // builds it lazily per concrete instantiation).
     std::unordered_map<std::string, const EnumDecl*> genericEnumTemplates;
+
+    // `impl<T> Box<T> { fn get(self) -> T }` templates - LANGUAGE_GAPS.md's
+    // generic-impl-methods work. Keyed the same way `methods`/
+    // functionDeclsByName already are (mangleMethodName(typeName,
+    // methodName)), but against the BARE (unmonomorphized) type name -
+    // "Box::get", not "Box<i64>::get". The method's own FunctionDecl
+    // doesn't know about the enclosing impl block's generic params at
+    // all (only ImplDecl does), so those are carried alongside it here.
+    struct GenericMethodTemplate {
+        const FunctionDecl* method = nullptr;
+        std::vector<std::string> implGenericParams;
+    };
+    std::unordered_map<std::string, GenericMethodTemplate> genericMethodTemplates;
     // Synthesized `EnumName::VariantName` constructor FunctionDecls (one
     // per variant, reusing Result::ok's existing qualified-path-function
     // convention - LANGUAGE_GAPS.md #5) plus their owned AST storage
@@ -963,6 +985,144 @@ private:
         return true;
     }
 
+    // `impl<T> Box<T> { ... }` (LANGUAGE_GAPS.md's generic-impl-methods
+    // work) - remembers each method as a template, keyed by the BARE type
+    // name, mirroring indexStructs'/indexEnums' own "don't eagerly declare
+    // a signature that needs a concrete type to even resolve" convention.
+    // Scoped to plain inherent impls only (interfaceName always empty
+    // here - see the grammar's own comment on why a generic interface
+    // impl isn't attempted in this pass).
+    void indexGenericImplTemplates(const Program& prog) {
+        for (auto* decl : prog.decls) {
+            if (decl->kind != DeclKind::Impl || decl->implDecl->genericParams.empty()) continue;
+            const ImplDecl& impl = *decl->implDecl;
+            for (auto* m : impl.methods) {
+                genericMethodTemplates[mangleMethodName(impl.typeName, m->name)] = GenericMethodTemplate{ m, impl.genericParams };
+            }
+        }
+    }
+
+    // Reverse of monomorphizedStructName - splits "Base<a,b>" back into
+    // ("Base", ["a","b"]). Safe for this codebase's actual scope: a
+    // concrete type ARGUMENT is always a flat type name (resolveType's
+    // own generic-instantiation branch takes `arg.type->name` directly,
+    // never recursing into that argument's OWN genericArgs - a real,
+    // separate, pre-existing scope limit on nested generics, not new
+    // here), so a naive split on the first "<" then top-level "," can't
+    // be fooled by a nested "<...>" that would otherwise need bracket-
+    // depth tracking.
+    static bool splitMonomorphizedName(const std::string& mangled, std::string& baseOut, std::vector<std::string>& argsOut) {
+        auto lt = mangled.find('<');
+        if (lt == std::string::npos || mangled.empty() || mangled.back() != '>') return false;
+        baseOut = mangled.substr(0, lt);
+        std::string argsStr = mangled.substr(lt + 1, mangled.size() - lt - 2);
+        argsOut.clear();
+        size_t start = 0;
+        while (start <= argsStr.size()) {
+            size_t comma = argsStr.find(',', start);
+            if (comma == std::string::npos) { argsOut.push_back(argsStr.substr(start)); break; }
+            argsOut.push_back(argsStr.substr(start, comma - start));
+            start = comma + 1;
+        }
+        return true;
+    }
+
+    // Lazily monomorphizes a generic impl method the first time it's
+    // actually called on a concrete instantiation (compileMethodCall) -
+    // mirrors getOrCreateMonomorphizedFunction exactly, one level up: the
+    // clone's selfTypeName becomes the MANGLED concrete type ("Box<i64>",
+    // not "Box"), so declareFunctionSignature's existing mangleMethodName
+    // call produces exactly the "Box<i64>::get" name compileMethodCall's
+    // plain lookup already expects - zero changes needed to method
+    // dispatch beyond adding this as a fallback when that plain lookup
+    // misses. currentGenericSubstitution carries T -> the concrete arg
+    // through resolveType/resolveStructTypeName exactly like a generic
+    // free function's own monomorphization already does.
+    llvm::Function* getOrCreateMonomorphizedMethod(const std::string& baseTypeName, const std::string& methodName,
+                                                      const std::vector<std::string>& concreteArgNames) {
+        std::string mangledType = monomorphizedStructName(baseTypeName, concreteArgNames);
+        std::string mangledMethod = mangleMethodName(mangledType, methodName);
+        if (llvm::Function* existing = module.getFunction(mangledMethod)) return existing;
+
+        auto templateIt = genericMethodTemplates.find(mangleMethodName(baseTypeName, methodName));
+        if (templateIt == genericMethodTemplates.end()) return nullptr; // not a generic method - caller reports its own "no such method" error
+
+        const GenericMethodTemplate& tmpl = templateIt->second;
+        if (tmpl.implGenericParams.size() != concreteArgNames.size()) {
+            std::cerr << "frust: codegen error: '" << baseTypeName << "' expects "
+                       << tmpl.implGenericParams.size() << " type argument(s), got "
+                       << concreteArgNames.size() << "\n";
+            return nullptr;
+        }
+
+        auto mono = std::make_unique<FunctionDecl>(*tmpl.method);
+        mono->selfTypeName = mangledType;
+        mono->isMethod = true;
+        FunctionDecl* monoPtr = mono.get();
+        monomorphizedFunctionStorage.push_back(std::move(mono));
+
+        // Unlike a generic FREE function (pre-scanned and monomorphized
+        // entirely in Pass 1.5, before any Pass-2 body starts compiling -
+        // see getOrCreateMonomorphizedFunction's own comment on why that
+        // matters), a generic METHOD's concrete instantiation can only be
+        // known once its receiver's STATIC type is known, which in
+        // general needs the caller's own body compilation already under
+        // way (a `let`-bound local's type, say) - so this genuinely IS
+        // called reentrantly, from inside compileMethodCall, itself
+        // called mid-compilation of whatever function is calling this
+        // method. compileFunction unconditionally clears namedValues (and
+        // its sibling side tables) - without saving/restoring around it
+        // here, compiling THIS method's body would wipe out the CALLER's
+        // own in-progress locals. Mirrors compileClosureLiteral's
+        // trampoline save/restore exactly, for the same reason.
+        auto savedIP = builder.saveIP();
+        auto savedNamedValues = namedValues;
+        auto savedStructType = namedValueStructType;
+        auto savedRawPointee = namedValueRawPointeeType;
+        auto savedVectorElem = namedValueVectorElementType;
+        auto savedInterfaceType = namedValueInterfaceType;
+        auto savedClosureSig = namedValueClosureSignature;
+        auto savedSharedType = namedValueSharedType;
+        auto savedEnumType = namedValueEnumType;
+        auto savedSharedScopeStack = sharedScopeStack;
+        auto savedLoopSharedScopeDepth = loopSharedScopeDepth;
+        llvm::Type* savedRetType = currentFnRetType;
+        bool savedBlockTerminated = blockTerminated;
+
+        // Real, named limitation mirroring getOrCreateMonomorphizedFunction's
+        // own: NOT reentrant-safe against being triggered from within
+        // ANOTHER generic function/method's own monomorphization (a
+        // generic method's body calling a further generic-arg call) -
+        // currentGenericSubstitution is simply reset, not saved/restored,
+        // same scope cut, same reason.
+        currentGenericSubstitution.clear();
+        for (size_t i = 0; i < tmpl.implGenericParams.size(); ++i) {
+            currentGenericSubstitution[tmpl.implGenericParams[i]] = concreteArgNames[i];
+        }
+
+        // declareFunctionSignature resolves param/return types via
+        // resolveType, which consults currentGenericSubstitution - must
+        // run AFTER the substitution is set up above, not before.
+        declareFunctionSignature(*monoPtr);
+        llvm::Function* result = compileFunction(*monoPtr);
+
+        currentGenericSubstitution.clear();
+        builder.restoreIP(savedIP);
+        namedValues = savedNamedValues;
+        namedValueStructType = savedStructType;
+        namedValueRawPointeeType = savedRawPointee;
+        namedValueVectorElementType = savedVectorElem;
+        namedValueInterfaceType = savedInterfaceType;
+        namedValueClosureSignature = savedClosureSig;
+        namedValueSharedType = savedSharedType;
+        namedValueEnumType = savedEnumType;
+        sharedScopeStack = savedSharedScopeStack;
+        loopSharedScopeDepth = savedLoopSharedScopeDepth;
+        currentFnRetType = savedRetType;
+        blockTerminated = savedBlockTerminated;
+        return result;
+    }
+
     static std::string monomorphizedStructName(const std::string& baseName,
                                                  const std::vector<std::string>& concreteArgNames) {
         std::string mangled = baseName + "<";
@@ -1096,6 +1256,59 @@ private:
     // *be* a struct in v1 are covered; everything else (nested Member,
     // struct-returning Call) is deliberately out of scope for this pass and
     // returns nullopt, same as it already falls through to "unsupported".
+    // A method-call expression's (`x.method(...)`) result type - shared by
+    // inferStructTypeName/inferEnumTypeName below, since the logic to find
+    // it is identical between them (only the final resolve call differs).
+    // Was previously not handled AT ALL by either (a real, pre-existing
+    // gap for ordinary non-generic methods too, not new here - found
+    // while wiring up generic-impl-methods, closed for both at once): a
+    // method's return type is looked up via `methods` if it's already a
+    // real compiled function, or via genericMethodTemplates with a
+    // temporarily-established substitution (mirroring the explicit-
+    // generic-arg Call branch just above/below - same proven pattern,
+    // not a new mechanism) if it's a not-yet-monomorphized generic method.
+    std::optional<std::string> inferMethodCallResultType(const Expr* expr, bool wantEnum) {
+        if (!expr || expr->kind != ExprKind::Call || !expr->lhs || expr->lhs->kind != ExprKind::Member) return std::nullopt;
+        const Expr& member = *expr->lhs;
+        auto receiverType = inferStructTypeName(member.lhs);
+        if (!receiverType) receiverType = inferEnumTypeName(member.lhs);
+        if (!receiverType) return std::nullopt;
+
+        // A monomorphized receiver's method - even one ALREADY compiled
+        // (methods[mangled] would already have an entry) - must go
+        // through the substitution-aware genericMethodTemplates path
+        // here, not the plain methods[] lookup below: getOrCreateMonomorphizedMethod's
+        // clone is a SHALLOW copy of its template, so methodDecl->returnType
+        // still points at the template's own shared, UNSUBSTITUTED
+        // TypeExpr (e.g. "Box<T>", not "Box<i64>") - resolving that
+        // directly, outside a substitution window, is exactly the bug
+        // getOrCreateMonomorphizedMethod's own arg-coercion fix already
+        // had to work around once (see compileMethodCall's own comment).
+        std::string base;
+        std::vector<std::string> concreteArgs;
+        if (splitMonomorphizedName(*receiverType, base, concreteArgs)) {
+            auto tmplIt = genericMethodTemplates.find(mangleMethodName(base, member.text));
+            if (tmplIt != genericMethodTemplates.end() && tmplIt->second.implGenericParams.size() == concreteArgs.size()) {
+                auto saved = currentGenericSubstitution;
+                currentGenericSubstitution.clear();
+                for (size_t i = 0; i < concreteArgs.size(); ++i) currentGenericSubstitution[tmplIt->second.implGenericParams[i]] = concreteArgs[i];
+                auto result = wantEnum ? resolveEnumTypeName(tmplIt->second.method->returnType) : resolveStructTypeName(tmplIt->second.method->returnType);
+                currentGenericSubstitution = saved;
+                return result;
+            }
+        }
+
+        // Not a generic-impl method (or no template found) - an ordinary
+        // non-generic method's already-declared, never-substituted
+        // returnType is safe to resolve directly.
+        std::string mangled = mangleMethodName(*receiverType, member.text);
+        auto methodIt = methods.find(mangled);
+        if (methodIt != methods.end()) {
+            return wantEnum ? resolveEnumTypeName(methodIt->second->returnType) : resolveStructTypeName(methodIt->second->returnType);
+        }
+        return std::nullopt;
+    }
+
     std::optional<std::string> inferStructTypeName(const Expr* expr) {
         if (!expr) return std::nullopt;
         if (expr->kind == ExprKind::Identifier) {
@@ -1167,6 +1380,7 @@ private:
                 return resolveStructTypeName(it->second->returnType);
             }
         }
+        if (auto methodResult = inferMethodCallResultType(expr, false)) return methodResult;
         return std::nullopt;
     }
 
@@ -1223,6 +1437,7 @@ private:
         }
         auto it = functionDeclsByName.find(targetName);
         if (it != functionDeclsByName.end()) return resolveEnumTypeName(it->second->returnType);
+        if (auto methodResult = inferMethodCallResultType(expr, true)) return methodResult;
         return std::nullopt;
     }
 
@@ -2683,13 +2898,31 @@ private:
             }
         }
 
+        // Enum-typed receivers (LANGUAGE_GAPS.md's generic-impl-methods
+        // work - a generic impl method works identically on `impl<T>
+        // Option<T> { ... }` as on a generic struct) - checked as a
+        // fallback since inferStructTypeName/inferEnumTypeName are
+        // mutually exclusive (a concrete type is one or the other, never
+        // both).
         auto typeName = inferStructTypeName(member.lhs);
+        if (!typeName) typeName = inferEnumTypeName(member.lhs);
         if (!typeName) {
             std::cerr << "frust: codegen error: cannot call a method on an expression of unknown struct type\n";
             return nullptr;
         }
         std::string mangled = mangleMethodName(*typeName, member.text);
         llvm::Function* callee = module.getFunction(mangled);
+        if (!callee) {
+            // Lazily monomorphize a generic impl method the first time
+            // it's called on THIS concrete instantiation - mirrors how a
+            // generic free function's first turbofish call site triggers
+            // its own monomorphization (getOrCreateMonomorphizedFunction).
+            std::string base;
+            std::vector<std::string> concreteArgs;
+            if (splitMonomorphizedName(*typeName, base, concreteArgs)) {
+                callee = getOrCreateMonomorphizedMethod(base, member.text, concreteArgs);
+            }
+        }
         if (!callee || !methods.count(mangled)) {
             std::cerr << "frust: codegen error: no such method '" << member.text << "' on struct '" << *typeName << "'\n";
             return nullptr;
@@ -2708,6 +2941,24 @@ private:
         auto methodDeclIt = methods.find(mangled);
         const FunctionDecl* methodDecl = (methodDeclIt != methods.end()) ? methodDeclIt->second : nullptr;
 
+        // A monomorphized generic method's FunctionDecl (getOrCreateMonomorphizedMethod)
+        // is a SHALLOW copy of its template - `methodDecl->params[i].type`
+        // still points at the template's own shared, UNSUBSTITUTED TypeExpr
+        // (e.g. bare "T"), and resolving it here (outside the
+        // currentGenericSubstitution window that only exists while that
+        // method's own body/signature was being compiled) would silently
+        // fall through to resolveType's "unknown type" i64 default -
+        // numerically harmless for an i64 T, silently WRONG for anything
+        // else. coerceArgForParam's interface-typed-parameter handling is
+        // still correct either way (resolveInterfaceName(T) legitimately
+        // finds nothing, same as it would for any other non-interface
+        // type) - only ITS OWN final coerceToType(argVal, resolveType(paramType))
+        // fallback is the broken part for a monomorphized receiver, so
+        // that's the only piece replaced here, with the callee's own
+        // already-compiled (and correctly substituted) LLVM parameter
+        // type instead.
+        bool isMonomorphizedReceiver = typeName->find('<') != std::string::npos;
+
         std::vector<llvm::Value*> args;
         args.push_back(selfPtr);
         auto argTypeIt = callee->arg_begin();
@@ -2718,7 +2969,10 @@ private:
             // methodDecl->params has no self entry either (self is
             // synthetic, added separately - see declareFunctionSignature),
             // so index i lines up directly here too.
-            if (methodDecl && i < methodDecl->params.size()) {
+            if (methodDecl && i < methodDecl->params.size() && !isMonomorphizedReceiver) {
+                v = coerceArgForParam(v, expr.args[i], methodDecl->params[i].type);
+            } else if (methodDecl && i < methodDecl->params.size()
+                       && resolveInterfaceName(methodDecl->params[i].type)) {
                 v = coerceArgForParam(v, expr.args[i], methodDecl->params[i].type);
             } else {
                 v = coerceToType(v, argTypeIt->getType());
@@ -4251,7 +4505,19 @@ public:
         if (fn.isMethod) {
             argIt->setName("self");
             namedValues["self"] = &*argIt;
-            namedValueStructType["self"] = fn.selfTypeName;
+            // An impl block's Self type can now be an enum too
+            // (LANGUAGE_GAPS.md's generic-impl-methods work - `impl<T>
+            // Option2<T> { ... }`), not just a struct - this used to
+            // unconditionally assume struct, which silently left an
+            // enum-typed `self` out of namedValueEnumType entirely
+            // (compileMatch's inferEnumTypeName(self) would find nothing,
+            // wrongly demanding a `_` catch-all arm even for an otherwise-
+            // exhaustive match on self).
+            if (enumVariantIndex.count(fn.selfTypeName)) {
+                namedValueEnumType["self"] = fn.selfTypeName;
+            } else {
+                namedValueStructType["self"] = fn.selfTypeName;
+            }
             ++argIt;
         }
         for (auto& p : fn.params) {
