@@ -2,9 +2,9 @@
 
 Frust is a statically-typed, compiled language built on LLVM (JIT and
 AOT), designed around zero-overhead control: real generics
-(monomorphized, not type-erased), real reference counting with
-automatic drop, real closures, real interface dispatch - all compiled,
-never interpreted.
+(monomorphized, not type-erased), real algebraic data types with
+pattern matching, `shared` reference counting with automatic drop, real
+closures, real interface dispatch - all compiled, never interpreted.
 
 This repo is the whole Frust ecosystem: the compiler, the standard
 library, a plugin/host system for embedding Frust in other
@@ -27,9 +27,17 @@ and the gaps document says exactly what's still open.
   `identity::<i64>(5)` turbofish syntax) each get their own concrete
   LLVM type/function per instantiation - no boxing, no vtables unless
   you asked for one.
-- **`Result<T,E>` / `Option<T>`** with real constructor sugar
-  (`Result::ok::<i64,String>(x)`), built as ordinary Frust code on top
-  of generics, not a compiler intrinsic.
+- **Real algebraic data types**: `enum` is a genuine discriminated
+  union (F#/Rust-style, not a C-style tag-only enum) - variants carry
+  typed payloads, including nested enums/structs and generics
+  (`enum Choice<A,B> { Left(A), Right(B) }`). `match` does real
+  recursive pattern matching, reaching through several variant layers
+  in one arm, with required exhaustiveness (a compile error if a
+  variant - or a `_` wildcard - is missing).
+- **`Result<T,E>` / `Option<T>`** (`enum Result<T,E> { Ok(T), Err(E) }`)
+  built as ordinary Frust code on top of `enum`, not a compiler
+  intrinsic - `match` enforces both cases are handled, no sentinel
+  field to misread.
 - **Real interface dispatch** (`interface` / `impl X for Y`) via fat
   pointers, no hidden allocation.
 - **`shared`** with real strong reference counting and automatic

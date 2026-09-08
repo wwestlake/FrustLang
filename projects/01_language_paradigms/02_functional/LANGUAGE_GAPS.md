@@ -385,12 +385,63 @@ both rebuilt and re-verified clean.
 
 ## 5. Result/Option (structured error handling)
 
-**Status: DONE - 2026-08-24, constructor sugar included.** `Result<T, E>`/`Option<T>` now exist
-as real, usable generic structs -
-`06_frust_library/core/src/result.fr`/`option.fr` - built as real
-Frust code using #4's generics, not another compiler intrinsic like
-`Vector<T>`: the first genuinely useful thing built on top of generics,
-not just a synthetic test of the feature.
+**Status: DONE - rewritten as real enums, 2026-09-08.** `result.fr`/
+`option.fr` used to be a flag-struct hack (`is_ok`/`has_value` boolean +
+both fields always physically present, kept below for the historical
+record) with an honestly-named-but-real limitation: nothing stopped
+reading `.ok_value` on an `Err`. Per this project's own "design the
+right system, don't patch the placeholder" precedent, once real `enum`/
+`match` landed (LANGUAGE_GAPS.md's algebraic-data-types work), the
+struct hack was deleted outright and replaced:
+
+```frust
+enum Result<T, E> { Ok(T), Err(E) }
+enum Option<T> { Some(T), None }
+```
+
+That's the ENTIRE new file content for each - `synthesizeEnumVariantConstructor`
+(Codegen.h) auto-generates `Result::Ok`/`Result::Err`/`Option::Some`/
+`Option::None` from the bare `enum` declaration, so the old hand-written
+`fn Result::ok<T,E>(...)`/etc. constructor-sugar functions aren't needed
+at all anymore - deleted, not kept alongside. Renamed to capitalized
+variant-constructor form (`Result::Ok`, was `Result::ok`) to match the
+idiomatic Rust/F# convention every other variant name in this language
+now uses - confirmed via repo-wide search there were zero real call
+sites anywhere outside the definitions themselves to break.
+
+```frust
+let r: Result<i64, String> = Result::Ok::<i64, String>(42);
+let e: Result<i64, String> = Result::Err::<i64, String>("division by zero");
+match (r) {
+    Result::Ok(v) => v,
+    Result::Err(msg) => -1,
+}
+```
+
+**This is the actual fix for the old "no enforced safety" limitation**:
+there is no `.ok_value` field to misread anymore - an enum's payload is
+only ever reachable through `match`, and `match` requires the `Err` case
+be handled too (or a `_` wildcard), a real compile error otherwise.
+
+Verified (`test_result_option.frust`, `frust_compiler.exe` direct-run,
+re-run against the rewritten enum-based definitions - inlines the exact
+new file content, since this direct-run harness has no pod-import
+wiring exercised): `safe_divide(a, b) -> Result<i64, String>` exercised
+on both the `Ok` (10/2) and `Err` (10/0) branches via `match`, plus
+`Option<i64>` on both `Some` and `None` - hand-predicted exit value
+matched exactly. New negative test (`test_result_negative.frust`):
+`r.ok_value` on a `Result` is now a real compile error ("codegen does
+not support this member-access expression yet"), not silent UB - proves
+the safety fix is real, not just documented. Pure library-source change
+(no grammar/`Codegen.h` edits) - doesn't need the full regression sweep
+item #10/enum/match required.
+
+### Original struct-hack implementation (2026-08-24, kept for the record)
+
+`Result<T, E>`/`Option<T>` used to exist as real, usable generic
+structs - built as real Frust code using #4's generics, not another
+compiler intrinsic like `Vector<T>`: the first genuinely useful thing
+built on top of generics, not just a synthetic test of the feature.
 
 ```frust
 struct Option<T> { has_value: bool, value: T }
