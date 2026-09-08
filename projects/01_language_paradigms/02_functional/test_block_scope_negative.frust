@@ -1,0 +1,10 @@
+// LANGUAGE_GAPS.md #10 negative case: a name introduced ONLY inside an
+// if-body must not be visible after the block ends. Hand-predicted: this
+// must FAIL to compile (undefined identifier `y`), not silently succeed.
+fn main() -> i64 = {
+    if true {
+        let y: i64 = 5;
+        y
+    };
+    y
+}

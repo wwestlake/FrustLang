@@ -1,0 +1,12 @@
+// LANGUAGE_GAPS.md #7: `let b = a;` where `a` is own - a rebinding/
+// aliasing use. own has no refcount to make a second owner safe (unlike
+// shared's retain), so NEITHER name is ever tracked for auto-drop here -
+// both permanently un-freed, matching the "leak, never double-free" bar.
+// Hand-predicted: 33.
+struct Box6 { v: i64 }
+
+fn main() -> i64 = {
+    let a: Box6 = own Box6 { v: 33 };
+    let b: Box6 = a;
+    b.v
+}

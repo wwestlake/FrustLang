@@ -1,0 +1,42 @@
+// LANGUAGE_GAPS.md's algebraic-data-types work: `match` with recursive,
+// nested patterns - the actual "magic" of algebraic data types, not just
+// flat variant dispatch. Hand-predicted: r1 exercises a pattern reaching
+// through TWO enum layers in one arm (Node::Pair(Node::Leaf(Shape::
+// Circle(r)), Node::Leaf(other))); r2 a no-payload variant pattern
+// (Shape::Point); r3 a wildcard nested inside a variant pattern
+// (Node::Leaf(_)); r4 a top-level wildcard-pair fallback (Node::Pair(_, _)).
+enum Shape {
+    Circle(f64),
+    Rect(f64, f64),
+    Point
+}
+
+enum Node {
+    Leaf(Shape),
+    Pair(Node, Node)
+}
+
+fn describe(tree: Node) -> i64 = {
+    match (tree) {
+        Node::Pair(Node::Leaf(Shape::Circle(r)), Node::Leaf(other)) => 1
+        Node::Leaf(Shape::Point) => 2
+        Node::Leaf(_) => 3
+        Node::Pair(_, _) => 4
+    }
+}
+
+fn main() -> i64 = {
+    let t1: Node = Node::Pair(Node::Leaf(Shape::Circle(5.0)), Node::Leaf(Shape::Point));
+    let r1: i64 = describe(t1);
+
+    let t2: Node = Node::Leaf(Shape::Point);
+    let r2: i64 = describe(t2);
+
+    let t3: Node = Node::Leaf(Shape::Rect(2.0, 3.0));
+    let r3: i64 = describe(t3);
+
+    let t4: Node = Node::Pair(Node::Leaf(Shape::Point), Node::Leaf(Shape::Point));
+    let r4: i64 = describe(t4);
+
+    r1 * 1000 + r2 * 100 + r3 * 10 + r4
+}

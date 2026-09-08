@@ -1,0 +1,14 @@
+// LANGUAGE_GAPS.md #7: an `own` value passed as a function argument
+// must NOT be freed at its own constructing scope's exit - the callee
+// (and anything after the call, in this deliberately conservative v1)
+// needs it to stay alive. Hand-predicted: 7.
+struct Box3 { v: i64 }
+
+fn read_it(b: Box3) -> i64 = {
+    b.v
+}
+
+fn main() -> i64 = {
+    let b: Box3 = own Box3 { v: 7 };
+    read_it(b)
+}

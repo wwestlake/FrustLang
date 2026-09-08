@@ -1,0 +1,18 @@
+// LANGUAGE_GAPS.md #7: `.upgrade()` while the strong reference is still
+// alive must return `Some` with the correct data. Hand-predicted: 42.
+struct Foo { v: i64 }
+
+enum Option<T> {
+    Some(T),
+    None
+}
+
+fn main() -> i64 = {
+    let s: Foo = shared Foo { v: 42 };
+    let w: Foo = weak s;
+    let result: Option<Foo> = w.upgrade();
+    match (result) {
+        Option::Some(f) => f.v
+        Option::None => -1
+    }
+}

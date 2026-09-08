@@ -1,0 +1,12 @@
+// LANGUAGE_GAPS.md #5: proves direct payload access on a Result is now a
+// real compile error, not silent UB the old flag-struct hack allowed
+// (`.ok_value` used to read garbage on an Err with zero warning).
+enum Result<T, E> {
+    Ok(T),
+    Err(E)
+}
+
+fn main() -> i64 = {
+    let r: Result<i64, String> = Result::Ok::<i64, String>(42);
+    r.ok_value
+}

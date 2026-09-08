@@ -104,11 +104,11 @@
     FN "fn" PUB "pub" UNSAFE "unsafe" EXTERN "extern" ENTRY "entry" USE "use" IMPORT "import" LET "let" MUT "mut" RETURN "return"
     IF "if" ELSE "else" WHILE "while" LOOP "loop" FOR "for" BREAK "break" CONTINUE "continue"
     IMPL "impl" SELF "self" INTERFACE "interface" MANIFEST "manifest"
-    STRUCT "struct" TYPE "type" EFFECT "effect" PERFORM "perform"
+    STRUCT "struct" ENUM "enum" MATCH "match" TYPE "type" EFFECT "effect" PERFORM "perform"
     HANDLE "handle" RESUME "resume" WITH "with" COMPONENT "component" NODE "node" PURE "pure" CALLABLE "callable"
     IN "in" OUT "out" BUILD_TIME "build_time" QUOTE "quote" UNQUOTE "unquote"
     AS "as" OWN "own" SHARED "shared" WEAK "weak" RAW "raw"
-    TRUE "true" FALSE "false"
+    TRUE "true" FALSE "false" UNDERSCORE "_"
     LBRACE "{" RBRACE "}" LPAREN "(" RPAREN ")" LBRACKET "[" RBRACKET "]"
     COMMA "," SEMI ";" COLON ":" DOT "." DCOLON "::" DOTDOT ".."
     TURBOFISH "::<"
@@ -145,6 +145,10 @@
 %type <std::vector<frust::Decl*>> decl_list
 %type <frust::FunctionDecl*> function_decl
 %type <frust::StructDecl*> struct_decl
+%type <frust::EnumDecl*> enum_decl
+%type <std::vector<frust::EnumVariant>> enum_variant_list
+%type <frust::EnumVariant> enum_variant
+%type <std::vector<frust::TypeExpr*>> type_expr_list
 %type <std::vector<std::string>> generic_params_opt generic_param_list
 %type <frust::TypeAliasDecl*> type_alias_decl
 %type <frust::EffectDecl*> effect_decl
@@ -184,12 +188,17 @@
 %type <std::vector<std::string>> ident_path
 %type <frust::Expr*> expr postfix_expr primary_expr literal
 %type <frust::Expr*> stmt trailing_stmt_opt block_expr build_time_expr quote_expr handle_expr struct_literal if_expr while_expr
-%type <frust::Expr*> loop_expr for_expr break_expr continue_expr array_literal
+%type <frust::Expr*> loop_expr for_expr break_expr continue_expr array_literal match_expr
 %type <std::vector<frust::Expr*>> semi_stmt_list arg_list_opt arg_list
 %type <std::vector<frust::StructFieldInit>> struct_field_init_list_opt struct_field_init_list
 %type <frust::StructFieldInit> struct_field_init
 %type <std::vector<frust::HandleCase>> handle_case_list_opt handle_case_list
 %type <frust::HandleCase> handle_case
+%type <std::vector<frust::MatchArm>> match_arm_list
+%type <frust::MatchArm> match_arm
+%type <frust::Pattern*> pattern
+%type <std::vector<frust::Pattern*>> pattern_list
+%type <std::vector<frust::FieldPattern>> field_pattern_list
 
 %%
 
@@ -221,6 +230,7 @@ trailing_stmt_decl_opt:
 decl:
     function_decl   { $$ = arena.NewDecl(DeclKind::Function); $$->functionDecl = $1; }
   | struct_decl     { $$ = arena.NewDecl(DeclKind::Struct); $$->structDecl = $1; }
+  | enum_decl       { $$ = arena.NewDecl(DeclKind::Enum); $$->enumDecl = $1; }
   | type_alias_decl { $$ = arena.NewDecl(DeclKind::TypeAlias); $$->typeAliasDecl = $1; }
   | effect_decl     { $$ = arena.NewDecl(DeclKind::Effect); $$->effectDecl = $1; }
   | component_decl  { $$ = arena.NewDecl(DeclKind::Component); $$->componentDecl = $1; }
@@ -297,6 +307,30 @@ generic_param_list:
   | generic_param_list "," IDENT   { $$ = std::move($1); $$.push_back($3); }
 ;
 
+// `enum Shape { Circle(f64), Rect(f64, f64), Point }` - a real discriminated
+// union, not a C-style tag-only enum (LANGUAGE_GAPS.md's algebraic-data-
+// types work). Reuses generic_params_opt verbatim, same monomorphization
+// story as struct_decl above (see EnumDecl, AST.h).
+enum_decl:
+    "enum" IDENT generic_params_opt "{" enum_variant_list "}" {
+        $$ = arena.NewEnumDecl();
+        $$->name = $2; $$->genericParams = std::move($3); $$->loc = ToSourceLoc(@1);
+        $$->variants = std::move($5);
+    }
+;
+enum_variant_list:
+    enum_variant                        { $$ = {}; $$.push_back(std::move($1)); }
+  | enum_variant_list "," enum_variant  { $$ = std::move($1); $$.push_back(std::move($3)); }
+;
+enum_variant:
+    IDENT                        { $$ = EnumVariant{ $1, {} }; }
+  | IDENT "(" type_expr_list ")" { $$ = EnumVariant{ $1, std::move($3) }; }
+;
+type_expr_list:
+    type_expr                    { $$ = {}; $$.push_back($1); }
+  | type_expr_list "," type_expr { $$ = std::move($1); $$.push_back($3); }
+;
+
 // -----------------------------------------------------------------------
 // impl blocks: `impl TypeName { fn method(&mut self, ...) -> T = {...} }`
 // method_decl is deliberately its own grammar, not a reuse of
@@ -315,6 +349,30 @@ impl_decl:
         // list *after* every method_decl has already reduced - so it's
         // stamped onto each FunctionDecl here instead.
         for (auto* m : $$->methods) m->selfTypeName = $2;
+    }
+  // `impl<T> Box<T> { fn get(self) -> T }` - LANGUAGE_GAPS.md's generic-
+  // impl-methods work. Deliberately its OWN alternative requiring a
+  // literal "<" (not `generic_params_opt`, which has an %empty branch) -
+  // using generic_params_opt here would make its ε-reduction compete with
+  // the interface-impl alternative's bare `"impl" IDENT "for" ...` shift
+  // right after "impl" (found empirically: `bison -Wall` reported 5
+  // shift/reduce conflicts, one more than this grammar's existing
+  // baseline of 4, tracked down to exactly this). Requiring the literal
+  // "<" up front sidesteps the ambiguity entirely - it's the ONLY
+  // impl_decl alternative starting with "<" right after "impl", so no
+  // lookahead conflict with the other two alternatives (which still
+  // share their own pre-existing, already-conflict-free "impl IDENT..."
+  // prefix, untouched by this addition). Scoped to the plain inherent-
+  // impl form only - `impl<T> Iface for Box<T>` (a generic interface
+  // impl) is a real, separate, out-of-scope-for-this-pass extension.
+  | "impl" "<" generic_param_list ">" IDENT type_generic_args_opt "{" method_decl_list "}" {
+        // type_generic_args_opt ($6) is Rust-like syntax parity only
+        // (`Box<T>` re-listing the same names generic_param_list already
+        // declared) - not consumed for anything functionally different,
+        // genericParams below is the real source of truth.
+        $$ = arena.NewImplDecl();
+        $$->typeName = $5; $$->genericParams = std::move($3); $$->methods = std::move($8); $$->loc = ToSourceLoc(@1);
+        for (auto* m : $$->methods) m->selfTypeName = $5;
     }
   // `impl InterfaceName for TypeName { ... }` - this block also satisfies
   // InterfaceName's contract (Codegen.h emits a vtable for the pair).
@@ -719,6 +777,81 @@ struct_field_init: IDENT ":" expr { $$ = StructFieldInit{ $1, $3 }; } ;
 build_time_expr: "build_time" block_expr { $$ = arena.NewExpr(ExprKind::BuildTime, ToSourceLoc(@1)); $$->lhs = $2; } ;
 quote_expr:      "quote" block_expr      { $$ = arena.NewExpr(ExprKind::Quote, ToSourceLoc(@1)); $$->lhs = $2; } ;
 
+// `match (scrutinee) { pattern => expr ... }` - parens around the
+// scrutinee are REQUIRED, not stylistic: `match c1 { ... }` with a bare
+// ident_path scrutinee is genuinely ambiguous with struct_literal
+// (`ident_path "{" struct_field_init_list_opt "}"`, below) - bison's
+// default shift-over-reduce resolution greedily extends "c1" toward a
+// struct literal instead of ending the scrutinee at match_expr's own
+// "{", so `match c1 { SomeVariant(x) => ... }` fails to parse at all
+// without this. Parens structurally break the ambiguity (")" isn't part
+// of ident_path's own grammar, so struct_literal simply isn't reachable
+// there) - same convention C/C++/Java/JavaScript's `switch (x) { ... }`
+// already uses, for exactly this reason. If/while/for's own conditions
+// have the SAME latent ambiguity (confirmed by the same reasoning - none
+// of their existing tests happen to trigger it, since none use a bare
+// identifier immediately followed by "{") - a real, separate, out-of-
+// scope-for-this-pass finding, not fixed here.
+//
+// No commas between arms, deliberately mirroring handle_case_list's own
+// shape (below) rather than a comma list - both are "keyword-introduced
+// arm list" constructs already proven conflict-free in this grammar.
+match_expr:
+    "match" "(" expr ")" "{" match_arm_list "}" {
+        $$ = arena.NewExpr(ExprKind::Match, ToSourceLoc(@1));
+        $$->condExpr = $3; $$->matchArms = std::move($6);
+    }
+;
+match_arm_list:
+    match_arm                  { $$ = {}; $$.push_back(std::move($1)); }
+  | match_arm_list match_arm   { $$ = std::move($1); $$.push_back(std::move($2)); }
+;
+match_arm:
+    pattern "=>" expr opt_semi { $$ = MatchArm{ $1, $3, ToSourceLoc(@1) }; }
+;
+
+// Recursive pattern grammar - LANGUAGE_GAPS.md's algebraic-data-types work.
+// The `ident_path` / `ident_path "(" ... ")"` / `ident_path "{" ... "}"`
+// three-way split on what follows a common ident_path prefix is the exact
+// same shape primary_expr's bare `ident_path` alternative already
+// coexists with struct_literal's `ident_path "{" ...` in this grammar
+// (below) - proven conflict-free there, same LALR(1) shift-over-reduce
+// resolution applies here. A 1-segment ident_path always reduces to a
+// fresh Binding (never an implicit unqualified variant reference - see
+// Pattern's own header comment, AST.h); 2+ segments (EnumName::Variant)
+// is a Variant/Struct pattern.
+pattern:
+    "_" { $$ = arena.NewPattern(PatternKind::Wildcard, ToSourceLoc(@1)); }
+  | INT_LITERAL    { $$ = arena.NewPattern(PatternKind::IntLiteral, ToSourceLoc(@1));    $$->intValue = $1; }
+  | FLOAT_LITERAL  { $$ = arena.NewPattern(PatternKind::FloatLiteral, ToSourceLoc(@1));  $$->floatValue = $1; }
+  | STRING_LITERAL { $$ = arena.NewPattern(PatternKind::StringLiteral, ToSourceLoc(@1)); $$->text = $1; }
+  | "true"         { $$ = arena.NewPattern(PatternKind::BoolLiteral, ToSourceLoc(@1));   $$->boolValue = true; }
+  | "false"        { $$ = arena.NewPattern(PatternKind::BoolLiteral, ToSourceLoc(@1));   $$->boolValue = false; }
+  | ident_path {
+        if ($1.size() == 1) {
+            $$ = arena.NewPattern(PatternKind::Binding, ToSourceLoc(@1)); $$->text = $1[0];
+        } else {
+            $$ = arena.NewPattern(PatternKind::Variant, ToSourceLoc(@1)); $$->pathSegments = std::move($1);
+        }
+    }
+  | ident_path "(" pattern_list ")" {
+        $$ = arena.NewPattern(PatternKind::Variant, ToSourceLoc(@1));
+        $$->pathSegments = std::move($1); $$->subPatterns = std::move($3);
+    }
+  | ident_path "{" field_pattern_list "}" {
+        $$ = arena.NewPattern(PatternKind::Struct, ToSourceLoc(@1));
+        $$->pathSegments = std::move($1); $$->fieldPatterns = std::move($3);
+    }
+;
+pattern_list:
+    pattern                   { $$ = {}; $$.push_back($1); }
+  | pattern_list "," pattern  { $$ = std::move($1); $$.push_back($3); }
+;
+field_pattern_list:
+    IDENT ":" pattern                        { $$ = {}; $$.push_back(FieldPattern{ $1, $3 }); }
+  | field_pattern_list "," IDENT ":" pattern  { $$ = std::move($1); $$.push_back(FieldPattern{ $3, $5 }); }
+;
+
 if_expr:
     "if" expr block_expr {
         $$ = arena.NewExpr(ExprKind::If, ToSourceLoc(@1));
@@ -814,6 +947,7 @@ primary_expr:
   | build_time_expr { $$ = $1; }
   | quote_expr      { $$ = $1; }
   | if_expr         { $$ = $1; }
+  | match_expr      { $$ = $1; }
   | while_expr      { $$ = $1; }
   | loop_expr       { $$ = $1; }
   | for_expr        { $$ = $1; }

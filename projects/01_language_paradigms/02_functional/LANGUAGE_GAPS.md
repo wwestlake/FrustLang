@@ -251,14 +251,34 @@ in `compileProgram`'s own prologue) - Vector<T> doesn't depend on the
 user's own source declaring `extern fn malloc`.
 
 Shipped: `.push(x)` (real amortized growth - doubles capacity from a
-base of 4, `realloc`-backed), `.len()`, `.get(i)`, and `v[i]` bracket
-read. Scope cut, named honestly: `v[i] = x` (bracket WRITE) isn't
-shipped this pass - `.push()` covers building a vector, `.get()`/`v[i]`
-cover reading it back; in-place element mutation via brackets is a
-real, deliberately-deferred follow-on, not silently dropped.
+base of 4, `realloc`-backed), `.len()`, `.get(i)`, `v[i]` bracket read,
+and (2026-09-08) `v[i] = x` bracket **write** - real in-place element
+mutation, the one item originally deferred here.
 
-Verified (`test_vector.frust`, `frust_compiler.exe` direct-run): an
-empty vector starts at length 0; five pushes land at length 5,
+**Bracket write** (`compileAssign`'s `ExprKind::Index` case, checked
+before the pre-existing `Vec<N>` SSA-vector assignment case since
+`Vector<T>` is a real heap pointer, not an SSA value) includes a real
+bounds check - out-of-range writes are the actually dangerous case a
+growable collection needs this for, so a clear runtime panic (print +
+`exit(1)`, mirroring `emitRefinementCheck`'s own panic sequence
+verbatim) replaces what would otherwise be silent heap corruption.
+**Honest, found-but-not-fixed gap**: `.get(i)`/bracket READ still have
+NO bounds check of their own (confirmed - neither ever did, before or
+after this change) - reading past the end is undefined, not a clean
+error. Scope stayed to write, per how this item was queued; read's own
+missing check is real, separate, smaller follow-on work.
+
+Verified (`test_vector.frust`, `frust_compiler.exe` direct-run): five
+pushes, then bracket-write into a previously-pushed middle index AND
+the last slot, read back via BOTH `.get()` and bracket read to confirm
+both paths see the write - hand-predicted value matched exactly.
+Negative test (`test_vector_oob_negative.frust`): a bracket write past
+the vector's length triggers the real runtime panic, not silent
+corruption. Full `frust_plugin_host` regression sweep (17 examples) and
+a JUCE IDE Debug rebuild + launch smoke test both clean.
+
+Verified (`test_vector.frust`, `frust_compiler.exe` direct-run, 2026-08-23):
+an empty vector starts at length 0; five pushes land at length 5,
 exercising BOTH the initial grow-from-0 (capacity 0 -> 4 on the 1st
 push) and the regrow-past-4 (capacity 4 -> 8 on the 5th push) code
 paths, not just the easy no-growth case; `.get(0)`/`.get(2)`/`.get(4)`
@@ -287,8 +307,97 @@ made during implementation, not pre-decided here.
 
 ## 4. Generics (real, user-definable types/functions)
 
-**Status: PARTIAL (structs + free functions; methods still open) -
-2026-08-24.** Generic STRUCTS are real - `struct Box<T> { value: T }`,
+**Status: DONE - generic `impl` methods landed 2026-09-08, closing the
+last open piece.** `impl<T> Box<T> { fn get(self) -> T }` - methods on
+a generic STRUCT or ENUM, monomorphized lazily the first time a method
+is actually called on a concrete instantiation (`getOrCreateMonomorphizedMethod`,
+mirroring `getOrCreateMonomorphizedFunction` exactly one level up:
+same lazy-per-call-site trigger, same mangled-name memoization via
+`module.getFunction`). New grammar: `impl_decl` gained a THIRD
+alternative requiring a literal `"<"` right after `"impl"` (not
+`generic_params_opt`, which has an `%empty` branch that would have
+conflicted with the existing interface-impl alternative's bare
+`"impl" IDENT "for" ...` - found empirically via `bison -Wall`, a real
+shift/reduce conflict, not theorized) - `"impl" "<" generic_param_list
+">" IDENT type_generic_args_opt "{" ...`, Rust-like syntax repeating
+the type args on the type name (`impl<T> Box<T>`), though only
+`generic_param_list` is the real source of truth (`type_generic_args_opt`
+is parsed and discarded, syntax parity only). Scoped to the plain
+inherent-impl form only - `impl<T> Iface for Box<T>` (a generic
+interface impl) is real, separate, out-of-scope-for-this-pass work.
+
+**Real bug found and fixed while building this**: unlike a generic free
+function (pre-scanned and monomorphized entirely in Pass 1.5, BEFORE
+any Pass-2 body starts compiling - see `getOrCreateMonomorphizedFunction`'s
+own comment on why that matters), a generic method's concrete
+instantiation can only be known once its receiver's static type is
+already known, which in general needs the CALLER's own body compilation
+already under way - so `getOrCreateMonomorphizedMethod` genuinely is
+called reentrantly, from inside `compileMethodCall`, itself mid-
+compilation of whatever function is calling the method.
+`compileFunction`'s unconditional `namedValues.clear()` (and its sibling
+side tables) was silently wiping the CALLER's own in-progress local
+variables the first time this was tested (`unknown identifier 'b1'` on
+a name that was very much still in scope). Fixed by save/restoring the
+full `namedValue*`/`sharedScopeStack`/builder-insertion-point state
+around the monomorphizing `compileFunction` call, mirroring
+`compileClosureLiteral`'s trampoline save/restore exactly, for the
+same reason.
+
+Two more real, smaller bugs found in the same pass, both from the same
+root cause (a monomorphized method's `FunctionDecl` is a SHALLOW copy
+of its template - `params[i].type`/`returnType` still point at the
+template's own shared, UNSUBSTITUTED `TypeExpr`s, e.g. bare `"T"`,
+outside the `currentGenericSubstitution` window that only exists while
+that specific method was being compiled): argument coercion at the call
+site (`compileMethodCall`) and struct/enum type INFERENCE for a
+method-call's result (`inferStructTypeName`/`inferEnumTypeName` - which
+previously didn't handle method-call results AT ALL, a separate,
+pre-existing gap for even non-generic methods, closed here for both at
+once via a new shared `inferMethodCallResultType`) both had to be
+changed to resolve through the SAME temporarily-established substitution
+`getOrCreateMonomorphizedMethod` itself uses, rather than trusting the
+stale template pointer directly.
+
+Also found, NOT fixed (real, separate, logged honestly): `compileFunction`'s
+method `self`-binding unconditionally assumed a struct receiver
+(`namedValueStructType["self"] = fn.selfTypeName`) - now fixed as part
+of this same pass to check `enumVariantIndex` first, since an impl
+block's `Self` type can now legitimately be an enum
+(`impl<T> Option2<T> { ... }`) too, not just a struct.
+
+**Two more real gaps found while testing, confirmed NOT new but not
+fixed here either:**
+- `if`/`while`/`for`'s condition has the SAME bare-identifier-vs-
+  struct-literal grammar ambiguity `match` had (see the algebraic-data-
+  types section above) - `if has1 { ... }` fails to parse for the exact
+  same reason `match has1 { ... }` did. Unfixed here (would require the
+  same parenthesization convention, a real breaking-change discussion
+  for how heavily `if`/`while` are already used unparenthesized
+  throughout every example in this repo) - worked around in this
+  session's own tests with `if has1 == true { ... }` instead.
+- `as` casting (`v as i64`) is not implemented for ANY type combination
+  at all - confirmed with a minimal, fully non-generic repro (`let v:
+  f64 = 3.5; (v as i64)`), "codegen does not support this expression
+  kind yet". Not a generics-specific gap, a general one, logged here
+  because this is where it was found.
+
+Verified (`test_generic_methods.frust`, `frust_compiler.exe` direct-run):
+`Box<T>` (a generic struct) with a T-returning method AND a T-typed-
+PARAMETER method (`replace`), exercised on two DIFFERENT concrete
+instantiations (`Box<i64>`/`Box<f64>`) in one program - proves real
+per-type monomorphization, not one hardcoded case, and proves
+substitution reaches both directions (param and return); `Option2<T>`
+(a generic ENUM) with a method whose body uses `match` on `self` -
+proves the mechanism works identically for enum receivers, and proves
+the `self`-binding fix. Hand-predicted value matched exactly. Full
+`frust_plugin_host` regression sweep (17 examples) and a JUCE IDE Debug
+rebuild + launch smoke test both clean.
+
+### Original struct + free-function generics (2026-08-24, kept for the record)
+
+**Status at the time: PARTIAL (structs + free functions; methods still
+open).** Generic STRUCTS are real - `struct Box<T> { value: T }`,
 `struct Pair<A, B> { first: A, second: B }` - monomorphized (real
 per-instantiation LLVM struct types, not type erasure/boxing),
 matching the project's own stated "zero-overhead, aiming for the iron"
@@ -385,12 +494,63 @@ both rebuilt and re-verified clean.
 
 ## 5. Result/Option (structured error handling)
 
-**Status: DONE - 2026-08-24, constructor sugar included.** `Result<T, E>`/`Option<T>` now exist
-as real, usable generic structs -
-`06_frust_library/core/src/result.fr`/`option.fr` - built as real
-Frust code using #4's generics, not another compiler intrinsic like
-`Vector<T>`: the first genuinely useful thing built on top of generics,
-not just a synthetic test of the feature.
+**Status: DONE - rewritten as real enums, 2026-09-08.** `result.fr`/
+`option.fr` used to be a flag-struct hack (`is_ok`/`has_value` boolean +
+both fields always physically present, kept below for the historical
+record) with an honestly-named-but-real limitation: nothing stopped
+reading `.ok_value` on an `Err`. Per this project's own "design the
+right system, don't patch the placeholder" precedent, once real `enum`/
+`match` landed (LANGUAGE_GAPS.md's algebraic-data-types work), the
+struct hack was deleted outright and replaced:
+
+```frust
+enum Result<T, E> { Ok(T), Err(E) }
+enum Option<T> { Some(T), None }
+```
+
+That's the ENTIRE new file content for each - `synthesizeEnumVariantConstructor`
+(Codegen.h) auto-generates `Result::Ok`/`Result::Err`/`Option::Some`/
+`Option::None` from the bare `enum` declaration, so the old hand-written
+`fn Result::ok<T,E>(...)`/etc. constructor-sugar functions aren't needed
+at all anymore - deleted, not kept alongside. Renamed to capitalized
+variant-constructor form (`Result::Ok`, was `Result::ok`) to match the
+idiomatic Rust/F# convention every other variant name in this language
+now uses - confirmed via repo-wide search there were zero real call
+sites anywhere outside the definitions themselves to break.
+
+```frust
+let r: Result<i64, String> = Result::Ok::<i64, String>(42);
+let e: Result<i64, String> = Result::Err::<i64, String>("division by zero");
+match (r) {
+    Result::Ok(v) => v,
+    Result::Err(msg) => -1,
+}
+```
+
+**This is the actual fix for the old "no enforced safety" limitation**:
+there is no `.ok_value` field to misread anymore - an enum's payload is
+only ever reachable through `match`, and `match` requires the `Err` case
+be handled too (or a `_` wildcard), a real compile error otherwise.
+
+Verified (`test_result_option.frust`, `frust_compiler.exe` direct-run,
+re-run against the rewritten enum-based definitions - inlines the exact
+new file content, since this direct-run harness has no pod-import
+wiring exercised): `safe_divide(a, b) -> Result<i64, String>` exercised
+on both the `Ok` (10/2) and `Err` (10/0) branches via `match`, plus
+`Option<i64>` on both `Some` and `None` - hand-predicted exit value
+matched exactly. New negative test (`test_result_negative.frust`):
+`r.ok_value` on a `Result` is now a real compile error ("codegen does
+not support this member-access expression yet"), not silent UB - proves
+the safety fix is real, not just documented. Pure library-source change
+(no grammar/`Codegen.h` edits) - doesn't need the full regression sweep
+item #10/enum/match required.
+
+### Original struct-hack implementation (2026-08-24, kept for the record)
+
+`Result<T, E>`/`Option<T>` used to exist as real, usable generic
+structs - built as real Frust code using #4's generics, not another
+compiler intrinsic like `Vector<T>`: the first genuinely useful thing
+built on top of generics, not just a synthetic test of the feature.
 
 ```frust
 struct Option<T> { has_value: bool, value: T }
@@ -478,9 +638,180 @@ separate, smaller follow-ons if ever needed, not silently folded in.
 
 ## 7. `own`/`shared`/`weak` smart pointers (real reference counting / move semantics)
 
-**Status: PARTIAL, `shared` now real (2026-08-23) - `own` heap
-allocation still has no automatic drop, `weak` remains entirely
-unimplemented.**
+**Status: DONE (2026-09-08).** `own`'s automatic drop and `weak`'s
+control-block/`.upgrade()` mechanism both landed this session (see the
+`weak` write-up below, after `own`'s), each for a real but deliberately
+narrow scope - closing out the last open item in this document.
+The highest-risk item in this whole document by its own original
+reasoning (below) - a wrong answer here is a real double-free, not just
+a missing feature - so the scope stayed strictly to what could be
+PROVEN safe by a real (if conservative) AST scan, not extended to cover
+every case `shared` does.
+
+**What ships**: a `let`-bound `own T { ... }` local gets a real
+scope-exit `free()` (straight `free()`, no header, no refcount - unlike
+`dropSharedLocal`, an `own` value is never header-prefixed) IF AND ONLY
+IF `ownValueEscapes` (`Codegen.h`) can prove, by scanning the rest of
+its own directly-enclosing block, that the name is never: passed as a
+Call argument, used as the RHS-target of ANOTHER `let` (a rebinding/
+aliasing use - `own` has no refcount to make a second owner safe the
+way `shared`'s retain does, so a rebind is simply never tracked at all,
+not even conditionally), or referenced AT ALL inside a nested
+control-flow construct (`if`/`while`/`loop`/`for`/`match`/`handle`) -
+this last check is deliberately broader than strictly necessary (it
+doesn't matter WHAT the reference inside the nested construct is doing,
+ANY reference disqualifies tracking) because a value propagating out
+through a nested block's own tail (`if cond { x } else { other }`)
+needs cross-block reasoning this minimal pass doesn't attempt, and
+getting that specific case wrong would free a pointer still in active
+use. An explicit `return name;` and the block's own direct tail
+identifier are handled the SAME way `shared` already does (a `skipName`
+parameter threaded through `Block`/`Return`, now also gating
+`ownScopeStack`, mirroring `sharedScopeStack` one-to-one including the
+`break`/`continue`/loop-depth machinery) - NOT flagged as escaping by
+`ownValueEscapes` itself, since a real, separate skip-at-that-exact-
+exit mechanism already covers them correctly.
+
+**A real reentrancy risk was checked and closed as part of this work**:
+`getOrCreateMonomorphizedMethod` (item #4/generic-impl-methods) already
+needed a full `namedValue*`/`sharedScopeStack` save/restore around its
+own reentrant `compileFunction` call - `ownScopeStack`/
+`loopOwnScopeDepth` were added to that exact save/restore list (and to
+every other site `sharedScopeStack` is saved/restored/cleared -
+`compileClosureLiteral`'s trampoline, `compileFunction`, `compileAnonymous`)
+so this feature doesn't reintroduce the same class of bug fixed for
+generic methods.
+
+**Real, surprising finding while verifying this**: the ORIGINAL
+verification plan (a large stress loop, watching process memory
+externally to prove no leak growth, mirroring `shared`'s own 2000-cycle
+test) turned out not to work FOR THIS SPECIFIC COMPILER - LLVM's own
+`-O2` optimizer (run unconditionally on every compiled program, see
+`Main.cpp`'s `optimizeModule`) proves a malloc'd block that never
+escapes a function has no observable effect and deletes the ENTIRE
+malloc/store/free sequence as dead code, regardless of whether this
+pass's own `free()` was present, correct, or even reached - confirmed
+directly: a 5-million-iteration stress-test program's `main()` compiled
+down to a bare `ret i64 5000000`, zero `malloc`/`free` calls anywhere
+in the post-optimization IR. Runtime memory measurement therefore can't
+distinguish "this pass correctly freed it" from "the optimizer deleted
+the allocation as dead code" - **verified against `output_pre_opt.ll`
+directly instead** (frust_compiler's own pre-optimization IR dump,
+reflecting exactly what THIS pass emits, unclouded by later
+optimization) for six real scenarios: a simple non-escaping local (real
+`malloc`→stores→load→`call void @free`→`ret`, value safely loaded into
+an SSA register BEFORE the free, no use-after-free), a tail-returned
+value (`ret ptr %0`, zero `free` calls), an argument-passed value
+(`call @read_it(ptr %0)`, zero `free` calls), a value referenced inside
+a nested `if` (zero `free` calls), an explicit non-tail `return`
+(zero `free` calls, the dummy intervening statement confirming this
+isn't just the tail-identifier check firing), and a `let b = a;`
+rebind (zero `free` calls for either name). All six matched the
+intended shape exactly.
+
+**Named, deliberate scope cut** (worst case is always a LEAK, never a
+double-free or use-after-free - same bar `shared` was held to): an
+`own` value returned out of its OWN constructing function is correctly
+NOT freed there (via the skipName mechanism above), but the RECEIVING
+caller gets no NEW tracking of its own for that value - same
+call-boundary limitation `shared` already has. Confirmed real `own`
+usage elsewhere in this repo (`06_frust_library/core/src/automation.fr`'s
+`RampAutomation`/`DecayAutomation` constructors) is entirely
+UNAFFECTED by this change either way - both are bare function-tail
+`own` literals, never `let`-bound, so this pass's own tracking logic
+(which only ever triggers from the `Let` branch) never even runs for
+them; the existing `frust_plugin_host` regression examples that
+exercise `automation.fr` (`automation_example`, `multi_plugin_stress_example`)
+confirm this empirically too.
+
+Full `frust_plugin_host` regression sweep (17 examples) and a JUCE IDE
+Debug rebuild + launch smoke test both clean.
+
+### `weak` implementation (2026-09-08)
+
+Needed a control block that can outlive the payload - `shared`'s header
+grows from 8 bytes (`i64 strongCount`) to 16 (`{ i64 strongCount, i64
+weakCount }`). `weak T` construction (`compileWeakNew`) increments ONLY
+`weakCount` - the payload itself is untouched, no clone/move. The
+PAYLOAD still frees the moment `strongCount` hits 0 (a `.upgrade()`
+after that point must never read freed payload bytes) - but
+`dropSharedLocal` now checks BOTH counts before freeing the 16-byte
+HEADER block itself, since a surviving `weak` reference still needs it
+to observe that `strongCount` is now 0. `.upgrade()`
+(`compileWeakMethodCall`) returns a REAL `Option<T>` rather than ever
+handing back a possibly-dangling pointer: loads `strongCount`, branches
+on `> 0`, and calls the SAME synthesized `Option::Some`/`Option::None`
+constructor functions this document's real-enum work (item #5) already
+produces, via `getOrCreateMonomorphizedFunction` - reentrant-safe (a
+full `namedValue*`/`sharedScopeStack`/`ownScopeStack`/builder-IP
+save-restore around it, mirroring every other reentrant monomorphization
+site in this file).
+
+**Named, deliberate scope cut** (worst case is always a LEAK, never a
+double-free or use-after-free - same bar `own`/`shared` were each held
+to): no automatic weak-drop tracking in this pass - `weakCount` only
+ever increments, never decrements at a `weak` local's own scope exit. A
+`weak` reference that outlives its enclosing scope without being
+explicitly consumed leaves the 16-byte header block permanently
+allocated (never the payload, which stays correctly bounded by
+`strongCount` alone) - a real, bounded leak, same call-boundary-shaped
+limitation `shared` already has.
+
+**Real bug found and fixed while verifying this**: `.upgrade()`'s
+target-type parameter was originally passed as `const std::string&`,
+aliased directly to a live node inside the `namedValueWeakType` map (the
+receiver's own weak-type record). The first of `.upgrade()`'s two
+reentrant monomorphization calls (`Option::Some<T>`) compiles that
+variant constructor's body, which - like every function body - clears
+`namedValueWeakType` as part of its own local-scope reset; that clear
+invalidated the still-referenced map node mid-flight. The reference
+dangled silently through the first call (already evaluated before the
+clear) but was read again constructing the SECOND call's argument
+(`Option::None<T>`), now pointing at freed memory - manifesting as a
+genuine hang, not a crash: the Windows Debug CRT heap allocator
+deadlocked inside that read (confirmed directly - a live `Microsoft
+Visual C++ Runtime Library` "abort() has been called" dialog sat
+blocked behind the process, near-zero CPU across a 20-second timeout,
+found by inspecting the hidden window via UI Automation). Fixed by
+taking the parameter BY VALUE (`std::string targetTypeName`, a real
+copy made before any nested call can invalidate the source) instead of
+by reference.
+
+**A second, independent bug surfaced by the same test**: binding an
+enum variant's payload in a `match` arm (`PatternKind::Binding` in
+`compilePatternTest`) only ever recorded the bound name's raw LLVM
+value (`namedValues`), never its STATIC type - so `Option::Some(f) =>
+f.v` (a struct-typed payload) failed with "codegen does not support
+this member-access expression yet", `f` never having been registered in
+`namedValueStructType`. This was a pre-existing gap in this document's
+original enum/match work (items #2-3), just never exercised before
+(`test_enum.frust`/`test_match.frust` only ever bind primitive- and
+nested-enum-typed payloads, never a struct-typed one immediately
+field-accessed). Fixed by adding `enumVariantFieldStructType` (mirrors
+the existing `enumVariantFieldEnumType` table exactly, including through
+a monomorphized generic's substituted concrete type - e.g. `Option<Foo>`'s
+`Some(T)` resolves `T`→`Foo` here even though the sibling enum-field
+table deliberately leaves a substituted field unresolved), threading a
+new `structTypeName` parameter through `compilePatternTest`'s recursion
+so a `Binding` pattern registers `namedValueStructType`/
+`namedValueEnumType` for whatever type its bound value statically is.
+Also fixed a matching, previously-latent leak this surfaced:
+`compileMatch`'s per-arm scoping only ever saved/restored `namedValues`,
+never `namedValueStructType`/`namedValueEnumType` - now all three are
+saved/restored per arm, matching item #10's own Block-scoping fix.
+
+Verified: `test_weak_upgrade_live.frust` (a live `shared`, `weak` taken,
+`.upgrade()` while the strong owner is still alive → hand-predicted
+`42`, reading the upgraded `Some(Foo)`'s own `.v` field) and
+`test_weak_upgrade_dead.frust` (the strong owner dropped inside a helper
+function before `.upgrade()` runs → hand-predicted `-1`, the `None`
+branch) both match exactly. Full prior-item regression suite (every
+`test_*.frust` positive and negative case, items 1-7) re-run clean
+against both the 16-byte header change and the new struct-field-binding
+fix. Full `frust_plugin_host` regression sweep (17 examples) and a JUCE
+IDE Debug rebuild + launch smoke test both clean.
+
+### Original `shared` implementation (2026-08-23, kept for the record)
 
 Deliberately scoped down from "full" after tracing a real risk: `own`
 has exactly one owner and no refcount, so an automatic drop needs real
@@ -531,11 +862,10 @@ shipped:
   to each drop point). Full `frust_plugin_host` regression sweep (14
   examples) and JUCE IDE rebuild both clean.
 
-`own`'s automatic-free and `weak` (needs a genuinely different
-mechanism - a control block that can outlive the payload) both remain
-real, separate, deliberately-not-attempted follow-ons - `own`
-construction is unchanged from its prior heap-malloc-only behavior;
-`weak` construction is still rejected with a clear error.
+`own`'s automatic-free and `weak` (a control block that outlives the
+payload) were, at the time this paragraph was written, real, separate,
+deliberately-not-attempted follow-ons - both have since landed; see the
+write-ups above.
 
 ## 8. Multi-file plugins (`frust_plugin_host`)
 
@@ -581,8 +911,35 @@ needed the workaround in the first place.
 
 ## 10. Real block-level lexical scoping
 
-**Status: OPEN - found 2026-08-24, answering a real Quora question
-("What are the scoping rules for Frust?").**
+**Status: DONE - 2026-09-08.** Fixed as the first step of the algebraic-
+data-types push (a `match` expression's arms need real per-arm scoping,
+so this had to land first). The `ExprKind::Block` case (`Codegen.h`) now
+snapshots `namedValues`/`namedValueStructType`/`namedValueRawPointeeType`/
+`namedValueVectorElementType`/`namedValueInterfaceType`/
+`namedValueClosureSignature`/`namedValueSharedType` on entry and restores
+all seven on every exit path (fall-through, and the early-return-on-
+compile-failure path), mirroring the closure-literal trampoline's own
+whole-map save/restore exactly (see below) but scoped per block instead
+of per closure. `sharedScopeStack` itself was deliberately left untouched
+- it already had its own correct per-block push/pop lifecycle for drop
+tracking; this fix is purely about name *visibility*.
+
+Verified (`test_block_scope.frust`, `frust_compiler.exe` direct-run): an
+outer `let x: i64 = 100` with an `if`-body `let x: i64 = 999` shadowing
+it - hand-predicted the outer `x` survives untouched (`main() => 100`,
+not `999`, which is what the old flat-map bug would have produced).
+Negative case (`test_block_scope_negative.frust`): a `let y` introduced
+ONLY inside an `if`-body, referenced after the block ends - hand-
+predicted and confirmed a real compile error (`unknown identifier 'y'`),
+not silent success. Full `frust_plugin_host` regression sweep (all 17
+examples, Debug rebuild) and a full JUCE IDE Debug rebuild + launch
+smoke test both clean - this touched the single most-used codegen path
+in the whole compiler (every `{ }` body, including every function's own
+top-level block), so the full sweep was the actual bar for "done," per
+the standing rule.
+
+**Original finding (2026-08-24, kept for the record), answering a real
+Quora question ("What are the scoping rules for Frust?"):**
 
 Confirmed by direct read of `Codegen.h`: `namedValues` (the
 name -> `llvm::Value*` table every `let`/parameter binds into) is a
@@ -632,18 +989,100 @@ kept in a clearly separate section so they don't get conflated with
 the numbered gap-closing sequence above, and not started until that
 sequence is done.
 
-### Pattern matching + parameter/destructuring unpacking (F#-style)
+### Real algebraic data types: `enum` (discriminated unions) + `match`
 
-**Status: QUEUED - not started, not numbered into 1-9 above.**
+**Status: DONE - 2026-09-08.** F#/Rust-style discriminated unions, not a
+C-style tag-only enum: `enum Shape { Circle(f64), Rect(f64, f64), Point }`,
+each variant carrying its own typed payload (including other enums/
+structs - real nesting, generics too: `enum Choice<A, B> { Left(A),
+Right(B) }`, monomorphized exactly like generic structs).
 
-Confirmed by direct grammar read, 2026-08-23: no `match`/`case`/`when`
-keyword exists anywhere in `frust.y`'s token list - the only branching
-construct is `if`/`else` (including `else if` chains). No
-destructuring anywhere either: `let` bindings (`"let" mut_opt IDENT
-type_annot_opt "=" expr`) always bind a single identifier, never a
-tuple/struct-shaped pattern (`let (a, b) = pair`, `let { x, y } =
-point`); function parameters (`param: IDENT ":" type_expr`) are the
-same - always one name, one type, never a destructured shape; same for
-`for` loop variables. A real, separate feature from anything in the
-numbered list above - not blocking any of items 1-9, and not blocked
-by them either, just deliberately sequenced after.
+Sequenced as three pieces, in dependency order: real block-level lexical
+scoping (gap #10, above - had to land first so `match` arms get correct
+per-arm scoping for free), then `enum` grammar/codegen, then `match`.
+
+**Representation**: pointer-represented like structs - one malloc'd
+`{ i64 tag, <payload bytes> }` block (`Codegen.h`: `enumVariantIndex`/
+`enumVariantPayloadType`/`enumPayloadSize`, mirroring `structTypes`/
+`structFieldIndex`/`genericStructTemplates` one-to-one; `genericEnumTemplates`/
+`getOrCreateMonomorphizedEnum` mirror the generic-struct machinery
+exactly). Each variant's payload is its OWN LLVM struct type (no single
+aggregate fits every variant's differently-shaped payload) - a real,
+deliberate v1 limitation carried over from generic structs: a payload
+field typed as a bare generic parameter isn't resolved for nested-pattern
+purposes (`enumVariantFieldEnumType`'s own comment), though it can still
+be bound via a plain Binding pattern.
+
+**Construction**: `EnumName::VariantName(args...)` - one compiler-
+synthesized `FunctionDecl` per variant (`synthesizeEnumVariantConstructor`),
+reusing the exact qualified-path-function convention `Result::ok`
+already established (LANGUAGE_GAPS.md #5) - no new call-site machinery,
+a generic variant constructor rides the SAME turbofish + Pass-1.5
+pre-scan every other generic function already uses. A no-payload variant
+can be referenced bare (`Piece::King`, no `()`) - special-cased in the
+`Path` expression case since it never reaches `compileCall`'s dispatch.
+
+**`match`**: recursive pattern grammar (`_` wildcard, bindings, INT/
+FLOAT/STRING/bool literals, `EnumName::Variant(pattern, ...)`, a struct-
+pattern shape that PARSES but isn't wired up in codegen yet - real,
+named v1 gap, a clear compile error not silent wrong behavior) -
+compiled as a chain of tag/literal/binding checks (`compilePatternTest`),
+deliberately not a flat LLVM `switch` (can't express nested checks like
+`Node::Pair(Node::Leaf(Shape::Circle(r)), _)` reaching through two enum
+layers in one arm). Exhaustiveness is a real compile error (every
+variant covered, or a `_`/binding catch-all) at the TOP level only -
+nested sub-patterns aren't separately checked. A non-exhaustive match
+that somehow still reaches runtime (shouldn't happen given the compile-
+time check, but no real semantic-analysis pass exists to PROVE it - see
+this file's own header comment) fails loudly via a runtime panic
+(print + `exit(1)`), never silent undefined behavior.
+
+**Real grammar ambiguity found and fixed while building this**: `match
+scrutinee { ... }` with a bare-identifier scrutinee is genuinely
+ambiguous with `struct_literal` (`ident_path "{" ... "}"`) - bison's
+default shift-preference greedily extends a bare identifier toward a
+struct literal instead of ending the scrutinee at `match`'s own "{",
+so `match c1 { SomeVariant(x) => ... }` failed to parse at all before
+this was found. Fixed by requiring parens around the scrutinee -
+`match (c1) { ... }` - same convention `switch (x) { ... }` uses in C/
+C++/Java/JavaScript, for exactly this reason; parens structurally
+prevent struct_literal from being reachable at all (`)` isn't part of
+`ident_path`'s own grammar). **`if`/`while`/`for`'s conditions have the
+SAME latent ambiguity, unfixed** - none of their existing tests happen
+to trigger it (none use a bare identifier immediately followed by `{`),
+found by the same reasoning while diagnosing match's failure, real and
+worth knowing about, but out of scope for this pass.
+
+Verified: `test_enum.frust` (two different instantiations of the same
+generic enum, `Choice<i64,f64>` and `Choice<bool,i64>`, proving real
+per-type monomorphization; a non-generic three-variant enum with
+multi-field and no-payload variants), `test_match.frust` (a pattern
+reaching through two enum layers in one arm, a no-payload variant
+pattern, a wildcard nested inside a variant pattern, a top-level
+wildcard fallback - hand-predicted exact values, all matched), and a
+negative test (`test_match_negative.frust`, a deliberately non-
+exhaustive match with no `_` - confirmed a real compile error, not
+silent success). Full `frust_plugin_host` regression sweep (all 17
+examples) and a JUCE IDE Debug rebuild + launch smoke test both clean.
+
+**Named, deliberate v1 scope cuts** (state honestly, not silently
+dropped): no arm guard clauses (`Circle(r) if r > 0.0 => ...`); struct
+patterns parse but aren't implemented in codegen (clear compile error);
+string literal patterns rejected too - this language's own `==` already
+only does POINTER comparison for `String` (see `compileBinary`'s `Eq`
+case), so a string pattern would silently never match a runtime string
+rather than actually compare content; nested sub-patterns aren't
+separately checked for exhaustiveness, only the top level.
+
+### `let`/function-param/`for`-loop destructuring (F#-style, irrefutable patterns)
+
+**Status: QUEUED - not started.** The other half of the original ask,
+deliberately scoped separately from `match` above: these need
+*irrefutable* patterns only (a destructuring `let`/param can never fail
+to match - no variant tag ever fails), a meaningfully smaller problem
+than `match`'s general refutable patterns, which is why `match` shipped
+first. `let` bindings (`"let" mut_opt IDENT type_annot_opt "=" expr`)
+still always bind a single identifier, never a tuple/struct-shaped
+pattern (`let (a, b) = pair`, `let { x, y } = point`); function
+parameters and `for` loop variables are the same - always one name, one
+type, never a destructured shape.

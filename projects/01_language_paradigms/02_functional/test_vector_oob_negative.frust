@@ -1,0 +1,9 @@
+// LANGUAGE_GAPS.md #3: bracket WRITE past the end must be a real runtime
+// panic (clear error, exit(1)), not silent out-of-bounds corruption.
+fn main() -> i64 = {
+    let mut v: Vector<i64> = Vector::new();
+    v.push(0);
+    v.push(1);
+    v[5] = 99;
+    0
+}

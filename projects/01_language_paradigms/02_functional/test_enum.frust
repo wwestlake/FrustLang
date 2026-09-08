@@ -1,0 +1,52 @@
+// LANGUAGE_GAPS.md's algebraic-data-types work: real discriminated-union
+// enums, monomorphized like generic structs. Hand-predicted: two DIFFERENT
+// instantiations of the same generic enum (Choice<i64,f64> and
+// Choice<bool,i64>) each construct and read back correctly - proves real
+// per-type monomorphization, not one hardcoded case - plus a non-generic
+// three-variant enum (Piece: two multi-field variants, one no-payload).
+enum Choice<A, B> {
+    Left(A),
+    Right(B)
+}
+
+enum Piece {
+    Rook(i64, i64),
+    Bishop(i64, i64),
+    King
+}
+
+fn main() -> i64 = {
+    let c1: Choice<i64, f64> = Choice::Left::<i64, f64>(42);
+    let v1: i64 = match (c1) {
+        Choice::Left(x) => x
+        Choice::Right(x) => -1
+    };
+
+    let c2: Choice<bool, i64> = Choice::Left::<bool, i64>(true);
+    let v2: i64 = match (c2) {
+        Choice::Left(x) => 1
+        Choice::Right(x) => -1
+    };
+
+    let c3: Choice<bool, i64> = Choice::Right::<bool, i64>(7);
+    let v3: i64 = match (c3) {
+        Choice::Left(x) => -1
+        Choice::Right(x) => x
+    };
+
+    let p1: Piece = Piece::Rook(3, 4);
+    let s1: i64 = match (p1) {
+        Piece::Rook(x, y) => x + y
+        Piece::Bishop(x, y) => -1
+        Piece::King => -2
+    };
+
+    let p2: Piece = Piece::King;
+    let s2: i64 = match (p2) {
+        Piece::Rook(x, y) => -1
+        Piece::Bishop(x, y) => -2
+        Piece::King => 99
+    };
+
+    v1 + v2 + v3 + s1 + s2
+}
