@@ -659,18 +659,100 @@ kept in a clearly separate section so they don't get conflated with
 the numbered gap-closing sequence above, and not started until that
 sequence is done.
 
-### Pattern matching + parameter/destructuring unpacking (F#-style)
+### Real algebraic data types: `enum` (discriminated unions) + `match`
 
-**Status: QUEUED - not started, not numbered into 1-9 above.**
+**Status: DONE - 2026-09-08.** F#/Rust-style discriminated unions, not a
+C-style tag-only enum: `enum Shape { Circle(f64), Rect(f64, f64), Point }`,
+each variant carrying its own typed payload (including other enums/
+structs - real nesting, generics too: `enum Choice<A, B> { Left(A),
+Right(B) }`, monomorphized exactly like generic structs).
 
-Confirmed by direct grammar read, 2026-08-23: no `match`/`case`/`when`
-keyword exists anywhere in `frust.y`'s token list - the only branching
-construct is `if`/`else` (including `else if` chains). No
-destructuring anywhere either: `let` bindings (`"let" mut_opt IDENT
-type_annot_opt "=" expr`) always bind a single identifier, never a
-tuple/struct-shaped pattern (`let (a, b) = pair`, `let { x, y } =
-point`); function parameters (`param: IDENT ":" type_expr`) are the
-same - always one name, one type, never a destructured shape; same for
-`for` loop variables. A real, separate feature from anything in the
-numbered list above - not blocking any of items 1-9, and not blocked
-by them either, just deliberately sequenced after.
+Sequenced as three pieces, in dependency order: real block-level lexical
+scoping (gap #10, above - had to land first so `match` arms get correct
+per-arm scoping for free), then `enum` grammar/codegen, then `match`.
+
+**Representation**: pointer-represented like structs - one malloc'd
+`{ i64 tag, <payload bytes> }` block (`Codegen.h`: `enumVariantIndex`/
+`enumVariantPayloadType`/`enumPayloadSize`, mirroring `structTypes`/
+`structFieldIndex`/`genericStructTemplates` one-to-one; `genericEnumTemplates`/
+`getOrCreateMonomorphizedEnum` mirror the generic-struct machinery
+exactly). Each variant's payload is its OWN LLVM struct type (no single
+aggregate fits every variant's differently-shaped payload) - a real,
+deliberate v1 limitation carried over from generic structs: a payload
+field typed as a bare generic parameter isn't resolved for nested-pattern
+purposes (`enumVariantFieldEnumType`'s own comment), though it can still
+be bound via a plain Binding pattern.
+
+**Construction**: `EnumName::VariantName(args...)` - one compiler-
+synthesized `FunctionDecl` per variant (`synthesizeEnumVariantConstructor`),
+reusing the exact qualified-path-function convention `Result::ok`
+already established (LANGUAGE_GAPS.md #5) - no new call-site machinery,
+a generic variant constructor rides the SAME turbofish + Pass-1.5
+pre-scan every other generic function already uses. A no-payload variant
+can be referenced bare (`Piece::King`, no `()`) - special-cased in the
+`Path` expression case since it never reaches `compileCall`'s dispatch.
+
+**`match`**: recursive pattern grammar (`_` wildcard, bindings, INT/
+FLOAT/STRING/bool literals, `EnumName::Variant(pattern, ...)`, a struct-
+pattern shape that PARSES but isn't wired up in codegen yet - real,
+named v1 gap, a clear compile error not silent wrong behavior) -
+compiled as a chain of tag/literal/binding checks (`compilePatternTest`),
+deliberately not a flat LLVM `switch` (can't express nested checks like
+`Node::Pair(Node::Leaf(Shape::Circle(r)), _)` reaching through two enum
+layers in one arm). Exhaustiveness is a real compile error (every
+variant covered, or a `_`/binding catch-all) at the TOP level only -
+nested sub-patterns aren't separately checked. A non-exhaustive match
+that somehow still reaches runtime (shouldn't happen given the compile-
+time check, but no real semantic-analysis pass exists to PROVE it - see
+this file's own header comment) fails loudly via a runtime panic
+(print + `exit(1)`), never silent undefined behavior.
+
+**Real grammar ambiguity found and fixed while building this**: `match
+scrutinee { ... }` with a bare-identifier scrutinee is genuinely
+ambiguous with `struct_literal` (`ident_path "{" ... "}"`) - bison's
+default shift-preference greedily extends a bare identifier toward a
+struct literal instead of ending the scrutinee at `match`'s own "{",
+so `match c1 { SomeVariant(x) => ... }` failed to parse at all before
+this was found. Fixed by requiring parens around the scrutinee -
+`match (c1) { ... }` - same convention `switch (x) { ... }` uses in C/
+C++/Java/JavaScript, for exactly this reason; parens structurally
+prevent struct_literal from being reachable at all (`)` isn't part of
+`ident_path`'s own grammar). **`if`/`while`/`for`'s conditions have the
+SAME latent ambiguity, unfixed** - none of their existing tests happen
+to trigger it (none use a bare identifier immediately followed by `{`),
+found by the same reasoning while diagnosing match's failure, real and
+worth knowing about, but out of scope for this pass.
+
+Verified: `test_enum.frust` (two different instantiations of the same
+generic enum, `Choice<i64,f64>` and `Choice<bool,i64>`, proving real
+per-type monomorphization; a non-generic three-variant enum with
+multi-field and no-payload variants), `test_match.frust` (a pattern
+reaching through two enum layers in one arm, a no-payload variant
+pattern, a wildcard nested inside a variant pattern, a top-level
+wildcard fallback - hand-predicted exact values, all matched), and a
+negative test (`test_match_negative.frust`, a deliberately non-
+exhaustive match with no `_` - confirmed a real compile error, not
+silent success). Full `frust_plugin_host` regression sweep (all 17
+examples) and a JUCE IDE Debug rebuild + launch smoke test both clean.
+
+**Named, deliberate v1 scope cuts** (state honestly, not silently
+dropped): no arm guard clauses (`Circle(r) if r > 0.0 => ...`); struct
+patterns parse but aren't implemented in codegen (clear compile error);
+string literal patterns rejected too - this language's own `==` already
+only does POINTER comparison for `String` (see `compileBinary`'s `Eq`
+case), so a string pattern would silently never match a runtime string
+rather than actually compare content; nested sub-patterns aren't
+separately checked for exhaustiveness, only the top level.
+
+### `let`/function-param/`for`-loop destructuring (F#-style, irrefutable patterns)
+
+**Status: QUEUED - not started.** The other half of the original ask,
+deliberately scoped separately from `match` above: these need
+*irrefutable* patterns only (a destructuring `let`/param can never fail
+to match - no variant tag ever fails), a meaningfully smaller problem
+than `match`'s general refutable patterns, which is why `match` shipped
+first. `let` bindings (`"let" mut_opt IDENT type_annot_opt "=" expr`)
+still always bind a single identifier, never a tuple/struct-shaped
+pattern (`let (a, b) = pair`, `let { x, y } = point`); function
+parameters and `for` loop variables are the same - always one name, one
+type, never a destructured shape.

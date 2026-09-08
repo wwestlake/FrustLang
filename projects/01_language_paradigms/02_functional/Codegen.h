@@ -47,6 +47,7 @@ inline bool hasPerform(const Expr* expr) {
     for (auto* s : expr->statements) if (hasPerform(s)) return true;
     for (auto* a : expr->args) if (hasPerform(a)) return true;
     for (auto& hc : expr->handleCases) if (hasPerform(hc.body)) return true;
+    for (auto& arm : expr->matchArms) if (hasPerform(arm.body)) return true;
     return false;
 }
 
@@ -69,6 +70,16 @@ public:
     bool compileProgram(const Program& prog) {
         indexTypeAliases(prog);
         indexStructs(prog); // must precede signature declaration below - param/return types can name a struct
+        indexEnums(prog); // same reason, plus synthesizes variant constructor decls into enumVariantConstructorDecls (below)
+
+        // Every ordinary decl PLUS the synthesized enum-variant-constructor
+        // decls (indexEnums, just above) - folded into one list so the
+        // passes below need no enum-specific special-casing at all; a
+        // constructor is just another Function-kind decl to them. prog
+        // itself is `const Program&`, so this can't be prog.decls directly
+        // pushed into - a separate combined vector instead.
+        std::vector<Decl*> allDecls(prog.decls.begin(), prog.decls.end());
+        for (auto& d : enumVariantConstructorDecls) allDecls.push_back(d.get());
 
         // Synthesize print_f64
         llvm::Constant* formatStr = llvm::ConstantDataArray::getString(context, "%f\n");
@@ -95,7 +106,7 @@ public:
         // only for a concrete instantiation like "identity<i64>") -
         // remember the template here, monomorphize lazily per concrete
         // call site instead (getOrCreateMonomorphizedFunction).
-        for (auto* decl : prog.decls) {
+        for (auto* decl : allDecls) {
             const auto* function = functionFor(*decl);
             if (function && !function->genericParams.empty()) {
                 genericFunctionTemplates[function->name] = function;
@@ -108,7 +119,7 @@ public:
         // only succeed once a signature has been declared. Without this,
         // sibling methods in the same impl block calling each other
         // would be order-dependent.
-        for (auto* decl : prog.decls) {
+        for (auto* decl : allDecls) {
             const auto* function = functionFor(*decl);
             if (function && function->genericParams.empty()) {
                 declareFunctionSignature(*function);
@@ -147,7 +158,7 @@ public:
         // getOrCreateMonomorphizedFunction's own comment).
         {
             std::vector<std::pair<std::string, std::vector<std::string>>> genericCallSites;
-            for (auto* decl : prog.decls) {
+            for (auto* decl : allDecls) {
                 const auto* function = functionFor(*decl);
                 if (function && function->genericParams.empty() && function->body) {
                     collectGenericCallSites(function->body, genericCallSites);
@@ -165,7 +176,7 @@ public:
         // Pass 2: fill in (non-generic) bodies. Generic function templates
         // are never compiled under their own bare name - only their
         // monomorphized clones (Pass 1.5, above) are real functions.
-        for (auto* decl : prog.decls) {
+        for (auto* decl : allDecls) {
             const auto* function = functionFor(*decl);
             if (function && function->genericParams.empty()
                 && (function->body != nullptr || function->isExtern)) {
@@ -324,6 +335,58 @@ private:
     // sizeof) works on a monomorphized instantiation with zero further
     // special-casing.
     std::unordered_map<std::string, const StructDecl*> genericStructTemplates;
+
+    // `enum Shape { Circle(f64), Rect(f64, f64), Point }` support -
+    // LANGUAGE_GAPS.md's algebraic-data-types work. Mirrors the struct
+    // machinery above one-to-one rather than a single combined LLVM
+    // aggregate type: a concrete enum value is a malloc'd `{ i64 tag,
+    // <payload bytes> }` block (built by hand in the EnumVariantNew case,
+    // same "header + payload, GEP by hand" technique compileHeapStructLiteral
+    // already uses for shared's strong-count header) - there's no single
+    // LLVM struct type that fits every variant's differently-shaped
+    // payload, so each variant gets its OWN payload struct type instead.
+    //
+    // enumVariantIndex: enum name (mangled if a generic instantiation) ->
+    // variant name -> tag (declaration order).
+    std::unordered_map<std::string, std::unordered_map<std::string, int>> enumVariantIndex;
+    // enumVariantPayloadType: same keys -> that variant's payload fields
+    // as one (unnamed-content, but real) LLVM struct type - what a
+    // payload pointer gets bitcast/GEP'd through to read/write fields.
+    std::unordered_map<std::string, std::unordered_map<std::string, llvm::StructType*>> enumVariantPayloadType;
+    // enumVariantFieldEnumType: same keys -> per-payload-field-index ->
+    // the enum name that field statically is, IF it's a direct reference
+    // to another (non-generic) enum - what lets a `match` pattern nest
+    // through several enum layers in one arm (Node::Pair(Node::Leaf(...),
+    // _)). Named v1 scope cut, mirroring genericStructTemplates' own
+    // "nested generics not substituted" limitation exactly: a payload
+    // field typed as a bare generic parameter (`Some(T)`) is NOT resolved
+    // here (nullopt) - such a field can still be bound directly via a
+    // plain Binding pattern, just not destructured further in one arm.
+    std::unordered_map<std::string, std::unordered_map<std::string, std::vector<std::optional<std::string>>>> enumVariantFieldEnumType;
+    // enumPayloadSize: enum name -> max variant payload byte size, for
+    // sizing the initial malloc (8-byte tag + this).
+    std::unordered_map<std::string, uint64_t> enumPayloadSize;
+    // variable/param name -> enum type name, the enum-typed sibling of
+    // namedValueStructType (same "opaque pointer erases identity, only
+    // the static type ever knew" reasoning).
+    std::unordered_map<std::string, std::string> namedValueEnumType;
+    // `enum Option<T> { Some(T), None }` templates - mirrors
+    // genericStructTemplates exactly: name -> the AST declaration, no
+    // layout ever built for the bare generic name (getOrCreateMonomorphizedEnum
+    // builds it lazily per concrete instantiation).
+    std::unordered_map<std::string, const EnumDecl*> genericEnumTemplates;
+    // Synthesized `EnumName::VariantName` constructor FunctionDecls (one
+    // per variant, reusing Result::ok's existing qualified-path-function
+    // convention - LANGUAGE_GAPS.md #5) plus their owned AST storage
+    // (compileProgram has no AstArena of its own - see synthesizeEnumVariantConstructor).
+    // These get folded into compileProgram's ordinary decl passes
+    // (allDecls, below) so a generic variant constructor rides the SAME
+    // turbofish + Pass-1.5 machinery Result::ok already uses, with zero
+    // new call-site handling.
+    std::vector<std::unique_ptr<Decl>> enumVariantConstructorDecls;
+    std::vector<std::unique_ptr<FunctionDecl>> enumVariantConstructorFunctions;
+    std::vector<std::unique_ptr<Expr>> enumVariantConstructorExprs;
+    std::vector<std::unique_ptr<TypeExpr>> enumVariantConstructorTypes;
 
     // `fn identity<T>(x: T) -> T` templates (LANGUAGE_GAPS.md #4's
     // remaining piece) - mirrors genericStructTemplates exactly: name ->
@@ -746,6 +809,160 @@ private:
         }
     }
 
+    // Must precede signature declaration below, same reason as indexStructs
+    // - param/return types can name an enum. Also synthesizes every
+    // variant's `EnumName::VariantName` constructor FunctionDecl here (see
+    // synthesizeEnumVariantConstructor) - LANGUAGE_GAPS.md's algebraic-
+    // data-types work.
+    void indexEnums(const Program& prog) {
+        for (auto* decl : prog.decls) {
+            if (decl->kind != DeclKind::Enum) continue;
+            const EnumDecl& ed = *decl->enumDecl;
+
+            if (!ed.genericParams.empty()) {
+                // Mirrors genericStructTemplates: no layout built for the
+                // bare generic name - getOrCreateMonomorphizedEnum builds
+                // it lazily per concrete instantiation instead.
+                genericEnumTemplates[ed.name] = &ed;
+            } else {
+                auto& variantIndex = enumVariantIndex[ed.name];
+                auto& payloadTypes = enumVariantPayloadType[ed.name];
+                auto& fieldEnumTypes = enumVariantFieldEnumType[ed.name];
+                uint64_t maxPayloadSize = 0;
+                for (size_t i = 0; i < ed.variants.size(); ++i) {
+                    const EnumVariant& v = ed.variants[i];
+                    variantIndex[v.name] = static_cast<int>(i);
+                    std::vector<llvm::Type*> llvmFieldTypes;
+                    std::vector<std::optional<std::string>> fieldEnums;
+                    for (auto* t : v.payloadTypes) {
+                        llvmFieldTypes.push_back(resolveType(t));
+                        fieldEnums.push_back(enumVariantIndex.count(t->name) ? std::optional<std::string>(t->name) : std::nullopt);
+                    }
+                    llvm::StructType* payloadTy = llvm::StructType::create(context, llvmFieldTypes, ed.name + "::" + v.name);
+                    payloadTypes[v.name] = payloadTy;
+                    fieldEnumTypes[v.name] = std::move(fieldEnums);
+                    uint64_t size = module.getDataLayout().getTypeAllocSize(payloadTy);
+                    if (size > maxPayloadSize) maxPayloadSize = size;
+                }
+                enumPayloadSize[ed.name] = maxPayloadSize;
+            }
+
+            for (const EnumVariant& variant : ed.variants) {
+                synthesizeEnumVariantConstructor(ed, variant);
+            }
+        }
+    }
+
+    // Builds one `EnumName::VariantName` FunctionDecl (constructor sugar,
+    // mirroring Result::ok/Option::some's existing qualified-path-function
+    // convention exactly - LANGUAGE_GAPS.md #5) and appends it to
+    // enumVariantConstructorDecls so compileProgram's ordinary Pass 0.5/1/
+    // 1.5/2 loops pick it up like any other function - a generic enum's
+    // constructor is generic too (genericParams = the enum's own), so it
+    // rides the EXISTING turbofish + Pass-1.5 monomorphization machinery
+    // with zero new call-site handling. The body is a single
+    // ExprKind::EnumVariantNew node (see that codegen case) - the actual
+    // malloc/tag/payload-store logic isn't expressible as ordinary Frust
+    // source, so it's hand-built there instead of parsed.
+    void synthesizeEnumVariantConstructor(const EnumDecl& ed, const EnumVariant& variant) {
+        auto fn = std::make_unique<FunctionDecl>();
+        fn->name = ed.name + "::" + variant.name;
+        fn->genericParams = ed.genericParams;
+        for (size_t i = 0; i < variant.payloadTypes.size(); ++i) {
+            fn->params.push_back(Param{ "arg" + std::to_string(i), variant.payloadTypes[i], SourceLoc{} });
+        }
+
+        auto returnType = std::make_unique<TypeExpr>();
+        returnType->name = ed.name;
+        for (auto& gp : ed.genericParams) {
+            auto argType = std::make_unique<TypeExpr>();
+            argType->name = gp;
+            returnType->genericArgs.push_back(TypeArg{ false, 0, argType.get() });
+            enumVariantConstructorTypes.push_back(std::move(argType));
+        }
+        fn->returnType = returnType.get();
+        enumVariantConstructorTypes.push_back(std::move(returnType));
+
+        auto body = std::make_unique<Expr>();
+        body->kind = ExprKind::EnumVariantNew;
+        body->text = variant.name;
+        body->typeAnnotation = fn->returnType;
+        for (size_t i = 0; i < variant.payloadTypes.size(); ++i) {
+            auto argExpr = std::make_unique<Expr>();
+            argExpr->kind = ExprKind::Identifier;
+            argExpr->text = "arg" + std::to_string(i);
+            body->args.push_back(argExpr.get());
+            enumVariantConstructorExprs.push_back(std::move(argExpr));
+        }
+        fn->body = body.get();
+        enumVariantConstructorExprs.push_back(std::move(body));
+
+        FunctionDecl* fnPtr = fn.get();
+        enumVariantConstructorFunctions.push_back(std::move(fn));
+
+        auto declWrapper = std::make_unique<Decl>();
+        declWrapper->kind = DeclKind::Function;
+        declWrapper->functionDecl = fnPtr;
+        enumVariantConstructorDecls.push_back(std::move(declWrapper));
+    }
+
+    // Lazily monomorphizes a generic enum's layout the first time a
+    // concrete instantiation is actually needed - mirrors
+    // getOrCreateMonomorphizedStruct exactly. Substitution is the same
+    // flat name->name replacement on a payload field's declared type name
+    // (nested generics not substituted - see enumVariantFieldEnumType's
+    // own comment for the matching, deliberate pattern-nesting scope cut).
+    bool getOrCreateMonomorphizedEnum(const std::string& baseName,
+                                        const std::vector<std::string>& concreteArgNames) {
+        std::string mangled = monomorphizedStructName(baseName, concreteArgNames);
+        if (enumVariantIndex.count(mangled)) return true;
+
+        auto templateIt = genericEnumTemplates.find(baseName);
+        if (templateIt == genericEnumTemplates.end()) {
+            std::cerr << "frust: codegen error: '" << baseName << "' is not a generic enum\n";
+            return false;
+        }
+        const EnumDecl& templateDecl = *templateIt->second;
+        if (templateDecl.genericParams.size() != concreteArgNames.size()) {
+            std::cerr << "frust: codegen error: '" << baseName << "' expects "
+                       << templateDecl.genericParams.size() << " type argument(s), got "
+                       << concreteArgNames.size() << "\n";
+            return false;
+        }
+
+        std::unordered_map<std::string, std::string> substitution;
+        for (size_t i = 0; i < templateDecl.genericParams.size(); ++i) {
+            substitution[templateDecl.genericParams[i]] = concreteArgNames[i];
+        }
+
+        auto& variantIndex = enumVariantIndex[mangled];
+        auto& payloadTypes = enumVariantPayloadType[mangled];
+        auto& fieldEnumTypes = enumVariantFieldEnumType[mangled];
+        uint64_t maxPayloadSize = 0;
+        for (size_t i = 0; i < templateDecl.variants.size(); ++i) {
+            const EnumVariant& v = templateDecl.variants[i];
+            variantIndex[v.name] = static_cast<int>(i);
+            std::vector<llvm::Type*> llvmFieldTypes;
+            std::vector<std::optional<std::string>> fieldEnums;
+            for (auto* t : v.payloadTypes) {
+                auto subIt = substitution.find(t->name);
+                llvm::Type* fieldTy = (subIt != substitution.end()) ? resolveTypeByName(subIt->second) : resolveType(t);
+                llvmFieldTypes.push_back(fieldTy);
+                // A substituted (generic-parameter) field isn't resolved to
+                // an enum name here - see this map's own header comment.
+                fieldEnums.push_back((subIt == substitution.end() && enumVariantIndex.count(t->name))
+                    ? std::optional<std::string>(t->name) : std::nullopt);
+            }
+            llvm::StructType* payloadTy = llvm::StructType::create(context, llvmFieldTypes, mangled + "::" + v.name);
+            payloadTypes[v.name] = payloadTy;
+            fieldEnumTypes[v.name] = std::move(fieldEnums);
+            uint64_t size = module.getDataLayout().getTypeAllocSize(payloadTy);
+            if (size > maxPayloadSize) maxPayloadSize = size;
+        }
+        enumPayloadSize[mangled] = maxPayloadSize;
+        return true;
+    }
+
     static std::string monomorphizedStructName(const std::string& baseName,
                                                  const std::vector<std::string>& concreteArgNames) {
         std::string mangled = baseName + "<";
@@ -953,6 +1170,62 @@ private:
         return std::nullopt;
     }
 
+    // Which Frust enum type (if any) a given expression statically is -
+    // the enum-typed sibling of inferStructTypeName, same "opaque pointer
+    // erases identity" reasoning and same scope (Identifier, and a Call
+    // whose target's declared return type names an enum - covers a
+    // variant constructor call like `Shape::Circle(3.0)` or a generic one
+    // like `Option::some::<i64>(5)`, both via the SAME functionDeclsByName/
+    // explicit-generic-args handling inferStructTypeName's Call branches
+    // already establish).
+    std::optional<std::string> inferEnumTypeName(const Expr* expr) {
+        if (!expr) return std::nullopt;
+        if (expr->kind == ExprKind::Identifier) {
+            auto it = namedValueEnumType.find(expr->text);
+            if (it != namedValueEnumType.end()) return it->second;
+            return std::nullopt;
+        }
+        // A bare no-payload variant reference (`Piece::King`, ExprKind::Path,
+        // no call syntax) - same case compileExpr's own Path handling
+        // special-cases for construction (see that comment for why).
+        if (expr->kind == ExprKind::Path && expr->pathSegments.size() == 2) {
+            auto variantMapIt = enumVariantIndex.find(expr->pathSegments[0]);
+            if (variantMapIt != enumVariantIndex.end() && variantMapIt->second.count(expr->pathSegments[1])) {
+                return expr->pathSegments[0];
+            }
+        }
+        if (expr->kind != ExprKind::Call || !expr->lhs) return std::nullopt;
+
+        std::string targetName;
+        if (expr->lhs->kind == ExprKind::Identifier) {
+            targetName = expr->lhs->text;
+        } else if (expr->lhs->kind == ExprKind::Path) {
+            targetName = expr->lhs->pathSegments.front();
+            for (size_t i = 1; i < expr->lhs->pathSegments.size(); ++i) targetName += "::" + expr->lhs->pathSegments[i];
+        }
+
+        if (!expr->lhs->explicitGenericArgs.empty()) {
+            auto templateIt = genericFunctionTemplates.find(targetName);
+            if (templateIt != genericFunctionTemplates.end()
+                && templateIt->second->genericParams.size() == expr->lhs->explicitGenericArgs.size()) {
+                auto savedSubstitution = currentGenericSubstitution;
+                currentGenericSubstitution.clear();
+                for (size_t i = 0; i < templateIt->second->genericParams.size(); ++i) {
+                    auto& arg = expr->lhs->explicitGenericArgs[i];
+                    if (!arg.isIntConst && arg.type) {
+                        currentGenericSubstitution[templateIt->second->genericParams[i]] = arg.type->name;
+                    }
+                }
+                auto result = resolveEnumTypeName(templateIt->second->returnType);
+                currentGenericSubstitution = savedSubstitution;
+                return result;
+            }
+        }
+        auto it = functionDeclsByName.find(targetName);
+        if (it != functionDeclsByName.end()) return resolveEnumTypeName(it->second->returnType);
+        return std::nullopt;
+    }
+
     // Whether an expression's value already holds a strong `shared`
     // reference (LANGUAGE_GAPS.md #7) - not a type name (namedValueStructType
     // already tracks that, since a shared value's payload pointer is an
@@ -1088,6 +1361,24 @@ private:
             }
         }
 
+        // `enum Shape { ... }` - LANGUAGE_GAPS.md's algebraic-data-types
+        // work. Pointer-represented, same convention as structs above -
+        // see enumVariantIndex/enumVariantPayloadType's own header comment
+        // for the actual malloc'd { tag, payload } shape.
+        if (enumVariantIndex.count(n)) return llvm::PointerType::getUnqual(context);
+
+        if (genericEnumTemplates.count(n) && !type->genericArgs.empty()) {
+            std::vector<std::string> concreteArgNames;
+            bool allTypeArgs = true;
+            for (auto& arg : type->genericArgs) {
+                if (arg.isIntConst || !arg.type) { allTypeArgs = false; break; }
+                concreteArgNames.push_back(arg.type->name);
+            }
+            if (allTypeArgs && getOrCreateMonomorphizedEnum(n, concreteArgNames)) {
+                return llvm::PointerType::getUnqual(context);
+            }
+        }
+
         // A declared `interface Name { ... }` - values of this type are a
         // fat pointer { data, vtable }, not a plain struct pointer (see
         // buildVtable/compileMethodCall's interface-dispatch branch).
@@ -1134,6 +1425,32 @@ private:
                 concreteArgNames.push_back(arg.type->name);
             }
             if (getOrCreateMonomorphizedStruct(type->name, concreteArgNames)) {
+                return monomorphizedStructName(type->name, concreteArgNames);
+            }
+        }
+        return std::nullopt;
+    }
+
+    // Same alias-following/generic-monomorphizing shape as
+    // resolveStructTypeName, for enum names instead (LANGUAGE_GAPS.md's
+    // algebraic-data-types work).
+    std::optional<std::string> resolveEnumTypeName(const TypeExpr* type, int depth = 0) {
+        if (!type || depth > 16) return std::nullopt;
+        if (!currentGenericSubstitution.empty()) {
+            std::vector<std::unique_ptr<TypeExpr>> storage;
+            const TypeExpr* substituted = substituteGenericType(type, storage);
+            if (substituted != type) return resolveEnumTypeName(substituted, depth + 1);
+        }
+        auto aliasIt = typeAliases.find(type->name);
+        if (aliasIt != typeAliases.end()) return resolveEnumTypeName(aliasIt->second, depth + 1);
+        if (enumVariantIndex.count(type->name)) return type->name;
+        if (genericEnumTemplates.count(type->name) && !type->genericArgs.empty()) {
+            std::vector<std::string> concreteArgNames;
+            for (auto& arg : type->genericArgs) {
+                if (arg.isIntConst || !arg.type) return std::nullopt;
+                concreteArgNames.push_back(arg.type->name);
+            }
+            if (getOrCreateMonomorphizedEnum(type->name, concreteArgNames)) {
                 return monomorphizedStructName(type->name, concreteArgNames);
             }
         }
@@ -1416,17 +1733,40 @@ private:
                 std::string fullName = expr->pathSegments.front();
                 for (size_t i = 1; i < expr->pathSegments.size(); ++i) fullName += "::" + expr->pathSegments[i];
                 auto it = namedValues.find(fullName);
-                if (it == namedValues.end()) {
-                    std::cerr << "frust: codegen error: unknown path '" << fullName << "'\n";
-                    return nullptr;
+                if (it != namedValues.end()) return it->second;
+
+                // A bare no-payload variant reference (`Piece::King`, no
+                // call syntax needed since there's nothing to pass) -
+                // LANGUAGE_GAPS.md's algebraic-data-types work. Dispatches
+                // to the SAME synthesized constructor function every other
+                // variant already goes through via ordinary Call syntax
+                // (synthesizeEnumVariantConstructor) - invoked directly
+                // here with zero arguments, since a bare path (no
+                // trailing "(...)") never reaches compileCall's own
+                // dispatch at all. Only ever matches a non-generic enum's
+                // constructor, or a generic one that happens to already be
+                // monomorphized under this exact bare name (neither
+                // possible generically without a turbofish, which needs
+                // call syntax anyway - consistent with Result::ok/
+                // Option::some's existing convention).
+                if (expr->pathSegments.size() == 2) {
+                    auto variantMapIt = enumVariantIndex.find(expr->pathSegments[0]);
+                    if (variantMapIt != enumVariantIndex.end() && variantMapIt->second.count(expr->pathSegments[1])) {
+                        if (llvm::Function* ctorFn = module.getFunction(fullName)) {
+                            return builder.CreateCall(ctorFn, {});
+                        }
+                    }
                 }
-                return it->second;
+
+                std::cerr << "frust: codegen error: unknown path '" << fullName << "'\n";
+                return nullptr;
             }
 
             case ExprKind::Binary: return compileBinary(*expr);
             case ExprKind::Unary: return compileUnary(*expr);
             case ExprKind::Call: return compileCall(*expr);
             case ExprKind::If: return compileIf(*expr);
+            case ExprKind::Match: return compileMatch(*expr);
             case ExprKind::While: return compileWhile(*expr);
             case ExprKind::Loop: return compileLoop(*expr);
             case ExprKind::For: return compileFor(*expr);
@@ -1434,6 +1774,7 @@ private:
             case ExprKind::Continue: return compileContinue(*expr);
             case ExprKind::StructLiteral: return compileStructLiteral(*expr);
             case ExprKind::SmartPtrNew: return compileHeapStructLiteral(*expr);
+            case ExprKind::EnumVariantNew: return compileEnumVariantNew(*expr);
             case ExprKind::Closure: return compileClosureLiteral(*expr);
             case ExprKind::ArrayLiteral: return compileArrayLiteral(*expr);
             case ExprKind::Index: return compileIndex(*expr);
@@ -1594,6 +1935,13 @@ private:
                         namedValueSharedType.insert(expr->text);
                         if (!sharedScopeStack.empty()) sharedScopeStack.back().push_back(expr->text);
                     }
+                } else if (auto enumTypeName = inferEnumTypeName(expr->lhs)) {
+                    // Enums are pointer-represented exactly like structs
+                    // (enumVariantIndex's own header comment) - same
+                    // direct-bind, no extra wrapping alloca regardless of
+                    // `mut`, same reasoning as the struct branch above.
+                    namedValues[expr->text] = val;
+                    namedValueEnumType[expr->text] = *enumTypeName;
                 } else if (expr->isMut) {
                     llvm::Function* theFunction = builder.GetInsertBlock()->getParent();
                     llvm::IRBuilder<> tmpBuilder(&theFunction->getEntryBlock(), theFunction->getEntryBlock().begin());
@@ -1654,6 +2002,7 @@ private:
                 auto savedInterfaceType = namedValueInterfaceType;
                 auto savedClosureSig = namedValueClosureSignature;
                 auto savedSharedType = namedValueSharedType;
+                auto savedEnumType = namedValueEnumType;
                 auto restoreNamedValueState = [&]() {
                     namedValues = savedNamedValues;
                     namedValueStructType = savedStructType;
@@ -1662,6 +2011,7 @@ private:
                     namedValueInterfaceType = savedInterfaceType;
                     namedValueClosureSignature = savedClosureSig;
                     namedValueSharedType = savedSharedType;
+                    namedValueEnumType = savedEnumType;
                 };
 
                 llvm::Value* last = nullptr;
@@ -2221,6 +2571,60 @@ private:
         return payloadPtr;
     }
 
+    // Body codegen for a synthesized `EnumName::VariantName` constructor
+    // (see synthesizeEnumVariantConstructor) - same malloc+GEP-by-hand
+    // technique compileHeapStructLiteral uses for shared's strong-count
+    // header, just tag+payload instead of count+payload. expr.typeAnnotation
+    // is the constructor's OWN declared return type (`EnumName` or
+    // `EnumName<T,...>`) - resolving it through resolveEnumTypeName here
+    // (rather than trusting a name baked in at synthesis time) is what
+    // makes this work correctly for a GENERIC enum's constructor too:
+    // currentGenericSubstitution is live during this exact call (set by
+    // getOrCreateMonomorphizedFunction before compiling this body), so the
+    // same resolve call that's a no-op for a plain enum monomorphizes and
+    // returns the concrete mangled name for a generic one.
+    llvm::Value* compileEnumVariantNew(const Expr& expr) {
+        auto enumNameOpt = resolveEnumTypeName(expr.typeAnnotation);
+        if (!enumNameOpt) {
+            std::cerr << "frust: codegen error: could not resolve enum type constructing '" << expr.text << "'\n";
+            return nullptr;
+        }
+        const std::string& enumName = *enumNameOpt;
+        auto variantMapIt = enumVariantIndex.find(enumName);
+        if (variantMapIt == enumVariantIndex.end()) {
+            std::cerr << "frust: codegen error: unknown enum type '" << enumName << "'\n";
+            return nullptr;
+        }
+        auto variantIt = variantMapIt->second.find(expr.text);
+        if (variantIt == variantMapIt->second.end()) {
+            std::cerr << "frust: codegen error: '" << enumName << "' has no variant '" << expr.text << "'\n";
+            return nullptr;
+        }
+        int tag = variantIt->second;
+        llvm::StructType* payloadTy = enumVariantPayloadType[enumName][expr.text];
+        uint64_t payloadSize = enumPayloadSize[enumName];
+
+        llvm::Value* totalSizeV = builder.getInt64(8 + payloadSize);
+        llvm::Value* rawPtr = builder.CreateCall(getMallocFn(), {totalSizeV});
+        builder.CreateStore(builder.getInt64(tag), rawPtr);
+        llvm::Value* payloadPtr = builder.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(context), rawPtr, 8);
+
+        for (size_t i = 0; i < expr.args.size(); ++i) {
+            llvm::Value* argVal = compileExpr(expr.args[i]);
+            if (!argVal) return nullptr;
+            llvm::Value* fieldPtr = builder.CreateStructGEP(payloadTy, payloadPtr, static_cast<unsigned>(i));
+            builder.CreateStore(argVal, fieldPtr);
+        }
+        // Unlike shared's payload-pointer-skips-the-header convention (kept
+        // there so ordinary struct-field code stays oblivious to sharedness),
+        // an enum's bound VALUE is the BASE pointer, tag at offset 0 -
+        // there's no "existing plain-struct-field-access path" to stay
+        // compatible with here; compilePatternTest's own tag load/payload
+        // GEP (CreateLoad at offset 0, then +8 for payload) is written
+        // against exactly this convention.
+        return rawPtr;
+    }
+
     llvm::Value* compileMember(const Expr& expr) {
         auto typeName = inferStructTypeName(expr.lhs);
         if (!typeName) {
@@ -2756,6 +3160,261 @@ private:
         llvm::PHINode* phi = builder.CreatePHI(mergeType, 2, "iftmp");
         phi->addIncoming(thenV, thenBB);
         phi->addIncoming(elseV, elseBB);
+        return phi;
+    }
+
+    // Recursive pattern-match codegen (LANGUAGE_GAPS.md's algebraic-data-
+    // types work) - a chain of tag/literal/binding checks, deliberately
+    // NOT a flat LLVM switch: a single switch can't express nested sub-
+    // pattern checks the way this needs to (`Node::Pair(Node::Leaf(Shape::
+    // Circle(r)), _)` only tests the inner Shape/Circle check AFTER the
+    // outer Pair/Leaf checks already succeeded - genuinely sequential,
+    // short-circuit control flow, not a flat dispatch table). Returns
+    // false only on a genuine COMPILE error (unsupported pattern kind,
+    // unknown variant, wrong argument count) - a runtime pattern mismatch
+    // is not a compile error, it's the normal CondBr-to-onFailure path.
+    // onSuccess binds this pattern's names into namedValues directly (the
+    // caller - compileMatch - saves/restores namedValues around the WHOLE
+    // arm, same per-arm scoping item #10's Block fix already established,
+    // reapplied here since an arm's body isn't always itself a `{ }` block).
+    bool compilePatternTest(const Pattern* pattern, llvm::Value* value,
+                             const std::optional<std::string>& enumTypeName,
+                             llvm::BasicBlock* onSuccess, llvm::BasicBlock* onFailure,
+                             llvm::Function* currentFn) {
+        switch (pattern->kind) {
+            case PatternKind::Wildcard: {
+                builder.CreateBr(onSuccess);
+                return true;
+            }
+            case PatternKind::Binding: {
+                namedValues[pattern->text] = value;
+                builder.CreateBr(onSuccess);
+                return true;
+            }
+            case PatternKind::IntLiteral: {
+                llvm::Value* cmp = value->getType()->isIntegerTy()
+                    ? builder.CreateICmpEQ(value, llvm::ConstantInt::get(value->getType(), static_cast<uint64_t>(pattern->intValue), true))
+                    : llvm::ConstantInt::getFalse(context);
+                builder.CreateCondBr(cmp, onSuccess, onFailure);
+                return true;
+            }
+            case PatternKind::FloatLiteral: {
+                llvm::Value* cmp = value->getType()->isFloatingPointTy()
+                    ? builder.CreateFCmpOEQ(value, llvm::ConstantFP::get(value->getType(), pattern->floatValue))
+                    : llvm::ConstantInt::getFalse(context);
+                builder.CreateCondBr(cmp, onSuccess, onFailure);
+                return true;
+            }
+            case PatternKind::BoolLiteral: {
+                llvm::Value* cmp = builder.CreateICmpEQ(value, builder.getInt1(pattern->boolValue));
+                builder.CreateCondBr(cmp, onSuccess, onFailure);
+                return true;
+            }
+            case PatternKind::StringLiteral: {
+                // Real gap, not silently wrong: this language's own `==`
+                // already only does POINTER comparison for String (see
+                // compileBinary's Eq case) - reusing that here would make
+                // a string pattern silently never match (a freshly
+                // materialized literal constant's address can never equal
+                // a runtime string's), which is worse than an honest
+                // compile error. Real content comparison needs a runtime
+                // strcmp-style helper this pass doesn't add.
+                std::cerr << "frust: codegen error: string literal patterns in `match` are not supported yet\n";
+                return false;
+            }
+            case PatternKind::Struct: {
+                std::cerr << "frust: codegen error: struct patterns in `match` are not supported yet\n";
+                return false;
+            }
+            case PatternKind::Variant: {
+                if (!enumTypeName) {
+                    std::cerr << "frust: codegen error: pattern '" << (pattern->pathSegments.empty() ? "" : pattern->pathSegments.back())
+                               << "' expects an enum value, but this scrutinee's enum type is unknown\n";
+                    return false;
+                }
+                if (pattern->pathSegments.empty()) {
+                    std::cerr << "frust: codegen internal error: variant pattern with no path\n";
+                    return false;
+                }
+                const std::string& variantName = pattern->pathSegments.back();
+                auto variantMapIt = enumVariantIndex.find(*enumTypeName);
+                if (variantMapIt == enumVariantIndex.end() || !variantMapIt->second.count(variantName)) {
+                    std::cerr << "frust: codegen error: '" << *enumTypeName << "' has no variant '" << variantName << "'\n";
+                    return false;
+                }
+                int tag = variantMapIt->second.at(variantName);
+                llvm::Value* tagVal = builder.CreateLoad(llvm::Type::getInt64Ty(context), value);
+                llvm::Value* tagMatch = builder.CreateICmpEQ(tagVal, builder.getInt64(tag));
+
+                if (pattern->subPatterns.empty()) {
+                    builder.CreateCondBr(tagMatch, onSuccess, onFailure);
+                    return true;
+                }
+
+                llvm::StructType* payloadTy = enumVariantPayloadType[*enumTypeName][variantName];
+                if (pattern->subPatterns.size() != payloadTy->getNumElements()) {
+                    std::cerr << "frust: codegen error: '" << *enumTypeName << "::" << variantName << "' takes "
+                               << payloadTy->getNumElements() << " argument(s), pattern has "
+                               << pattern->subPatterns.size() << "\n";
+                    return false;
+                }
+
+                llvm::BasicBlock* payloadBB = llvm::BasicBlock::Create(context, "match.payload", currentFn);
+                builder.CreateCondBr(tagMatch, payloadBB, onFailure);
+                builder.SetInsertPoint(payloadBB);
+
+                llvm::Value* payloadPtr = builder.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(context), value, 8);
+                auto& fieldEnumTypes = enumVariantFieldEnumType[*enumTypeName][variantName];
+
+                for (size_t i = 0; i < pattern->subPatterns.size(); ++i) {
+                    llvm::Type* fieldLLVMTy = payloadTy->getElementType(static_cast<unsigned>(i));
+                    llvm::Value* fieldPtr = builder.CreateStructGEP(payloadTy, payloadPtr, static_cast<unsigned>(i));
+                    llvm::Value* fieldVal = builder.CreateLoad(fieldLLVMTy, fieldPtr);
+
+                    bool isLastField = (i + 1 == pattern->subPatterns.size());
+                    llvm::BasicBlock* fieldSuccessBB = isLastField ? onSuccess : llvm::BasicBlock::Create(context, "match.field", currentFn);
+                    std::optional<std::string> fieldEnumName = (i < fieldEnumTypes.size()) ? fieldEnumTypes[i] : std::nullopt;
+                    if (!compilePatternTest(pattern->subPatterns[i], fieldVal, fieldEnumName, fieldSuccessBB, onFailure, currentFn)) return false;
+                    if (!isLastField) builder.SetInsertPoint(fieldSuccessBB);
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // `match scrutinee { pattern => expr ... }` - a generalized (N-way,
+    // not just 2-way) version of compileIf's own then/else merge: each
+    // arm's pattern is tested top-to-bottom via compilePatternTest, first
+    // match wins, then the arm's body value feeds into a shared PHI merge
+    // exactly like compileIf's thenV/elseV coercion above, just widened
+    // from 2 incoming values to N.
+    llvm::Value* compileMatch(const Expr& expr) {
+        llvm::Value* scrutinee = compileExpr(expr.condExpr);
+        if (!scrutinee) return nullptr;
+
+        auto enumNameOpt = inferEnumTypeName(expr.condExpr);
+
+        // Exhaustiveness (top-level only, per the plan - a nested
+        // sub-pattern is not separately checked): every declared variant
+        // covered, or a wildcard/binding catch-all arm present. A
+        // non-enum scrutinee can never be proven exhaustive without a
+        // catch-all, so one is always required there.
+        bool hasCatchAll = false;
+        std::set<std::string> coveredVariants;
+        for (auto& arm : expr.matchArms) {
+            if (arm.pattern->kind == PatternKind::Wildcard || arm.pattern->kind == PatternKind::Binding) {
+                hasCatchAll = true;
+            } else if (arm.pattern->kind == PatternKind::Variant && !arm.pattern->pathSegments.empty()) {
+                coveredVariants.insert(arm.pattern->pathSegments.back());
+            }
+        }
+        if (!hasCatchAll) {
+            if (!enumNameOpt) {
+                std::cerr << "frust: codegen error: match is not exhaustive - add a `_` arm\n";
+                return nullptr;
+            }
+            auto variantMapIt = enumVariantIndex.find(*enumNameOpt);
+            if (variantMapIt != enumVariantIndex.end()) {
+                for (auto& kv : variantMapIt->second) {
+                    if (!coveredVariants.count(kv.first)) {
+                        std::cerr << "frust: codegen error: match is not exhaustive - missing variant '"
+                                   << kv.first << "' of '" << *enumNameOpt << "' (add a `_` arm or cover every variant)\n";
+                        return nullptr;
+                    }
+                }
+            }
+        }
+
+        llvm::Function* theFunction = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* mergeBB = llvm::BasicBlock::Create(context, "match.end");
+        std::vector<std::pair<llvm::Value*, llvm::BasicBlock*>> incoming;
+
+        for (size_t i = 0; i < expr.matchArms.size(); ++i) {
+            const MatchArm& arm = expr.matchArms[i];
+            bool isLast = (i + 1 == expr.matchArms.size());
+
+            llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "match.arm", theFunction);
+            llvm::BasicBlock* nextBB = isLast
+                ? llvm::BasicBlock::Create(context, "match.no_match")
+                : llvm::BasicBlock::Create(context, "match.next");
+
+            // Per-arm namedValues scoping (mirrors item #10's Block fix) -
+            // this arm's pattern bindings must not leak into the NEXT
+            // arm's test/body, nor past the whole match.
+            auto savedNamedValues = namedValues;
+
+            if (!compilePatternTest(arm.pattern, scrutinee, enumNameOpt, bodyBB, nextBB, theFunction)) return nullptr;
+
+            builder.SetInsertPoint(bodyBB);
+            llvm::Value* armV = compileExpr(arm.body);
+            if (!armV) return nullptr;
+            bool armTerminated = blockTerminated;
+            if (!armTerminated) builder.CreateBr(mergeBB);
+            llvm::BasicBlock* armEndBB = builder.GetInsertBlock();
+            blockTerminated = false;
+            namedValues = savedNamedValues;
+            if (!armTerminated) incoming.push_back({armV, armEndBB});
+
+            theFunction->insert(theFunction->end(), nextBB);
+            builder.SetInsertPoint(nextBB);
+
+            if (isLast) {
+                // Reached only if no arm's pattern matched at runtime -
+                // per the exhaustiveness check above this should be
+                // statically unreachable for an enum scrutinee with no
+                // catch-all, but "should be" isn't "proven to the
+                // compiler's own satisfaction" (no real semantic-analysis
+                // pass exists - see this file's own header comment), so
+                // fail loudly at runtime rather than fall through to
+                // undefined behavior. Mirrors emitRefinementCheck's own
+                // panic sequence exactly.
+                llvm::FunctionCallee printFn = module.getOrInsertFunction("frust_print_str",
+                    llvm::FunctionType::get(llvm::Type::getVoidTy(context), {llvm::PointerType::getUnqual(context)}, false));
+                llvm::Constant* msgConst = llvm::ConstantDataArray::getString(context, "frust: no match arm matched at runtime\n");
+                auto* msgGlobal = new llvm::GlobalVariable(module, msgConst->getType(), true, llvm::GlobalValue::PrivateLinkage, msgConst, ".match_panic_msg");
+                builder.CreateCall(printFn, {msgGlobal});
+                llvm::FunctionCallee exitFn = module.getOrInsertFunction("exit", llvm::FunctionType::get(llvm::Type::getVoidTy(context), {llvm::Type::getInt32Ty(context)}, false));
+                builder.CreateCall(exitFn, {llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), 1)});
+                builder.CreateUnreachable();
+            }
+        }
+
+        theFunction->insert(theFunction->end(), mergeBB);
+        builder.SetInsertPoint(mergeBB);
+
+        if (incoming.empty()) {
+            // Every arm terminated (e.g. every arm ends in `return`) -
+            // mergeBB is unreachable, mirroring compileIf's own
+            // both-branches-terminated case.
+            builder.CreateUnreachable();
+            blockTerminated = true;
+            return llvm::ConstantInt::getTrue(context);
+        }
+        if (incoming.size() == 1) return incoming.front().first;
+
+        bool allFirstClass = true;
+        bool allSameType = true;
+        llvm::Type* mergeType = incoming.front().first->getType();
+        for (auto& inc : incoming) {
+            if (!inc.first->getType()->isFirstClassType()) allFirstClass = false;
+            if (inc.first->getType() != mergeType) allSameType = false;
+        }
+        if (!allFirstClass) return llvm::ConstantInt::getTrue(context); // dummy void-like value, mirrors compileIf
+
+        if (!allSameType) {
+            bool anyFloat = false;
+            unsigned maxIntWidth = 0;
+            for (auto& inc : incoming) {
+                if (inc.first->getType()->isFloatingPointTy()) anyFloat = true;
+                else if (inc.first->getType()->isIntegerTy() && inc.first->getType()->getIntegerBitWidth() > maxIntWidth) maxIntWidth = inc.first->getType()->getIntegerBitWidth();
+            }
+            mergeType = anyFloat ? llvm::Type::getDoubleTy(context) : llvm::Type::getIntNTy(context, maxIntWidth > 0 ? maxIntWidth : 64);
+            for (auto& inc : incoming) inc.first = coerceToType(inc.first, mergeType);
+        }
+
+        llvm::PHINode* phi = builder.CreatePHI(mergeType, static_cast<unsigned>(incoming.size()), "matchtmp");
+        for (auto& inc : incoming) phi->addIncoming(inc.first, inc.second);
         return phi;
     }
 
@@ -3309,6 +3968,7 @@ private:
         for (auto* s : node->statements) collectGenericCallSites(s, sites);
         for (auto* a : node->args) collectGenericCallSites(a, sites);
         for (auto& hc : node->handleCases) collectGenericCallSites(hc.body, sites);
+        for (auto& arm : node->matchArms) collectGenericCallSites(arm.body, sites);
     }
 
     // Recursively collects free-variable references in a closure body -
@@ -3405,6 +4065,7 @@ private:
         auto savedInterfaceType = namedValueInterfaceType;
         auto savedClosureSig = namedValueClosureSignature;
         auto savedSharedType = namedValueSharedType;
+        auto savedEnumType = namedValueEnumType;
         auto savedSharedScopeStack = sharedScopeStack;
         auto savedLoopSharedScopeDepth = loopSharedScopeDepth;
         llvm::Type* savedRetType = currentFnRetType;
@@ -3419,6 +4080,7 @@ private:
             namedValueInterfaceType = savedInterfaceType;
             namedValueClosureSignature = savedClosureSig;
             namedValueSharedType = savedSharedType;
+            namedValueEnumType = savedEnumType;
             sharedScopeStack = savedSharedScopeStack;
             loopSharedScopeDepth = savedLoopSharedScopeDepth;
             currentFnRetType = savedRetType;
@@ -3432,6 +4094,7 @@ private:
         namedValueInterfaceType.clear();
         namedValueClosureSignature.clear();
         namedValueSharedType.clear();
+        namedValueEnumType.clear();
         sharedScopeStack.clear();
         loopSharedScopeDepth.clear();
 
@@ -3454,6 +4117,7 @@ private:
             if (savedVectorElem.count(name)) namedValueVectorElementType[name] = savedVectorElem[name];
             if (savedInterfaceType.count(name)) namedValueInterfaceType[name] = savedInterfaceType[name];
             if (savedClosureSig.count(name)) namedValueClosureSignature[name] = savedClosureSig[name];
+            if (savedEnumType.count(name)) namedValueEnumType[name] = savedEnumType[name];
         }
 
         for (auto& p : expr.params) {
@@ -3579,6 +4243,7 @@ public:
         namedValueVectorElementType.clear();
         namedValueClosureSignature.clear();
         namedValueSharedType.clear();
+        namedValueEnumType.clear();
         sharedScopeStack.clear();
         loopSharedScopeDepth.clear();
 
@@ -3594,6 +4259,12 @@ public:
             namedValues[p.name] = &*argIt;
             if (auto structName = resolveStructTypeName(p.type)) {
                 namedValueStructType[p.name] = *structName;
+            }
+            // Enum-typed parameter (LANGUAGE_GAPS.md's algebraic-data-types
+            // work) - same "opaque pointer erases identity" reasoning as
+            // namedValueStructType right above.
+            if (auto enumName = resolveEnumTypeName(p.type)) {
+                namedValueEnumType[p.name] = *enumName;
             }
             // Interface-typed parameter (a fat pointer at the ABI level,
             // per resolveType) - record it the same way namedValueStructType

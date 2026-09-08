@@ -95,6 +95,8 @@ enum class ExprKind {
     BuildTime, Quote, Unquote,
     Perform, Resume, Handle,
     Closure,
+    Match,
+    EnumVariantNew, // compiler-synthesized only (see Codegen.h's synthesizeEnumVariantConstructor) - never produced by the parser directly
 };
 
 struct Expr;
@@ -113,6 +115,45 @@ struct StructFieldInit {
 struct HandleCase {
     std::string effectName;
     std::vector<Param> params; // untyped bindings
+    Expr* body = nullptr;
+    SourceLoc loc;
+};
+
+enum class PatternKind { Wildcard, Binding, IntLiteral, FloatLiteral, StringLiteral, BoolLiteral, Variant, Struct };
+
+struct Pattern;
+
+struct FieldPattern {
+    std::string name;
+    Pattern* value = nullptr;
+};
+
+// A `match` arm's pattern - recursive, so a nested pattern reaching through
+// several enum/struct layers in one arm (`Node::Pair(Node::Leaf(Shape::
+// Circle(r)), _)`) falls straight out of subPatterns/fieldPatterns holding
+// further Pattern* nodes, no separate tree type needed (LANGUAGE_GAPS.md's
+// algebraic-data-types work). pathSegments carries a Variant/Struct
+// pattern's qualified name - always >= 2 segments in practice
+// (EnumName::VariantName), since a bare 1-segment name in pattern position
+// is always a fresh Binding, never an implicit unqualified variant
+// reference (Frust has no `use`-style variant import to make that mean
+// anything else).
+struct Pattern {
+    PatternKind kind;
+    SourceLoc loc;
+
+    std::string text;      // Binding name / StringLiteral value
+    int64_t intValue = 0;
+    double floatValue = 0.0;
+    bool boolValue = false;
+
+    std::vector<std::string> pathSegments;   // Variant/Struct pattern's qualified path
+    std::vector<Pattern*> subPatterns;        // Variant pattern's payload patterns
+    std::vector<FieldPattern> fieldPatterns;  // Struct pattern's field:pattern list
+};
+
+struct MatchArm {
+    Pattern* pattern = nullptr;
     Expr* body = nullptr;
     SourceLoc loc;
 };
@@ -150,6 +191,7 @@ struct Expr {
     std::vector<HandleCase> handleCases; // Handle
     std::vector<Param> params; // Closure params (typeAnnotation = declared return type, lhs = body)
     std::vector<TypeArg> explicitGenericArgs; // Call - `f::<i64>(x)`'s explicit type arguments
+    std::vector<MatchArm> matchArms; // Match (condExpr = the scrutinee being matched)
 };
 
 // ---------------------------------------------------------------------
@@ -196,6 +238,27 @@ struct StructDecl {
     // real types at a concrete USE site (`Box<i64>`), monomorphized
     // lazily there (see Codegen.h's genericStructTemplates/
     // getOrCreateMonomorphizedStruct).
+    std::vector<std::string> genericParams;
+};
+
+// `enum Shape { Circle(f64), Rect(f64, f64), Point }` - a real discriminated
+// union (LANGUAGE_GAPS.md's algebraic-data-types work), not a C-style tag-
+// only enum: each variant may carry its own typed payload, including other
+// enums/structs (that nesting is what gives `match` patterns their real
+// power - see Pattern, above). Mirrors StructDecl's own generic-template
+// convention exactly: genericParams empty => Codegen.h builds one concrete
+// LLVM type eagerly; non-empty => stored as a template only, monomorphized
+// lazily per concrete use site (genericEnumTemplates/
+// getOrCreateMonomorphizedEnum).
+struct EnumVariant {
+    std::string name;
+    std::vector<TypeExpr*> payloadTypes; // empty => no-payload variant
+};
+
+struct EnumDecl {
+    std::string name;
+    std::vector<EnumVariant> variants;
+    SourceLoc loc;
     std::vector<std::string> genericParams;
 };
 
@@ -337,7 +400,7 @@ inline constexpr const char* kFrustNodeReflectionGlobalName = "__frust_node_refl
 // section) with no enclosing `fn`. Folding it into DeclKind rather than
 // giving Program a second, separately-ordered list keeps top-level ordering
 // uniform between files (all decls) and REPL input (all statements).
-enum class DeclKind { Function, Struct, TypeAlias, Effect, Component, Node, Use, TopLevelStmt, Impl, Interface, Manifest };
+enum class DeclKind { Function, Struct, TypeAlias, Effect, Component, Node, Use, TopLevelStmt, Impl, Interface, Manifest, Enum };
 
 struct Decl {
     DeclKind kind;
@@ -352,6 +415,7 @@ struct Decl {
     ImplDecl* implDecl = nullptr;
     InterfaceDecl* interfaceDecl = nullptr;
     ManifestDecl* manifestDecl = nullptr;
+    EnumDecl* enumDecl = nullptr;
 };
 
 struct Program {
@@ -387,6 +451,18 @@ public:
     StructDecl* NewStructDecl() {
         structDecls_.push_back(std::make_unique<StructDecl>());
         return structDecls_.back().get();
+    }
+
+    EnumDecl* NewEnumDecl() {
+        enumDecls_.push_back(std::make_unique<EnumDecl>());
+        return enumDecls_.back().get();
+    }
+
+    Pattern* NewPattern(PatternKind kind, SourceLoc loc) {
+        patterns_.push_back(std::make_unique<Pattern>());
+        patterns_.back()->kind = kind;
+        patterns_.back()->loc = loc;
+        return patterns_.back().get();
     }
 
     TypeAliasDecl* NewTypeAliasDecl() {
@@ -445,6 +521,8 @@ private:
     std::vector<std::unique_ptr<Expr>> exprs_;
     std::vector<std::unique_ptr<FunctionDecl>> functionDecls_;
     std::vector<std::unique_ptr<StructDecl>> structDecls_;
+    std::vector<std::unique_ptr<EnumDecl>> enumDecls_;
+    std::vector<std::unique_ptr<Pattern>> patterns_;
     std::vector<std::unique_ptr<TypeAliasDecl>> typeAliasDecls_;
     std::vector<std::unique_ptr<EffectDecl>> effectDecls_;
     std::vector<std::unique_ptr<ComponentDecl>> componentDecls_;
