@@ -1,0 +1,25 @@
+// LANGUAGE_GAPS.md #3's own named follow-on: bracket WRITE (`v[i] = x`)
+// for Vector<T>, construction/push/get/bracket-read were already done.
+// Hand-predicted: five pushes (0,1,2,3,4), then overwrite index 2 (a
+// previously-pushed value) and index 4 (the last slot) via bracket
+// write, read back via BOTH .get() and bracket read to confirm both
+// paths see the write.
+fn main() -> i64 = {
+    let mut v: Vector<i64> = Vector::new();
+    v.push(0);
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    v.push(4);
+
+    v[2] = 99;
+    v[4] = 77;
+
+    let a: i64 = v.get(0);
+    let b: i64 = v[1];
+    let c: i64 = v.get(2);
+    let d: i64 = v[3];
+    let e: i64 = v.get(4);
+
+    a * 100000 + b * 10000 + c * 100 + d * 10 + e
+}

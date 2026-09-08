@@ -251,14 +251,34 @@ in `compileProgram`'s own prologue) - Vector<T> doesn't depend on the
 user's own source declaring `extern fn malloc`.
 
 Shipped: `.push(x)` (real amortized growth - doubles capacity from a
-base of 4, `realloc`-backed), `.len()`, `.get(i)`, and `v[i]` bracket
-read. Scope cut, named honestly: `v[i] = x` (bracket WRITE) isn't
-shipped this pass - `.push()` covers building a vector, `.get()`/`v[i]`
-cover reading it back; in-place element mutation via brackets is a
-real, deliberately-deferred follow-on, not silently dropped.
+base of 4, `realloc`-backed), `.len()`, `.get(i)`, `v[i]` bracket read,
+and (2026-09-08) `v[i] = x` bracket **write** - real in-place element
+mutation, the one item originally deferred here.
 
-Verified (`test_vector.frust`, `frust_compiler.exe` direct-run): an
-empty vector starts at length 0; five pushes land at length 5,
+**Bracket write** (`compileAssign`'s `ExprKind::Index` case, checked
+before the pre-existing `Vec<N>` SSA-vector assignment case since
+`Vector<T>` is a real heap pointer, not an SSA value) includes a real
+bounds check - out-of-range writes are the actually dangerous case a
+growable collection needs this for, so a clear runtime panic (print +
+`exit(1)`, mirroring `emitRefinementCheck`'s own panic sequence
+verbatim) replaces what would otherwise be silent heap corruption.
+**Honest, found-but-not-fixed gap**: `.get(i)`/bracket READ still have
+NO bounds check of their own (confirmed - neither ever did, before or
+after this change) - reading past the end is undefined, not a clean
+error. Scope stayed to write, per how this item was queued; read's own
+missing check is real, separate, smaller follow-on work.
+
+Verified (`test_vector.frust`, `frust_compiler.exe` direct-run): five
+pushes, then bracket-write into a previously-pushed middle index AND
+the last slot, read back via BOTH `.get()` and bracket read to confirm
+both paths see the write - hand-predicted value matched exactly.
+Negative test (`test_vector_oob_negative.frust`): a bracket write past
+the vector's length triggers the real runtime panic, not silent
+corruption. Full `frust_plugin_host` regression sweep (17 examples) and
+a JUCE IDE Debug rebuild + launch smoke test both clean.
+
+Verified (`test_vector.frust`, `frust_compiler.exe` direct-run, 2026-08-23):
+an empty vector starts at length 0; five pushes land at length 5,
 exercising BOTH the initial grow-from-0 (capacity 0 -> 4 on the 1st
 push) and the regrow-past-4 (capacity 4 -> 8 on the 5th push) code
 paths, not just the easy no-growth case; `.get(0)`/`.get(2)`/`.get(4)`

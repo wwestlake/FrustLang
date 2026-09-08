@@ -2491,6 +2491,66 @@ private:
         }
 
         if (expr.lhs->kind == ExprKind::Index) {
+            // `v[i] = x` for a Vector<T> (LANGUAGE_GAPS.md #3's own
+            // named, deliberately-deferred follow-on - .push()/.get()/
+            // bracket READ covered construction/readback, bracket WRITE
+            // didn't). Checked before the Vec<N> SSA-vector case below -
+            // a real heap pointer (vectorHeaderType), not an SSA vector
+            // value, same "anchor via a named binding" convention this
+            // file uses throughout for Vector<T> (compileIndex's own
+            // read-path check, mirrored here).
+            if (expr.lhs->lhs->kind == ExprKind::Identifier) {
+                const Expr& indexExpr = *expr.lhs;
+                auto vecElemIt = namedValueVectorElementType.find(indexExpr.lhs->text);
+                if (vecElemIt != namedValueVectorElementType.end()) {
+                    llvm::Value* headerPtr = compileExpr(indexExpr.lhs);
+                    if (!headerPtr) return nullptr;
+                    llvm::Value* idx = compileExpr(indexExpr.rhs);
+                    if (!idx) return nullptr;
+                    auto* val = compileExpr(expr.rhs);
+                    if (!val) return nullptr;
+
+                    llvm::StructType* hdrTy = vectorHeaderType();
+                    llvm::Type* elemTy = resolveTypeByName(vecElemIt->second);
+                    llvm::Type* ptrTy = llvm::PointerType::getUnqual(context);
+                    llvm::Type* i64Ty = llvm::Type::getInt64Ty(context);
+
+                    // Bounds check - a clear runtime error, not silent
+                    // corruption (out-of-bounds writes are the actual
+                    // dangerous case a growable collection needs this
+                    // for), matching this project's existing bar. Mirrors
+                    // emitRefinementCheck's own panic sequence exactly.
+                    llvm::Value* lenFieldPtr = builder.CreateStructGEP(hdrTy, headerPtr, 1);
+                    llvm::Value* len = builder.CreateLoad(i64Ty, lenFieldPtr, "veclen");
+                    llvm::Value* idxOk = builder.CreateAnd(
+                        builder.CreateICmpSGE(idx, llvm::ConstantInt::get(i64Ty, 0)),
+                        builder.CreateICmpSLT(idx, len));
+
+                    llvm::Function* theFunction = builder.GetInsertBlock()->getParent();
+                    llvm::BasicBlock* okBB = llvm::BasicBlock::Create(context, "vecwrite_ok", theFunction);
+                    llvm::BasicBlock* panicBB = llvm::BasicBlock::Create(context, "vecwrite_oob", theFunction);
+                    builder.CreateCondBr(idxOk, okBB, panicBB);
+
+                    builder.SetInsertPoint(panicBB);
+                    llvm::FunctionCallee printFn = module.getOrInsertFunction("frust_print_str",
+                        llvm::FunctionType::get(llvm::Type::getVoidTy(context), {ptrTy}, false));
+                    llvm::Constant* msgConst = llvm::ConstantDataArray::getString(context, "frust: Vector index out of bounds\n");
+                    auto* msgGlobal = new llvm::GlobalVariable(module, msgConst->getType(), true, llvm::GlobalValue::PrivateLinkage, msgConst, ".vec_oob_msg");
+                    builder.CreateCall(printFn, {msgGlobal});
+                    llvm::FunctionCallee exitFn = module.getOrInsertFunction("exit", llvm::FunctionType::get(llvm::Type::getVoidTy(context), {llvm::Type::getInt32Ty(context)}, false));
+                    builder.CreateCall(exitFn, {llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), 1)});
+                    builder.CreateUnreachable();
+
+                    builder.SetInsertPoint(okBB);
+                    val = coerceToType(val, elemTy);
+                    llvm::Value* dataFieldPtr = builder.CreateStructGEP(hdrTy, headerPtr, 0);
+                    llvm::Value* dataPtr = builder.CreateLoad(ptrTy, dataFieldPtr, "vecdata");
+                    llvm::Value* elemPtr = builder.CreateGEP(elemTy, dataPtr, idx, "vecelemptr");
+                    builder.CreateStore(val, elemPtr);
+                    return val;
+                }
+            }
+
             // `v[i] = x` for a `mut` Vec<N> variable. Vec<N> values are
             // genuine SSA vector values (see compileArrayLiteral), not
             // pointer-backed - there's no address to GEP into and store
