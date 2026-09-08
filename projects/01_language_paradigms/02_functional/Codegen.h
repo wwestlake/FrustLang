@@ -400,6 +400,13 @@ private:
     // here (nullopt) - such a field can still be bound directly via a
     // plain Binding pattern, just not destructured further in one arm.
     std::unordered_map<std::string, std::unordered_map<std::string, std::vector<std::optional<std::string>>>> enumVariantFieldEnumType;
+    // enumVariantFieldStructType: same keys/shape as enumVariantFieldEnumType,
+    // but for a payload field that's statically a struct - what lets
+    // `Option::Some(f) => f.v` resolve `f`'s struct type so field access
+    // works, including through a substituted generic parameter (`Some(T)`
+    // with T=Foo resolves here even though enumVariantFieldEnumType
+    // deliberately leaves a substituted field unresolved).
+    std::unordered_map<std::string, std::unordered_map<std::string, std::vector<std::optional<std::string>>>> enumVariantFieldStructType;
     // enumPayloadSize: enum name -> max variant payload byte size, for
     // sizing the initial malloc (8-byte tag + this).
     std::unordered_map<std::string, uint64_t> enumPayloadSize;
@@ -407,6 +414,15 @@ private:
     // namedValueStructType (same "opaque pointer erases identity, only
     // the static type ever knew" reasoning).
     std::unordered_map<std::string, std::string> namedValueEnumType;
+    // `weak T` (LANGUAGE_GAPS.md #7's remaining piece) - variable/param
+    // name -> the concrete struct type name it's a weak reference TO
+    // (same "opaque pointer erases identity" reasoning as
+    // namedValueStructType). A weak-bound name holds the SAME payload
+    // pointer a shared reference to that value would - only this table's
+    // presence marks it as weak rather than a strong owner, so
+    // .upgrade() (compileWeakMethodCall) knows to check strongCount
+    // before ever handing the pointer back, instead of trusting it live.
+    std::unordered_map<std::string, std::string> namedValueWeakType;
     // `enum Option<T> { Some(T), None }` templates - mirrors
     // genericStructTemplates exactly: name -> the AST declaration, no
     // layout ever built for the bare generic name (getOrCreateMonomorphizedEnum
@@ -878,19 +894,23 @@ private:
                 auto& variantIndex = enumVariantIndex[ed.name];
                 auto& payloadTypes = enumVariantPayloadType[ed.name];
                 auto& fieldEnumTypes = enumVariantFieldEnumType[ed.name];
+                auto& fieldStructTypes = enumVariantFieldStructType[ed.name];
                 uint64_t maxPayloadSize = 0;
                 for (size_t i = 0; i < ed.variants.size(); ++i) {
                     const EnumVariant& v = ed.variants[i];
                     variantIndex[v.name] = static_cast<int>(i);
                     std::vector<llvm::Type*> llvmFieldTypes;
                     std::vector<std::optional<std::string>> fieldEnums;
+                    std::vector<std::optional<std::string>> fieldStructs;
                     for (auto* t : v.payloadTypes) {
                         llvmFieldTypes.push_back(resolveType(t));
                         fieldEnums.push_back(enumVariantIndex.count(t->name) ? std::optional<std::string>(t->name) : std::nullopt);
+                        fieldStructs.push_back(structTypes.count(t->name) ? std::optional<std::string>(t->name) : std::nullopt);
                     }
                     llvm::StructType* payloadTy = llvm::StructType::create(context, llvmFieldTypes, ed.name + "::" + v.name);
                     payloadTypes[v.name] = payloadTy;
                     fieldEnumTypes[v.name] = std::move(fieldEnums);
+                    fieldStructTypes[v.name] = std::move(fieldStructs);
                     uint64_t size = module.getDataLayout().getTypeAllocSize(payloadTy);
                     if (size > maxPayloadSize) maxPayloadSize = size;
                 }
@@ -988,12 +1008,14 @@ private:
         auto& variantIndex = enumVariantIndex[mangled];
         auto& payloadTypes = enumVariantPayloadType[mangled];
         auto& fieldEnumTypes = enumVariantFieldEnumType[mangled];
+        auto& fieldStructTypes = enumVariantFieldStructType[mangled];
         uint64_t maxPayloadSize = 0;
         for (size_t i = 0; i < templateDecl.variants.size(); ++i) {
             const EnumVariant& v = templateDecl.variants[i];
             variantIndex[v.name] = static_cast<int>(i);
             std::vector<llvm::Type*> llvmFieldTypes;
             std::vector<std::optional<std::string>> fieldEnums;
+            std::vector<std::optional<std::string>> fieldStructs;
             for (auto* t : v.payloadTypes) {
                 auto subIt = substitution.find(t->name);
                 llvm::Type* fieldTy = (subIt != substitution.end()) ? resolveTypeByName(subIt->second) : resolveType(t);
@@ -1002,10 +1024,17 @@ private:
                 // an enum name here - see this map's own header comment.
                 fieldEnums.push_back((subIt == substitution.end() && enumVariantIndex.count(t->name))
                     ? std::optional<std::string>(t->name) : std::nullopt);
+                // Unlike fieldEnums above, a substituted field's CONCRETE
+                // type (e.g. T=Foo) is resolved here - this is what lets
+                // `Option::Some(f) => f.v` know `f` is a `Foo` even though
+                // the template only ever wrote `Some(T)`.
+                const std::string& concreteName = (subIt != substitution.end()) ? subIt->second : t->name;
+                fieldStructs.push_back(structTypes.count(concreteName) ? std::optional<std::string>(concreteName) : std::nullopt);
             }
             llvm::StructType* payloadTy = llvm::StructType::create(context, llvmFieldTypes, mangled + "::" + v.name);
             payloadTypes[v.name] = payloadTy;
             fieldEnumTypes[v.name] = std::move(fieldEnums);
+            fieldStructTypes[v.name] = std::move(fieldStructs);
             uint64_t size = module.getDataLayout().getTypeAllocSize(payloadTy);
             if (size > maxPayloadSize) maxPayloadSize = size;
         }
@@ -1112,6 +1141,7 @@ private:
         auto savedClosureSig = namedValueClosureSignature;
         auto savedSharedType = namedValueSharedType;
         auto savedEnumType = namedValueEnumType;
+        auto savedWeakType = namedValueWeakType;
         auto savedSharedScopeStack = sharedScopeStack;
         auto savedLoopSharedScopeDepth = loopSharedScopeDepth;
         auto savedOwnScopeStack = ownScopeStack;
@@ -1146,6 +1176,7 @@ private:
         namedValueClosureSignature = savedClosureSig;
         namedValueSharedType = savedSharedType;
         namedValueEnumType = savedEnumType;
+        namedValueWeakType = savedWeakType;
         sharedScopeStack = savedSharedScopeStack;
         loopSharedScopeDepth = savedLoopSharedScopeDepth;
         ownScopeStack = savedOwnScopeStack;
@@ -1352,12 +1383,19 @@ private:
             if (expr->pathSegments.empty()) return std::nullopt;
             return expr->pathSegments.front();
         }
-        if (expr->kind == ExprKind::SmartPtrNew) {
+        if (expr->kind == ExprKind::SmartPtrNew && expr->smartPtrKind != SmartPtrKind::Weak) {
             // `own Foo { ... }` / `raw Foo { ... }` - same struct identity
             // as the literal it wraps, just heap-allocated instead of
             // stack (compileHeapStructLiteral). Let/call-site coercion
             // and method dispatch shouldn't care which allocation
-            // strategy produced the pointer.
+            // strategy produced the pointer. `weak` is deliberately
+            // EXCLUDED here (LANGUAGE_GAPS.md #7) - a weak reference is
+            // NOT a directly-struct-accessible value (that's the entire
+            // safety point of it existing - the payload might already be
+            // freed), so it must never be treated as an ordinary struct
+            // type by inferStructTypeName/field access/method dispatch;
+            // only `.upgrade()` (namedValueWeakType, compileWeakMethodCall)
+            // is ever allowed to reach the payload.
             return inferStructTypeName(expr->lhs);
         }
         if (expr->kind == ExprKind::Call && expr->lhs && !expr->lhs->explicitGenericArgs.empty()) {
@@ -1408,11 +1446,50 @@ private:
             // yet, and a Path-based static-method call shape doesn't
             // exist in this language currently anyway.
             auto it = functionDeclsByName.find(expr->lhs->text);
-            if (it != functionDeclsByName.end()) {
+            // A weak-returning function (LANGUAGE_GAPS.md #7) is
+            // deliberately EXCLUDED here - see inferStructTypeName's own
+            // SmartPtrNew case above for why treating a weak value as an
+            // ordinary struct type would be unsafe; inferWeakTypeName
+            // (below) is where a weak-typed return is actually handled.
+            if (it != functionDeclsByName.end()
+                && !(it->second->returnType && it->second->returnType->ptrKind == SmartPtrKind::Weak)) {
                 return resolveStructTypeName(it->second->returnType);
             }
         }
         if (auto methodResult = inferMethodCallResultType(expr, false)) return methodResult;
+        return std::nullopt;
+    }
+
+    // Which Frust struct type (if any) a given expression is a WEAK
+    // reference TO - LANGUAGE_GAPS.md #7's remaining piece. Deliberately
+    // narrow, matching this feature's own overall scope: only a plain
+    // identifier already tracked in namedValueWeakType, or a call to a
+    // free function whose DECLARED return type is `weak T` (the one way
+    // this pass lets a weak reference cross a function boundary - own/
+    // shared already do the equivalent via resolveStructTypeName on a
+    // plain free-function's return type; this mirrors that exactly, one
+    // level narrower). No block-tail-value propagation, no method-call
+    // results, no reassignment tracking - a real, named scope cut, same
+    // spirit as every other "minimal but real" cut in this file.
+    std::optional<std::string> inferWeakTypeName(const Expr* expr) {
+        if (!expr) return std::nullopt;
+        if (expr->kind == ExprKind::Identifier) {
+            auto it = namedValueWeakType.find(expr->text);
+            if (it != namedValueWeakType.end()) return it->second;
+            return std::nullopt;
+        }
+        if (expr->kind == ExprKind::SmartPtrNew && expr->smartPtrKind == SmartPtrKind::Weak) {
+            // `weak existing_var` itself - the wrapped expression must
+            // already be a live shared-typed struct value.
+            return inferStructTypeName(expr->lhs);
+        }
+        if (expr->kind == ExprKind::Call && expr->lhs && expr->lhs->kind == ExprKind::Identifier) {
+            auto it = functionDeclsByName.find(expr->lhs->text);
+            if (it != functionDeclsByName.end() && it->second->returnType
+                && it->second->returnType->ptrKind == SmartPtrKind::Weak) {
+                return it->second->returnType->name;
+            }
+        }
         return std::nullopt;
     }
 
@@ -1441,6 +1518,24 @@ private:
             }
         }
         if (expr->kind != ExprKind::Call || !expr->lhs) return std::nullopt;
+
+        // `w.upgrade()` (LANGUAGE_GAPS.md #7) - special-cased the same
+        // way Vector<T>'s .get()/.push() are (not a real registered
+        // method, so it never reaches functionDeclsByName/methods below
+        // at all), and a weak-bound name is deliberately NOT struct/enum-
+        // tracked itself (namedValueWeakType's own header comment) - the
+        // ordinary receiver-type lookup this function otherwise relies
+        // on can never find it, so it's checked directly here instead.
+        // Its result type is always Option<targetType>, monomorphized
+        // (and thus confirmed to exist) the same way .upgrade()'s own
+        // codegen (compileWeakMethodCall) does.
+        if (expr->lhs->kind == ExprKind::Member && expr->lhs->text == "upgrade"
+            && expr->lhs->lhs->kind == ExprKind::Identifier) {
+            auto weakIt = namedValueWeakType.find(expr->lhs->lhs->text);
+            if (weakIt != namedValueWeakType.end() && getOrCreateMonomorphizedEnum("Option", {weakIt->second})) {
+                return monomorphizedStructName("Option", {weakIt->second});
+            }
+        }
 
         std::string targetName;
         if (expr->lhs->kind == ExprKind::Identifier) {
@@ -2020,7 +2115,9 @@ private:
             case ExprKind::Break: return compileBreak(*expr);
             case ExprKind::Continue: return compileContinue(*expr);
             case ExprKind::StructLiteral: return compileStructLiteral(*expr);
-            case ExprKind::SmartPtrNew: return compileHeapStructLiteral(*expr);
+            case ExprKind::SmartPtrNew:
+                if (expr->smartPtrKind == SmartPtrKind::Weak) return compileWeakNew(*expr);
+                return compileHeapStructLiteral(*expr);
             case ExprKind::EnumVariantNew: return compileEnumVariantNew(*expr);
             case ExprKind::Closure: return compileClosureLiteral(*expr);
             case ExprKind::ArrayLiteral: return compileArrayLiteral(*expr);
@@ -2213,6 +2310,21 @@ private:
                     // `mut`, same reasoning as the struct branch above.
                     namedValues[expr->text] = val;
                     namedValueEnumType[expr->text] = *enumTypeName;
+                } else if (auto weakTargetType = inferWeakTypeName(expr->lhs)) {
+                    // `weak existing_var`, or a call to a function
+                    // declared `-> weak T` (LANGUAGE_GAPS.md #7's
+                    // remaining piece - see inferWeakTypeName's own
+                    // comment on why the latter is included, narrowly).
+                    // Bind the SAME payload pointer a shared reference
+                    // would hold, but tracked ONLY via namedValueWeakType,
+                    // deliberately NOT namedValueStructType
+                    // (inferStructTypeName excludes Weak - see that
+                    // function's own comment) - so ordinary field access/
+                    // method dispatch can never reach the payload
+                    // directly; only `.upgrade()` (compileWeakMethodCall)
+                    // may, and only after checking strongCount first.
+                    namedValues[expr->text] = val;
+                    namedValueWeakType[expr->text] = *weakTargetType;
                 } else if (expr->isMut) {
                     llvm::Function* theFunction = builder.GetInsertBlock()->getParent();
                     llvm::IRBuilder<> tmpBuilder(&theFunction->getEntryBlock(), theFunction->getEntryBlock().begin());
@@ -2281,6 +2393,7 @@ private:
                 auto savedClosureSig = namedValueClosureSignature;
                 auto savedSharedType = namedValueSharedType;
                 auto savedEnumType = namedValueEnumType;
+        auto savedWeakType = namedValueWeakType;
                 auto restoreNamedValueState = [&]() {
                     namedValues = savedNamedValues;
                     namedValueStructType = savedStructType;
@@ -2290,6 +2403,7 @@ private:
                     namedValueClosureSignature = savedClosureSig;
                     namedValueSharedType = savedSharedType;
                     namedValueEnumType = savedEnumType;
+                    namedValueWeakType = savedWeakType;
                 };
 
                 auto savedBlockStatements = currentBlockStatements;
@@ -2876,24 +2990,21 @@ private:
     // (same pre-existing gap noted throughout this file for struct
     // mutation not being gated on `mut`), so both currently just malloc
     // and return the pointer. `shared` (LANGUAGE_GAPS.md #7) is real:
-    // the malloc'd block is an 8-byte i64 strong-count header
-    // immediately followed by the payload, initialized to 1 - the
-    // POINTER RETURNED HERE is still just the payload address (header
-    // + 8), so every existing struct-field/method-call code path keeps
-    // working completely unchanged; only construction/binding/drop
-    // needs to know about the header at all (see namedValueSharedType,
-    // sharedHeaderPtr, dropSharedLocal). `weak` genuinely needs a
-    // second, different mechanism (a control block that can outlive
-    // the payload) - real, separate, deliberately not built here;
-    // rejected with a clear error instead of silently behaving like
-    // `shared` or `own`.
+    // the malloc'd block is a 16-byte { strongCount, weakCount } header
+    // immediately followed by the payload, strongCount initialized to 1
+    // - the POINTER RETURNED HERE is still just the payload address
+    // (header + 16), so every existing struct-field/method-call code
+    // path keeps working completely unchanged; only construction/
+    // binding/drop needs to know about the header at all (see
+    // namedValueSharedType, sharedHeaderPtr, dropSharedLocal). `weak`
+    // (this same gap's remaining piece, now done - see compileWeakNew,
+    // right below) genuinely needed a DIFFERENT construction path
+    // entirely - it never mallocs anything itself, it borrows an
+    // EXISTING shared value's header, so it never reaches this
+    // function at all (routed separately in compileExpr's own switch).
     // typeNameOverride: see compileStructLiteral's own doc - same
     // reasoning, for `own Box { ... }`/`shared Box { ... }`.
     llvm::Value* compileHeapStructLiteral(const Expr& smartPtrExpr, const std::string& typeNameOverride = "") {
-        if (smartPtrExpr.smartPtrKind == SmartPtrKind::Weak) {
-            std::cerr << "frust: codegen error: 'weak' construction isn't implemented yet (needs a separate control-block mechanism) - 'own'/'raw'/'shared' heap construction all are\n";
-            return nullptr;
-        }
         bool isShared = (smartPtrExpr.smartPtrKind == SmartPtrKind::Shared);
         const Expr* lit = smartPtrExpr.lhs;
         if (!lit || lit->kind != ExprKind::StructLiteral) {
@@ -2913,19 +3024,171 @@ private:
         llvm::StructType* structTy = typeIt->second;
         auto& fieldIndex = structFieldIndex[typeName];
 
+        // shared's header is 16 bytes as of LANGUAGE_GAPS.md #7's weak-
+        // pointer work: { i64 strongCount, i64 weakCount } (was just an
+        // 8-byte strongCount before `weak` existed) - see sharedHeaderPtr/
+        // dropSharedLocal for why weak needs a second count: a weak
+        // reference has to be able to read strongCount even after it
+        // hits zero (to know upgrade() must fail), so the HEADER block
+        // can only be freed once BOTH counts are zero, not just strong.
         uint64_t payloadSize = module.getDataLayout().getTypeAllocSize(structTy);
-        uint64_t totalSize = payloadSize + (isShared ? 8 : 0);
+        uint64_t totalSize = payloadSize + (isShared ? 16 : 0);
         llvm::Value* totalSizeV = llvm::ConstantInt::get(llvm::Type::getInt64Ty(context), totalSize);
         llvm::Value* rawPtr = builder.CreateCall(getMallocFn(), {totalSizeV});
 
         llvm::Value* payloadPtr = rawPtr;
         if (isShared) {
+            llvm::Type* i64Ty = llvm::Type::getInt64Ty(context);
             builder.CreateStore(builder.getInt64(1), rawPtr); // strong count = 1
-            payloadPtr = builder.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(context), rawPtr, 8);
+            llvm::Value* weakCountPtr = builder.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(context), rawPtr, 8);
+            builder.CreateStore(llvm::ConstantInt::get(i64Ty, 0), weakCountPtr); // weak count = 0
+            payloadPtr = builder.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(context), rawPtr, 16);
         }
 
         if (!initStructFields(*lit, typeName, structTy, fieldIndex, payloadPtr)) return nullptr;
         return payloadPtr;
+    }
+
+    // `weak existing_shared_var` (LANGUAGE_GAPS.md #7's remaining piece)
+    // - takes a weak reference to an ALREADY-live shared value,
+    // incrementing its header's weakCount. Unlike own/shared/raw (which
+    // each construct a FRESH struct literal), weak's own lhs must be an
+    // expression that's already a live shared reference - there is
+    // nothing to malloc here at all; weak just borrows the SAME
+    // header+payload block shared already owns, via the exact same
+    // payload pointer (sharedHeaderPtr walks back from it identically
+    // either way). Deliberately scoped to a plain identifier for v1 -
+    // matches the "named binding" convention used throughout this file
+    // for anything opaque-pointer-typed (namedValueStructType,
+    // namedValueRawPointeeType, etc.).
+    llvm::Value* compileWeakNew(const Expr& smartPtrExpr) {
+        const Expr* target = smartPtrExpr.lhs;
+        if (!target || target->kind != ExprKind::Identifier) {
+            std::cerr << "frust: codegen error: 'weak' currently only wraps a plain shared-bound variable, e.g. `weak existing_var`\n";
+            return nullptr;
+        }
+        if (!namedValueSharedType.count(target->text)) {
+            std::cerr << "frust: codegen error: 'weak " << target->text << "' - '" << target->text << "' is not a shared-bound variable\n";
+            return nullptr;
+        }
+        llvm::Value* payloadPtr = compileExpr(target);
+        if (!payloadPtr) return nullptr;
+
+        llvm::Value* headerPtr = sharedHeaderPtr(payloadPtr);
+        llvm::Value* weakCountPtr = sharedWeakCountPtr(headerPtr);
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(context);
+        llvm::Value* weak = builder.CreateLoad(i64Ty, weakCountPtr, "weakcount");
+        llvm::Value* newWeak = builder.CreateAdd(weak, builder.getInt64(1));
+        builder.CreateStore(newWeak, weakCountPtr);
+        return payloadPtr;
+    }
+
+    // `w.upgrade()` on a `weak T` value (LANGUAGE_GAPS.md #7's remaining
+    // piece) - returns a real `Option<T>` (`Some(payload)` if the strong
+    // count is still > 0, `None` otherwise) rather than EVER handing
+    // back a pointer that might already be freed - the entire reason
+    // this project's own "real algebraic data types" work (enum/match)
+    // had to land before this could. Reuses the EXACT SAME synthesized
+    // `Option::Some`/`Option::None` variant-constructor functions
+    // ordinary `Option::Some::<T>(v)` source already goes through
+    // (synthesizeEnumVariantConstructor) - requires the compiled
+    // program to have `enum Option<T> { Some(T), None }` declared
+    // somewhere; this pass does not synthesize Option itself, a real,
+    // named scope cut (matching this project's "don't build a second
+    // competing mechanism" precedent). Only `.upgrade()` is supported -
+    // a weak reference has no other methods.
+    //
+    // Like compileMethodCall's own generic-method dispatch, resolving
+    // Option::Some/Option::None here is genuinely reentrant (discovered
+    // mid-compilation of whatever function calls .upgrade()) - needs the
+    // SAME save/restore compileClosureLiteral/getOrCreateMonomorphizedMethod
+    // already use, for the identical reason (compileFunction's
+    // unconditional namedValues.clear() would otherwise wipe the
+    // caller's own in-progress locals).
+    llvm::Value* compileWeakMethodCall(const Expr& expr, const Expr& member, std::string targetTypeName) {
+        if (member.text != "upgrade") {
+            std::cerr << "frust: codegen error: 'weak' has no method '" << member.text << "' - only .upgrade() is supported\n";
+            return nullptr;
+        }
+        if (!expr.args.empty()) {
+            std::cerr << "frust: codegen error: 'upgrade' takes no arguments\n";
+            return nullptr;
+        }
+        if (!genericEnumTemplates.count("Option")) {
+            std::cerr << "frust: codegen error: '.upgrade()' needs 'enum Option<T> { Some(T), None }' declared in this program\n";
+            return nullptr;
+        }
+
+        llvm::Value* payloadPtr = compileExpr(member.lhs);
+        if (!payloadPtr) return nullptr;
+        llvm::Value* headerPtr = sharedHeaderPtr(payloadPtr);
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(context);
+        llvm::Value* strong = builder.CreateLoad(i64Ty, headerPtr, "weakupgrade.strong");
+        llvm::Value* isLive = builder.CreateICmpSGT(strong, builder.getInt64(0));
+
+        auto savedIP = builder.saveIP();
+        auto savedNamedValues = namedValues;
+        auto savedStructType = namedValueStructType;
+        auto savedRawPointee = namedValueRawPointeeType;
+        auto savedVectorElem = namedValueVectorElementType;
+        auto savedInterfaceType = namedValueInterfaceType;
+        auto savedClosureSig = namedValueClosureSignature;
+        auto savedSharedType = namedValueSharedType;
+        auto savedEnumType = namedValueEnumType;
+        auto savedWeakType = namedValueWeakType;
+        auto savedSharedScopeStack = sharedScopeStack;
+        auto savedLoopSharedScopeDepth = loopSharedScopeDepth;
+        auto savedOwnScopeStack = ownScopeStack;
+        auto savedLoopOwnScopeDepth = loopOwnScopeDepth;
+        llvm::Type* savedRetType = currentFnRetType;
+        bool savedBlockTerminated = blockTerminated;
+
+        llvm::Function* someFn = getOrCreateMonomorphizedFunction("Option::Some", {targetTypeName});
+        llvm::Function* noneFn = getOrCreateMonomorphizedFunction("Option::None", {targetTypeName});
+
+        builder.restoreIP(savedIP);
+        namedValues = savedNamedValues;
+        namedValueStructType = savedStructType;
+        namedValueRawPointeeType = savedRawPointee;
+        namedValueVectorElementType = savedVectorElem;
+        namedValueInterfaceType = savedInterfaceType;
+        namedValueClosureSignature = savedClosureSig;
+        namedValueSharedType = savedSharedType;
+        namedValueEnumType = savedEnumType;
+        namedValueWeakType = savedWeakType;
+        sharedScopeStack = savedSharedScopeStack;
+        loopSharedScopeDepth = savedLoopSharedScopeDepth;
+        ownScopeStack = savedOwnScopeStack;
+        loopOwnScopeDepth = savedLoopOwnScopeDepth;
+        currentFnRetType = savedRetType;
+        blockTerminated = savedBlockTerminated;
+
+        if (!someFn || !noneFn) {
+            std::cerr << "frust: codegen error: could not resolve Option::Some/Option::None for '" << targetTypeName << "'\n";
+            return nullptr;
+        }
+
+        llvm::Function* theFunction = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* someBB = llvm::BasicBlock::Create(context, "weakupgrade.some", theFunction);
+        llvm::BasicBlock* noneBB = llvm::BasicBlock::Create(context, "weakupgrade.none", theFunction);
+        llvm::BasicBlock* mergeBB = llvm::BasicBlock::Create(context, "weakupgrade.end", theFunction);
+        builder.CreateCondBr(isLive, someBB, noneBB);
+
+        builder.SetInsertPoint(someBB);
+        llvm::Value* someResult = builder.CreateCall(someFn, {payloadPtr}, "some");
+        builder.CreateBr(mergeBB);
+        someBB = builder.GetInsertBlock();
+
+        builder.SetInsertPoint(noneBB);
+        llvm::Value* noneResult = builder.CreateCall(noneFn, {}, "none");
+        builder.CreateBr(mergeBB);
+        noneBB = builder.GetInsertBlock();
+
+        builder.SetInsertPoint(mergeBB);
+        llvm::PHINode* phi = builder.CreatePHI(llvm::PointerType::getUnqual(context), 2, "upgraded");
+        phi->addIncoming(someResult, someBB);
+        phi->addIncoming(noneResult, noneBB);
+        return phi;
     }
 
     // Body codegen for a synthesized `EnumName::VariantName` constructor
@@ -3037,6 +3300,16 @@ private:
             auto vecElemIt = namedValueVectorElementType.find(member.lhs->text);
             if (vecElemIt != namedValueVectorElementType.end()) {
                 return compileVectorMethodCall(expr, member, vecElemIt->second);
+            }
+            // `weak T` (LANGUAGE_GAPS.md #7) - checked here for the same
+            // reason: a weak-bound name is deliberately never in
+            // namedValueStructType (inferStructTypeName excludes Weak),
+            // so it can only ever reach this special-cased path, never
+            // the ordinary struct-method path below - `.upgrade()` is
+            // the only thing a weak reference supports.
+            auto weakTypeIt = namedValueWeakType.find(member.lhs->text);
+            if (weakTypeIt != namedValueWeakType.end()) {
+                return compileWeakMethodCall(expr, member, weakTypeIt->second);
             }
         }
 
@@ -3576,7 +3849,8 @@ private:
     bool compilePatternTest(const Pattern* pattern, llvm::Value* value,
                              const std::optional<std::string>& enumTypeName,
                              llvm::BasicBlock* onSuccess, llvm::BasicBlock* onFailure,
-                             llvm::Function* currentFn) {
+                             llvm::Function* currentFn,
+                             const std::optional<std::string>& structTypeName = std::nullopt) {
         switch (pattern->kind) {
             case PatternKind::Wildcard: {
                 builder.CreateBr(onSuccess);
@@ -3584,6 +3858,11 @@ private:
             }
             case PatternKind::Binding: {
                 namedValues[pattern->text] = value;
+                // `value`'s static type, if known - what lets a bound
+                // payload variable (`Option::Some(f) => f.v`) be field-
+                // accessed or re-matched, not just passed around opaquely.
+                if (structTypeName) namedValueStructType[pattern->text] = *structTypeName;
+                else if (enumTypeName) namedValueEnumType[pattern->text] = *enumTypeName;
                 builder.CreateBr(onSuccess);
                 return true;
             }
@@ -3661,6 +3940,7 @@ private:
 
                 llvm::Value* payloadPtr = builder.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(context), value, 8);
                 auto& fieldEnumTypes = enumVariantFieldEnumType[*enumTypeName][variantName];
+                auto& fieldStructTypes = enumVariantFieldStructType[*enumTypeName][variantName];
 
                 for (size_t i = 0; i < pattern->subPatterns.size(); ++i) {
                     llvm::Type* fieldLLVMTy = payloadTy->getElementType(static_cast<unsigned>(i));
@@ -3670,7 +3950,8 @@ private:
                     bool isLastField = (i + 1 == pattern->subPatterns.size());
                     llvm::BasicBlock* fieldSuccessBB = isLastField ? onSuccess : llvm::BasicBlock::Create(context, "match.field", currentFn);
                     std::optional<std::string> fieldEnumName = (i < fieldEnumTypes.size()) ? fieldEnumTypes[i] : std::nullopt;
-                    if (!compilePatternTest(pattern->subPatterns[i], fieldVal, fieldEnumName, fieldSuccessBB, onFailure, currentFn)) return false;
+                    std::optional<std::string> fieldStructName = (i < fieldStructTypes.size()) ? fieldStructTypes[i] : std::nullopt;
+                    if (!compilePatternTest(pattern->subPatterns[i], fieldVal, fieldEnumName, fieldSuccessBB, onFailure, currentFn, fieldStructName)) return false;
                     if (!isLastField) builder.SetInsertPoint(fieldSuccessBB);
                 }
                 return true;
@@ -3735,10 +4016,14 @@ private:
                 ? llvm::BasicBlock::Create(context, "match.no_match")
                 : llvm::BasicBlock::Create(context, "match.next");
 
-            // Per-arm namedValues scoping (mirrors item #10's Block fix) -
-            // this arm's pattern bindings must not leak into the NEXT
-            // arm's test/body, nor past the whole match.
+            // Per-arm scoping (mirrors item #10's Block fix) - this arm's
+            // pattern bindings (both the value AND, since a bound payload
+            // can now be struct/enum-typed - see enumVariantFieldStructType
+            // - its static type) must not leak into the NEXT arm's test/
+            // body, nor past the whole match.
             auto savedNamedValues = namedValues;
+            auto savedNamedValueStructType = namedValueStructType;
+            auto savedNamedValueEnumType = namedValueEnumType;
 
             if (!compilePatternTest(arm.pattern, scrutinee, enumNameOpt, bodyBB, nextBB, theFunction)) return nullptr;
 
@@ -3750,6 +4035,8 @@ private:
             llvm::BasicBlock* armEndBB = builder.GetInsertBlock();
             blockTerminated = false;
             namedValues = savedNamedValues;
+            namedValueStructType = savedNamedValueStructType;
+            namedValueEnumType = savedNamedValueEnumType;
             if (!armTerminated) incoming.push_back({armV, armEndBB});
 
             theFunction->insert(theFunction->end(), nextBB);
@@ -4015,35 +4302,56 @@ private:
         return builder.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(context), basePtr, index * 8);
     }
 
-    // A `shared`-allocated block is one contiguous malloc: an 8-byte i64
-    // strong-count header immediately followed by the payload struct -
-    // the payload pointer (what every existing struct code path
-    // actually holds and operates on) is always exactly 8 bytes past
-    // the real (malloc'd) header pointer.
+    // A `shared`-allocated block is one contiguous malloc: a 16-byte
+    // { i64 strongCount, i64 weakCount } header immediately followed by
+    // the payload struct (LANGUAGE_GAPS.md #7's weak-pointer work grew
+    // this from a bare 8-byte strongCount, once `weak` needed a second
+    // count alongside it) - the payload pointer (what every existing
+    // struct code path actually holds and operates on) is always
+    // exactly 16 bytes past the real (malloc'd) header pointer.
     llvm::Value* sharedHeaderPtr(llvm::Value* payloadPtr) {
-        return builder.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(context), payloadPtr, -8);
+        return builder.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(context), payloadPtr, -16);
+    }
+    llvm::Value* sharedWeakCountPtr(llvm::Value* headerPtr) {
+        return builder.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(context), headerPtr, 8);
     }
 
-    // Decrements `name`'s strong count and frees the whole block (header
-    // + payload, one malloc) if it just reached zero. Emits real
-    // conditional control flow (new "shared.free"/"shared.cont" blocks)
-    // right at the current insert point, then leaves the builder
-    // positioned in "shared.cont" so subsequent code (another drop, or
-    // the actual return/branch instruction) chains after it correctly.
+    // Decrements `name`'s strong count. The PAYLOAD becomes unsafe to
+    // read the moment strong hits zero (matches this project's existing
+    // shared-drop contract exactly), but the HEADER BLOCK itself is only
+    // actually free()'d once weakCount is ALSO zero - a `weak` reference
+    // has to be able to read strongCount even after it hits zero (to
+    // know upgrade() must correctly return None, not read freed memory).
+    // If a weak reference was ever taken (weakCount > 0) and outlives
+    // the last strong owner, the 16-byte header block is a real,
+    // deliberate small leak - this pass has no automatic weak-drop
+    // tracking (weakCount only ever increments, see compileWeakNew) - a
+    // named, honest scope cut, not silently different from the "worst
+    // case is always a leak" bar every other smart pointer in this file
+    // is already held to. Emits real conditional control flow ("shared.
+    // free"/"shared.cont" blocks) right at the current insert point,
+    // then leaves the builder positioned in "shared.cont" so subsequent
+    // code (another drop, or the actual return/branch instruction)
+    // chains after it correctly.
     void dropSharedLocal(const std::string& name) {
         auto it = namedValues.find(name);
         if (it == namedValues.end()) return;
         llvm::Value* payloadPtr = it->second;
         llvm::Value* headerPtr = sharedHeaderPtr(payloadPtr);
-        llvm::Value* strong = builder.CreateLoad(llvm::Type::getInt64Ty(context), headerPtr, name + ".strong");
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(context);
+        llvm::Value* strong = builder.CreateLoad(i64Ty, headerPtr, name + ".strong");
         llvm::Value* newStrong = builder.CreateSub(strong, builder.getInt64(1));
         builder.CreateStore(newStrong, headerPtr);
-        llvm::Value* isZero = builder.CreateICmpEQ(newStrong, builder.getInt64(0));
+        llvm::Value* strongIsZero = builder.CreateICmpEQ(newStrong, builder.getInt64(0));
+        llvm::Value* weakCountPtr = sharedWeakCountPtr(headerPtr);
+        llvm::Value* weak = builder.CreateLoad(i64Ty, weakCountPtr, name + ".weak");
+        llvm::Value* weakIsZero = builder.CreateICmpEQ(weak, builder.getInt64(0));
+        llvm::Value* shouldFree = builder.CreateAnd(strongIsZero, weakIsZero);
 
         llvm::Function* theFunction = builder.GetInsertBlock()->getParent();
         llvm::BasicBlock* freeBB = llvm::BasicBlock::Create(context, "shared.free", theFunction);
         llvm::BasicBlock* contBB = llvm::BasicBlock::Create(context, "shared.cont", theFunction);
-        builder.CreateCondBr(isZero, freeBB, contBB);
+        builder.CreateCondBr(shouldFree, freeBB, contBB);
 
         builder.SetInsertPoint(freeBB);
         llvm::FunctionCallee freeFn = module.getOrInsertFunction("free",
@@ -4572,6 +4880,7 @@ private:
         auto savedClosureSig = namedValueClosureSignature;
         auto savedSharedType = namedValueSharedType;
         auto savedEnumType = namedValueEnumType;
+        auto savedWeakType = namedValueWeakType;
         auto savedSharedScopeStack = sharedScopeStack;
         auto savedLoopSharedScopeDepth = loopSharedScopeDepth;
         auto savedOwnScopeStack = ownScopeStack;
@@ -4589,6 +4898,7 @@ private:
             namedValueClosureSignature = savedClosureSig;
             namedValueSharedType = savedSharedType;
             namedValueEnumType = savedEnumType;
+            namedValueWeakType = savedWeakType;
             sharedScopeStack = savedSharedScopeStack;
             loopSharedScopeDepth = savedLoopSharedScopeDepth;
             ownScopeStack = savedOwnScopeStack;
@@ -4605,6 +4915,7 @@ private:
         namedValueClosureSignature.clear();
         namedValueSharedType.clear();
         namedValueEnumType.clear();
+        namedValueWeakType.clear();
         sharedScopeStack.clear();
         loopSharedScopeDepth.clear();
         ownScopeStack.clear();
@@ -4630,6 +4941,7 @@ private:
             if (savedInterfaceType.count(name)) namedValueInterfaceType[name] = savedInterfaceType[name];
             if (savedClosureSig.count(name)) namedValueClosureSignature[name] = savedClosureSig[name];
             if (savedEnumType.count(name)) namedValueEnumType[name] = savedEnumType[name];
+            if (savedWeakType.count(name)) namedValueWeakType[name] = savedWeakType[name];
         }
 
         for (auto& p : expr.params) {
@@ -4756,6 +5068,7 @@ public:
         namedValueClosureSignature.clear();
         namedValueSharedType.clear();
         namedValueEnumType.clear();
+        namedValueWeakType.clear();
         sharedScopeStack.clear();
         loopSharedScopeDepth.clear();
         ownScopeStack.clear();

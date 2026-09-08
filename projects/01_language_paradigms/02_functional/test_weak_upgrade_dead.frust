@@ -1,0 +1,28 @@
+// LANGUAGE_GAPS.md #7: after the last strong reference is dropped,
+// `.upgrade()` must return `None`, never a stale/freed-memory read.
+// `s`'s own scope-exit drop fires at make_weak()'s own natural end
+// (its block's tail is `w`, not `s`, so `s` - a DIFFERENT name - is
+// still correctly dropped there) - `w` survives past it via
+// make_weak()'s declared `-> weak Foo` return type. Hand-predicted: -1
+// (the None branch).
+struct Foo { v: i64 }
+
+enum Option<T> {
+    Some(T),
+    None
+}
+
+fn make_weak() -> weak Foo = {
+    let s: Foo = shared Foo { v: 42 };
+    let w: Foo = weak s;
+    w
+}
+
+fn main() -> i64 = {
+    let w: Foo = make_weak();
+    let result: Option<Foo> = w.upgrade();
+    match (result) {
+        Option::Some(f) => f.v
+        Option::None => -1
+    }
+}

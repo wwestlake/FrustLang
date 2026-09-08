@@ -638,8 +638,10 @@ separate, smaller follow-ons if ever needed, not silently folded in.
 
 ## 7. `own`/`shared`/`weak` smart pointers (real reference counting / move semantics)
 
-**Status: PARTIAL - `own`'s automatic drop landed 2026-09-08 for a real
-but deliberately narrow scope; `weak` remains entirely unimplemented.**
+**Status: DONE (2026-09-08).** `own`'s automatic drop and `weak`'s
+control-block/`.upgrade()` mechanism both landed this session (see the
+`weak` write-up below, after `own`'s), each for a real but deliberately
+narrow scope - closing out the last open item in this document.
 The highest-risk item in this whole document by its own original
 reasoning (below) - a wrong answer here is a real double-free, not just
 a missing feature - so the scope stayed strictly to what could be
@@ -725,6 +727,90 @@ confirm this empirically too.
 Full `frust_plugin_host` regression sweep (17 examples) and a JUCE IDE
 Debug rebuild + launch smoke test both clean.
 
+### `weak` implementation (2026-09-08)
+
+Needed a control block that can outlive the payload - `shared`'s header
+grows from 8 bytes (`i64 strongCount`) to 16 (`{ i64 strongCount, i64
+weakCount }`). `weak T` construction (`compileWeakNew`) increments ONLY
+`weakCount` - the payload itself is untouched, no clone/move. The
+PAYLOAD still frees the moment `strongCount` hits 0 (a `.upgrade()`
+after that point must never read freed payload bytes) - but
+`dropSharedLocal` now checks BOTH counts before freeing the 16-byte
+HEADER block itself, since a surviving `weak` reference still needs it
+to observe that `strongCount` is now 0. `.upgrade()`
+(`compileWeakMethodCall`) returns a REAL `Option<T>` rather than ever
+handing back a possibly-dangling pointer: loads `strongCount`, branches
+on `> 0`, and calls the SAME synthesized `Option::Some`/`Option::None`
+constructor functions this document's real-enum work (item #5) already
+produces, via `getOrCreateMonomorphizedFunction` - reentrant-safe (a
+full `namedValue*`/`sharedScopeStack`/`ownScopeStack`/builder-IP
+save-restore around it, mirroring every other reentrant monomorphization
+site in this file).
+
+**Named, deliberate scope cut** (worst case is always a LEAK, never a
+double-free or use-after-free - same bar `own`/`shared` were each held
+to): no automatic weak-drop tracking in this pass - `weakCount` only
+ever increments, never decrements at a `weak` local's own scope exit. A
+`weak` reference that outlives its enclosing scope without being
+explicitly consumed leaves the 16-byte header block permanently
+allocated (never the payload, which stays correctly bounded by
+`strongCount` alone) - a real, bounded leak, same call-boundary-shaped
+limitation `shared` already has.
+
+**Real bug found and fixed while verifying this**: `.upgrade()`'s
+target-type parameter was originally passed as `const std::string&`,
+aliased directly to a live node inside the `namedValueWeakType` map (the
+receiver's own weak-type record). The first of `.upgrade()`'s two
+reentrant monomorphization calls (`Option::Some<T>`) compiles that
+variant constructor's body, which - like every function body - clears
+`namedValueWeakType` as part of its own local-scope reset; that clear
+invalidated the still-referenced map node mid-flight. The reference
+dangled silently through the first call (already evaluated before the
+clear) but was read again constructing the SECOND call's argument
+(`Option::None<T>`), now pointing at freed memory - manifesting as a
+genuine hang, not a crash: the Windows Debug CRT heap allocator
+deadlocked inside that read (confirmed directly - a live `Microsoft
+Visual C++ Runtime Library` "abort() has been called" dialog sat
+blocked behind the process, near-zero CPU across a 20-second timeout,
+found by inspecting the hidden window via UI Automation). Fixed by
+taking the parameter BY VALUE (`std::string targetTypeName`, a real
+copy made before any nested call can invalidate the source) instead of
+by reference.
+
+**A second, independent bug surfaced by the same test**: binding an
+enum variant's payload in a `match` arm (`PatternKind::Binding` in
+`compilePatternTest`) only ever recorded the bound name's raw LLVM
+value (`namedValues`), never its STATIC type - so `Option::Some(f) =>
+f.v` (a struct-typed payload) failed with "codegen does not support
+this member-access expression yet", `f` never having been registered in
+`namedValueStructType`. This was a pre-existing gap in this document's
+original enum/match work (items #2-3), just never exercised before
+(`test_enum.frust`/`test_match.frust` only ever bind primitive- and
+nested-enum-typed payloads, never a struct-typed one immediately
+field-accessed). Fixed by adding `enumVariantFieldStructType` (mirrors
+the existing `enumVariantFieldEnumType` table exactly, including through
+a monomorphized generic's substituted concrete type - e.g. `Option<Foo>`'s
+`Some(T)` resolves `T`→`Foo` here even though the sibling enum-field
+table deliberately leaves a substituted field unresolved), threading a
+new `structTypeName` parameter through `compilePatternTest`'s recursion
+so a `Binding` pattern registers `namedValueStructType`/
+`namedValueEnumType` for whatever type its bound value statically is.
+Also fixed a matching, previously-latent leak this surfaced:
+`compileMatch`'s per-arm scoping only ever saved/restored `namedValues`,
+never `namedValueStructType`/`namedValueEnumType` - now all three are
+saved/restored per arm, matching item #10's own Block-scoping fix.
+
+Verified: `test_weak_upgrade_live.frust` (a live `shared`, `weak` taken,
+`.upgrade()` while the strong owner is still alive → hand-predicted
+`42`, reading the upgraded `Some(Foo)`'s own `.v` field) and
+`test_weak_upgrade_dead.frust` (the strong owner dropped inside a helper
+function before `.upgrade()` runs → hand-predicted `-1`, the `None`
+branch) both match exactly. Full prior-item regression suite (every
+`test_*.frust` positive and negative case, items 1-7) re-run clean
+against both the 16-byte header change and the new struct-field-binding
+fix. Full `frust_plugin_host` regression sweep (17 examples) and a JUCE
+IDE Debug rebuild + launch smoke test both clean.
+
 ### Original `shared` implementation (2026-08-23, kept for the record)
 
 Deliberately scoped down from "full" after tracing a real risk: `own`
@@ -776,11 +862,10 @@ shipped:
   to each drop point). Full `frust_plugin_host` regression sweep (14
   examples) and JUCE IDE rebuild both clean.
 
-`own`'s automatic-free and `weak` (needs a genuinely different
-mechanism - a control block that can outlive the payload) both remain
-real, separate, deliberately-not-attempted follow-ons - `own`
-construction is unchanged from its prior heap-malloc-only behavior;
-`weak` construction is still rejected with a clear error.
+`own`'s automatic-free and `weak` (a control block that outlives the
+payload) were, at the time this paragraph was written, real, separate,
+deliberately-not-attempted follow-ons - both have since landed; see the
+write-ups above.
 
 ## 8. Multi-file plugins (`frust_plugin_host`)
 
