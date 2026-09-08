@@ -44,6 +44,28 @@ PodMetadata PodMetadataJson::fromJson(const juce::var& jsonVar) {
                 }
             }
         }
+
+        if (obj->hasProperty("native") && obj->getProperty("native").isObject()) {
+            auto* nativeObj = obj->getProperty("native").getDynamicObject();
+            const auto& properties = nativeObj->getProperties();
+            for (int i = 0; i < properties.size(); ++i) {
+                const auto target = properties.getName(i).toString();
+                const auto targetValue = properties.getValueAt(i);
+                if (!targetValue.isObject()) continue;
+
+                NativeTargetMetadata nativeTarget;
+                nativeTarget.target = target.toStdString();
+                auto* targetObj = targetValue.getDynamicObject();
+                const auto readStringArray = [&targetObj](const juce::Identifier& key, std::vector<std::string>& out) {
+                    const auto value = targetObj->getProperty(key);
+                    if (!value.isArray()) return;
+                    for (const auto& item : *value.getArray()) out.push_back(item.toString().toStdString());
+                };
+                readStringArray("libraries", nativeTarget.libraries);
+                readStringArray("systemLibraries", nativeTarget.systemLibraries);
+                metadata.nativeTargets.push_back(std::move(nativeTarget));
+            }
+        }
         
         if (obj->hasProperty("workspace") && obj->getProperty("workspace").isObject()) {
             metadata.isWorkspace = true;
@@ -96,6 +118,21 @@ juce::var PodMetadataJson::toJson(const PodMetadata& metadata) {
         depsArray.add(toJson(dep));
     }
     obj->setProperty("dependencies", depsArray);
+
+    if (!metadata.nativeTargets.empty()) {
+        auto* nativeObj = new juce::DynamicObject();
+        for (const auto& nativeTarget : metadata.nativeTargets) {
+            auto* targetObj = new juce::DynamicObject();
+            juce::Array<juce::var> libraries;
+            for (const auto& library : nativeTarget.libraries) libraries.add(juce::String(library));
+            targetObj->setProperty("libraries", libraries);
+            juce::Array<juce::var> systemLibraries;
+            for (const auto& library : nativeTarget.systemLibraries) systemLibraries.add(juce::String(library));
+            targetObj->setProperty("systemLibraries", systemLibraries);
+            nativeObj->setProperty(nativeTarget.target, juce::var(targetObj));
+        }
+        obj->setProperty("native", juce::var(nativeObj));
+    }
     
     if (metadata.isWorkspace) {
         auto* wsObj = new juce::DynamicObject();

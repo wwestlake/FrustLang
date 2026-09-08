@@ -3,6 +3,16 @@
 
 namespace frate {
 
+namespace {
+bool isSafeRelativeNativePath(const juce::String& path) {
+    return path.isNotEmpty()
+        && !juce::File::isAbsolutePath(path)
+        && !path.contains("..")
+        && !path.startsWithChar('\\')
+        && !path.startsWithChar('/');
+}
+}
+
 bool FratePodBuilder::scaffoldPod(const juce::File& targetDir, const PodMetadata& metadata) {
     if (!targetDir.exists()) {
         if (!targetDir.createDirectory()) return false;
@@ -57,6 +67,19 @@ juce::File FratePodBuilder::packagePod(const juce::File& podDir) {
     for (const auto& file : sourceFiles) {
         juce::String relativePath = file.getRelativePathFrom(podDir);
         builder.addFile(file, 9, relativePath);
+    }
+
+    // Native files are opt-in: only artifacts explicitly named by frate.json
+    // become part of a pod package. That keeps build outputs and arbitrary
+    // files out of the archive while preserving target-specific libraries.
+    for (const auto& nativeTarget : meta.nativeTargets) {
+        for (const auto& library : nativeTarget.libraries) {
+            const juce::String relativePath(library);
+            if (!isSafeRelativeNativePath(relativePath)) return juce::File();
+            const juce::File artifact = podDir.getChildFile(relativePath);
+            if (!artifact.existsAsFile()) return juce::File();
+            builder.addFile(artifact, 9, relativePath);
+        }
     }
     
     std::unique_ptr<juce::FileOutputStream> outStream = frpodFile.createOutputStream();

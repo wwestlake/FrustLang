@@ -11,6 +11,14 @@ struct PodDependency {
     std::string version;
 };
 
+// Native artifacts are part of a pod's public package contract. The target
+// key keeps a Windows library from being considered on a different target.
+struct NativeTargetMetadata {
+    std::string target;
+    std::vector<std::string> libraries;
+    std::vector<std::string> systemLibraries;
+};
+
 struct PodMetadata {
     std::string name;
     std::string version;
@@ -18,6 +26,7 @@ struct PodMetadata {
     std::string description;
     std::vector<std::string> exports;
     std::vector<PodDependency> dependencies;
+    std::vector<NativeTargetMetadata> nativeTargets;
 
     // Optional `::`-separated qualification path a consumer's imported
     // declarations get prefixed with (e.g. "frust::core"), instead of
