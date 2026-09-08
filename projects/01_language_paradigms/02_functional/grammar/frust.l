@@ -91,6 +91,10 @@ ID     {IDCHAR}({IDCHAR}|{DIGIT})*
 "raw"        { return Parser::make_RAW(loc_); }
 "true"       { return Parser::make_TRUE(loc_); }
 "false"      { return Parser::make_FALSE(loc_); }
+"enum"       { return Parser::make_ENUM(loc_); }
+"match"      { return Parser::make_MATCH(loc_); }
+
+"_"  { return Parser::make_UNDERSCORE(loc_); }
 
 {DIGIT}+"."{DIGIT}+ { return Parser::make_FLOAT_LITERAL(std::strtod(yytext, nullptr), loc_); }
 {DIGIT}+            { return Parser::make_INT_LITERAL(std::strtoll(yytext, nullptr, 10), loc_); }

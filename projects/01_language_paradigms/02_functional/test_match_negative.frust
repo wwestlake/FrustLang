@@ -1,0 +1,19 @@
+// LANGUAGE_GAPS.md's algebraic-data-types work, negative case: a `match`
+// covering only 2 of Shape's 3 variants with no `_` wildcard must be a
+// real compile error ("not exhaustive"), not a silent miscompile.
+enum Shape {
+    Circle(f64),
+    Rect(f64, f64),
+    Point
+}
+
+fn classify(s: Shape) -> i64 = {
+    match (s) {
+        Shape::Circle(r) => 1
+        Shape::Rect(w, h) => 2
+    }
+}
+
+fn main() -> i64 = {
+    classify(Shape::Point)
+}

@@ -1,0 +1,61 @@
+// LANGUAGE_GAPS.md's generic-impl-methods work: `impl<T> Box<T> { ... }`
+// methods, monomorphized lazily per concrete instantiation like generic
+// free functions. Hand-predicted: two DIFFERENT instantiations of the
+// same generic struct's method (Box<i64>/Box<f64>) prove real per-type
+// monomorphization, not one hardcoded case; a method with a T-typed
+// PARAMETER (not just return) proves substitution reaches both
+// directions; a generic ENUM's method proves the mechanism works
+// identically there (self.get() on Box<T> vs match (self) on Option2<T>).
+struct Box<T> {
+    value: T
+}
+
+impl<T> Box<T> {
+    fn get(self) -> T = {
+        self.value
+    }
+    fn replace(self, v: T) -> Box<T> = {
+        let result: Box<T> = Box { value: v };
+        result
+    }
+}
+
+enum Option2<T> {
+    Some(T),
+    None
+}
+
+impl<T> Option2<T> {
+    fn is_some(self) -> bool = {
+        match (self) {
+            Option2::Some(x) => true
+            Option2::None => false
+        }
+    }
+}
+
+fn main() -> i64 = {
+    let b1: Box<i64> = Box { value: 42 };
+    let v1: i64 = b1.get();
+
+    let b2: Box<f64> = Box { value: 3.5 };
+    let v2: f64 = b2.get();
+
+    let b3: Box<i64> = b1.replace(100);
+    let v3: i64 = b3.get();
+
+    let o1: Option2<i64> = Option2::Some::<i64>(7);
+    let has1: bool = o1.is_some();
+
+    let o2: Option2<i64> = Option2::None::<i64>();
+    let has2: bool = o2.is_some();
+
+    let has1_i: i64 = if has1 == true { 1 } else { 0 };
+    let has2_i: i64 = if has2 == true { 1 } else { 0 };
+    // `as` casting isn't implemented for ANY type combo yet (confirmed
+    // separately, unrelated to generics - a real, separate gap this
+    // pass found but didn't fix) - compared instead of cast to i64.
+    let v2ok: i64 = if v2 == 3.5 { 1 } else { 0 };
+
+    v1 + v3 + v2ok * 10 + has1_i * 1000 + has2_i * 1000
+}

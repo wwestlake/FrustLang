@@ -1,0 +1,51 @@
+// LANGUAGE_GAPS.md #5, re-verified after the flag-struct -> real-enum
+// rewrite (06_frust_library/core/src/result.fr / option.fr). This file
+// inlines the exact enum declarations those files now contain (frust_lang
+// has no pod-import wiring exercised in this direct-run test harness) and
+// exercises both the Ok/Err and Some/None branches via `match`, proving
+// the actual rewritten source is correct Frust, not just a paraphrase.
+enum Result<T, E> {
+    Ok(T),
+    Err(E)
+}
+
+enum Option<T> {
+    Some(T),
+    None
+}
+
+fn safe_divide(a: i64, b: i64) -> Result<i64, String> = {
+    if b == 0 {
+        Result::Err::<i64, String>("division by zero")
+    } else {
+        Result::Ok::<i64, String>(a / b)
+    }
+}
+
+fn main() -> i64 = {
+    let ok_case: Result<i64, String> = safe_divide(10, 2);
+    let ok_val: i64 = match (ok_case) {
+        Result::Ok(v) => v
+        Result::Err(msg) => -1
+    };
+
+    let err_case: Result<i64, String> = safe_divide(10, 0);
+    let err_val: i64 = match (err_case) {
+        Result::Ok(v) => -1
+        Result::Err(msg) => 99
+    };
+
+    let some_case: Option<i64> = Option::Some::<i64>(42);
+    let some_val: i64 = match (some_case) {
+        Option::Some(v) => v
+        Option::None => -1
+    };
+
+    let none_case: Option<i64> = Option::None::<i64>();
+    let none_val: i64 = match (none_case) {
+        Option::Some(v) => -1
+        Option::None => 7
+    };
+
+    ok_val * 1000 + err_val * 10 + some_val + none_val
+}

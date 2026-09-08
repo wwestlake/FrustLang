@@ -47,6 +47,7 @@ inline bool hasPerform(const Expr* expr) {
     for (auto* s : expr->statements) if (hasPerform(s)) return true;
     for (auto* a : expr->args) if (hasPerform(a)) return true;
     for (auto& hc : expr->handleCases) if (hasPerform(hc.body)) return true;
+    for (auto& arm : expr->matchArms) if (hasPerform(arm.body)) return true;
     return false;
 }
 
@@ -69,6 +70,17 @@ public:
     bool compileProgram(const Program& prog) {
         indexTypeAliases(prog);
         indexStructs(prog); // must precede signature declaration below - param/return types can name a struct
+        indexEnums(prog); // same reason, plus synthesizes variant constructor decls into enumVariantConstructorDecls (below)
+        indexGenericImplTemplates(prog); // LANGUAGE_GAPS.md's generic-impl-methods work - see that function's own comment
+
+        // Every ordinary decl PLUS the synthesized enum-variant-constructor
+        // decls (indexEnums, just above) - folded into one list so the
+        // passes below need no enum-specific special-casing at all; a
+        // constructor is just another Function-kind decl to them. prog
+        // itself is `const Program&`, so this can't be prog.decls directly
+        // pushed into - a separate combined vector instead.
+        std::vector<Decl*> allDecls(prog.decls.begin(), prog.decls.end());
+        for (auto& d : enumVariantConstructorDecls) allDecls.push_back(d.get());
 
         // Synthesize print_f64
         llvm::Constant* formatStr = llvm::ConstantDataArray::getString(context, "%f\n");
@@ -95,7 +107,7 @@ public:
         // only for a concrete instantiation like "identity<i64>") -
         // remember the template here, monomorphize lazily per concrete
         // call site instead (getOrCreateMonomorphizedFunction).
-        for (auto* decl : prog.decls) {
+        for (auto* decl : allDecls) {
             const auto* function = functionFor(*decl);
             if (function && !function->genericParams.empty()) {
                 genericFunctionTemplates[function->name] = function;
@@ -108,11 +120,19 @@ public:
         // only succeed once a signature has been declared. Without this,
         // sibling methods in the same impl block calling each other
         // would be order-dependent.
-        for (auto* decl : prog.decls) {
+        for (auto* decl : allDecls) {
             const auto* function = functionFor(*decl);
             if (function && function->genericParams.empty()) {
                 declareFunctionSignature(*function);
-            } else if (decl->kind == DeclKind::Impl) {
+            } else if (decl->kind == DeclKind::Impl && decl->implDecl->genericParams.empty()) {
+                // A generic impl block's methods (LANGUAGE_GAPS.md's
+                // generic-impl-methods work) are never declared under
+                // their bare "BaseType::method" name - there's no single
+                // real signature for it (a param/return typed `T` isn't a
+                // real type until a concrete receiver supplies one).
+                // indexGenericImplTemplates already remembered the
+                // template; getOrCreateMonomorphizedMethod builds a real
+                // signature lazily per concrete instantiation instead.
                 for (auto* m : decl->implDecl->methods) declareFunctionSignature(*m);
             }
         }
@@ -147,7 +167,7 @@ public:
         // getOrCreateMonomorphizedFunction's own comment).
         {
             std::vector<std::pair<std::string, std::vector<std::string>>> genericCallSites;
-            for (auto* decl : prog.decls) {
+            for (auto* decl : allDecls) {
                 const auto* function = functionFor(*decl);
                 if (function && function->genericParams.empty() && function->body) {
                     collectGenericCallSites(function->body, genericCallSites);
@@ -165,12 +185,12 @@ public:
         // Pass 2: fill in (non-generic) bodies. Generic function templates
         // are never compiled under their own bare name - only their
         // monomorphized clones (Pass 1.5, above) are real functions.
-        for (auto* decl : prog.decls) {
+        for (auto* decl : allDecls) {
             const auto* function = functionFor(*decl);
             if (function && function->genericParams.empty()
                 && (function->body != nullptr || function->isExtern)) {
                 if (!compileFunction(*function)) ok = false;
-            } else if (decl->kind == DeclKind::Impl) {
+            } else if (decl->kind == DeclKind::Impl && decl->implDecl->genericParams.empty()) {
                 for (auto* m : decl->implDecl->methods) {
                     if (!compileFunction(*m)) ok = false;
                 }
@@ -312,6 +332,34 @@ private:
     // enclosing scopes.
     std::vector<size_t> loopSharedScopeDepth;
 
+    // `own T { ... }` automatic scope-exit free (LANGUAGE_GAPS.md #7's
+    // remaining piece) - mirrors sharedScopeStack/loopSharedScopeDepth's
+    // shape exactly (same push/pop lifecycle, same Block/Return/Break/
+    // Continue integration points), but tracks a DIFFERENT, narrower set
+    // of names: `own` has exactly one owner and no refcount, so there is
+    // no retain/second-owner story the way `shared` has - a name only
+    // ever enters ownScopeStack when ownValueEscapes (below) can prove,
+    // via a real (if deliberately conservative) AST scan of the rest of
+    // its own directly-enclosing block, that it is never passed as a
+    // call argument, never rebound to another name, and never referenced
+    // at all inside any nested control-flow construct (if/while/loop/
+    // for/match/handle) - only a demonstrably straight-line-local value
+    // gets a real free() here; anything this scan can't rule out stays
+    // permanently un-freed, exactly like `own` already behaved before
+    // this feature existed. Worst case is therefore still always a LEAK,
+    // never a double-free or use-after-free - same bar `shared` itself
+    // was held to.
+    std::vector<std::vector<std::string>> ownScopeStack;
+    std::vector<size_t> loopOwnScopeDepth;
+    // ownValueEscapes needs to scan "the rest of the CURRENT block's
+    // statements, after the `let` being compiled" - the Block case below
+    // sets these two right before compiling each statement (and restores
+    // them around any nested Block's own compile, so a nested block's
+    // own escape-scans see ITS OWN remaining statements, not the
+    // enclosing block's).
+    const std::vector<Expr*>* currentBlockStatements = nullptr;
+    size_t currentBlockStatementIndex = 0;
+
     // `struct Box<T> { ... }` templates (LANGUAGE_GAPS.md #4) - name ->
     // the AST declaration, NOT an LLVM type. indexStructs() does not
     // eagerly create an LLVM struct type for a generic struct's bare
@@ -324,6 +372,87 @@ private:
     // sizeof) works on a monomorphized instantiation with zero further
     // special-casing.
     std::unordered_map<std::string, const StructDecl*> genericStructTemplates;
+
+    // `enum Shape { Circle(f64), Rect(f64, f64), Point }` support -
+    // LANGUAGE_GAPS.md's algebraic-data-types work. Mirrors the struct
+    // machinery above one-to-one rather than a single combined LLVM
+    // aggregate type: a concrete enum value is a malloc'd `{ i64 tag,
+    // <payload bytes> }` block (built by hand in the EnumVariantNew case,
+    // same "header + payload, GEP by hand" technique compileHeapStructLiteral
+    // already uses for shared's strong-count header) - there's no single
+    // LLVM struct type that fits every variant's differently-shaped
+    // payload, so each variant gets its OWN payload struct type instead.
+    //
+    // enumVariantIndex: enum name (mangled if a generic instantiation) ->
+    // variant name -> tag (declaration order).
+    std::unordered_map<std::string, std::unordered_map<std::string, int>> enumVariantIndex;
+    // enumVariantPayloadType: same keys -> that variant's payload fields
+    // as one (unnamed-content, but real) LLVM struct type - what a
+    // payload pointer gets bitcast/GEP'd through to read/write fields.
+    std::unordered_map<std::string, std::unordered_map<std::string, llvm::StructType*>> enumVariantPayloadType;
+    // enumVariantFieldEnumType: same keys -> per-payload-field-index ->
+    // the enum name that field statically is, IF it's a direct reference
+    // to another (non-generic) enum - what lets a `match` pattern nest
+    // through several enum layers in one arm (Node::Pair(Node::Leaf(...),
+    // _)). Named v1 scope cut, mirroring genericStructTemplates' own
+    // "nested generics not substituted" limitation exactly: a payload
+    // field typed as a bare generic parameter (`Some(T)`) is NOT resolved
+    // here (nullopt) - such a field can still be bound directly via a
+    // plain Binding pattern, just not destructured further in one arm.
+    std::unordered_map<std::string, std::unordered_map<std::string, std::vector<std::optional<std::string>>>> enumVariantFieldEnumType;
+    // enumVariantFieldStructType: same keys/shape as enumVariantFieldEnumType,
+    // but for a payload field that's statically a struct - what lets
+    // `Option::Some(f) => f.v` resolve `f`'s struct type so field access
+    // works, including through a substituted generic parameter (`Some(T)`
+    // with T=Foo resolves here even though enumVariantFieldEnumType
+    // deliberately leaves a substituted field unresolved).
+    std::unordered_map<std::string, std::unordered_map<std::string, std::vector<std::optional<std::string>>>> enumVariantFieldStructType;
+    // enumPayloadSize: enum name -> max variant payload byte size, for
+    // sizing the initial malloc (8-byte tag + this).
+    std::unordered_map<std::string, uint64_t> enumPayloadSize;
+    // variable/param name -> enum type name, the enum-typed sibling of
+    // namedValueStructType (same "opaque pointer erases identity, only
+    // the static type ever knew" reasoning).
+    std::unordered_map<std::string, std::string> namedValueEnumType;
+    // `weak T` (LANGUAGE_GAPS.md #7's remaining piece) - variable/param
+    // name -> the concrete struct type name it's a weak reference TO
+    // (same "opaque pointer erases identity" reasoning as
+    // namedValueStructType). A weak-bound name holds the SAME payload
+    // pointer a shared reference to that value would - only this table's
+    // presence marks it as weak rather than a strong owner, so
+    // .upgrade() (compileWeakMethodCall) knows to check strongCount
+    // before ever handing the pointer back, instead of trusting it live.
+    std::unordered_map<std::string, std::string> namedValueWeakType;
+    // `enum Option<T> { Some(T), None }` templates - mirrors
+    // genericStructTemplates exactly: name -> the AST declaration, no
+    // layout ever built for the bare generic name (getOrCreateMonomorphizedEnum
+    // builds it lazily per concrete instantiation).
+    std::unordered_map<std::string, const EnumDecl*> genericEnumTemplates;
+
+    // `impl<T> Box<T> { fn get(self) -> T }` templates - LANGUAGE_GAPS.md's
+    // generic-impl-methods work. Keyed the same way `methods`/
+    // functionDeclsByName already are (mangleMethodName(typeName,
+    // methodName)), but against the BARE (unmonomorphized) type name -
+    // "Box::get", not "Box<i64>::get". The method's own FunctionDecl
+    // doesn't know about the enclosing impl block's generic params at
+    // all (only ImplDecl does), so those are carried alongside it here.
+    struct GenericMethodTemplate {
+        const FunctionDecl* method = nullptr;
+        std::vector<std::string> implGenericParams;
+    };
+    std::unordered_map<std::string, GenericMethodTemplate> genericMethodTemplates;
+    // Synthesized `EnumName::VariantName` constructor FunctionDecls (one
+    // per variant, reusing Result::ok's existing qualified-path-function
+    // convention - LANGUAGE_GAPS.md #5) plus their owned AST storage
+    // (compileProgram has no AstArena of its own - see synthesizeEnumVariantConstructor).
+    // These get folded into compileProgram's ordinary decl passes
+    // (allDecls, below) so a generic variant constructor rides the SAME
+    // turbofish + Pass-1.5 machinery Result::ok already uses, with zero
+    // new call-site handling.
+    std::vector<std::unique_ptr<Decl>> enumVariantConstructorDecls;
+    std::vector<std::unique_ptr<FunctionDecl>> enumVariantConstructorFunctions;
+    std::vector<std::unique_ptr<Expr>> enumVariantConstructorExprs;
+    std::vector<std::unique_ptr<TypeExpr>> enumVariantConstructorTypes;
 
     // `fn identity<T>(x: T) -> T` templates (LANGUAGE_GAPS.md #4's
     // remaining piece) - mirrors genericStructTemplates exactly: name ->
@@ -746,6 +875,317 @@ private:
         }
     }
 
+    // Must precede signature declaration below, same reason as indexStructs
+    // - param/return types can name an enum. Also synthesizes every
+    // variant's `EnumName::VariantName` constructor FunctionDecl here (see
+    // synthesizeEnumVariantConstructor) - LANGUAGE_GAPS.md's algebraic-
+    // data-types work.
+    void indexEnums(const Program& prog) {
+        for (auto* decl : prog.decls) {
+            if (decl->kind != DeclKind::Enum) continue;
+            const EnumDecl& ed = *decl->enumDecl;
+
+            if (!ed.genericParams.empty()) {
+                // Mirrors genericStructTemplates: no layout built for the
+                // bare generic name - getOrCreateMonomorphizedEnum builds
+                // it lazily per concrete instantiation instead.
+                genericEnumTemplates[ed.name] = &ed;
+            } else {
+                auto& variantIndex = enumVariantIndex[ed.name];
+                auto& payloadTypes = enumVariantPayloadType[ed.name];
+                auto& fieldEnumTypes = enumVariantFieldEnumType[ed.name];
+                auto& fieldStructTypes = enumVariantFieldStructType[ed.name];
+                uint64_t maxPayloadSize = 0;
+                for (size_t i = 0; i < ed.variants.size(); ++i) {
+                    const EnumVariant& v = ed.variants[i];
+                    variantIndex[v.name] = static_cast<int>(i);
+                    std::vector<llvm::Type*> llvmFieldTypes;
+                    std::vector<std::optional<std::string>> fieldEnums;
+                    std::vector<std::optional<std::string>> fieldStructs;
+                    for (auto* t : v.payloadTypes) {
+                        llvmFieldTypes.push_back(resolveType(t));
+                        fieldEnums.push_back(enumVariantIndex.count(t->name) ? std::optional<std::string>(t->name) : std::nullopt);
+                        fieldStructs.push_back(structTypes.count(t->name) ? std::optional<std::string>(t->name) : std::nullopt);
+                    }
+                    llvm::StructType* payloadTy = llvm::StructType::create(context, llvmFieldTypes, ed.name + "::" + v.name);
+                    payloadTypes[v.name] = payloadTy;
+                    fieldEnumTypes[v.name] = std::move(fieldEnums);
+                    fieldStructTypes[v.name] = std::move(fieldStructs);
+                    uint64_t size = module.getDataLayout().getTypeAllocSize(payloadTy);
+                    if (size > maxPayloadSize) maxPayloadSize = size;
+                }
+                enumPayloadSize[ed.name] = maxPayloadSize;
+            }
+
+            for (const EnumVariant& variant : ed.variants) {
+                synthesizeEnumVariantConstructor(ed, variant);
+            }
+        }
+    }
+
+    // Builds one `EnumName::VariantName` FunctionDecl (constructor sugar,
+    // mirroring Result::ok/Option::some's existing qualified-path-function
+    // convention exactly - LANGUAGE_GAPS.md #5) and appends it to
+    // enumVariantConstructorDecls so compileProgram's ordinary Pass 0.5/1/
+    // 1.5/2 loops pick it up like any other function - a generic enum's
+    // constructor is generic too (genericParams = the enum's own), so it
+    // rides the EXISTING turbofish + Pass-1.5 monomorphization machinery
+    // with zero new call-site handling. The body is a single
+    // ExprKind::EnumVariantNew node (see that codegen case) - the actual
+    // malloc/tag/payload-store logic isn't expressible as ordinary Frust
+    // source, so it's hand-built there instead of parsed.
+    void synthesizeEnumVariantConstructor(const EnumDecl& ed, const EnumVariant& variant) {
+        auto fn = std::make_unique<FunctionDecl>();
+        fn->name = ed.name + "::" + variant.name;
+        fn->genericParams = ed.genericParams;
+        for (size_t i = 0; i < variant.payloadTypes.size(); ++i) {
+            fn->params.push_back(Param{ "arg" + std::to_string(i), variant.payloadTypes[i], SourceLoc{} });
+        }
+
+        auto returnType = std::make_unique<TypeExpr>();
+        returnType->name = ed.name;
+        for (auto& gp : ed.genericParams) {
+            auto argType = std::make_unique<TypeExpr>();
+            argType->name = gp;
+            returnType->genericArgs.push_back(TypeArg{ false, 0, argType.get() });
+            enumVariantConstructorTypes.push_back(std::move(argType));
+        }
+        fn->returnType = returnType.get();
+        enumVariantConstructorTypes.push_back(std::move(returnType));
+
+        auto body = std::make_unique<Expr>();
+        body->kind = ExprKind::EnumVariantNew;
+        body->text = variant.name;
+        body->typeAnnotation = fn->returnType;
+        for (size_t i = 0; i < variant.payloadTypes.size(); ++i) {
+            auto argExpr = std::make_unique<Expr>();
+            argExpr->kind = ExprKind::Identifier;
+            argExpr->text = "arg" + std::to_string(i);
+            body->args.push_back(argExpr.get());
+            enumVariantConstructorExprs.push_back(std::move(argExpr));
+        }
+        fn->body = body.get();
+        enumVariantConstructorExprs.push_back(std::move(body));
+
+        FunctionDecl* fnPtr = fn.get();
+        enumVariantConstructorFunctions.push_back(std::move(fn));
+
+        auto declWrapper = std::make_unique<Decl>();
+        declWrapper->kind = DeclKind::Function;
+        declWrapper->functionDecl = fnPtr;
+        enumVariantConstructorDecls.push_back(std::move(declWrapper));
+    }
+
+    // Lazily monomorphizes a generic enum's layout the first time a
+    // concrete instantiation is actually needed - mirrors
+    // getOrCreateMonomorphizedStruct exactly. Substitution is the same
+    // flat name->name replacement on a payload field's declared type name
+    // (nested generics not substituted - see enumVariantFieldEnumType's
+    // own comment for the matching, deliberate pattern-nesting scope cut).
+    bool getOrCreateMonomorphizedEnum(const std::string& baseName,
+                                        const std::vector<std::string>& concreteArgNames) {
+        std::string mangled = monomorphizedStructName(baseName, concreteArgNames);
+        if (enumVariantIndex.count(mangled)) return true;
+
+        auto templateIt = genericEnumTemplates.find(baseName);
+        if (templateIt == genericEnumTemplates.end()) {
+            std::cerr << "frust: codegen error: '" << baseName << "' is not a generic enum\n";
+            return false;
+        }
+        const EnumDecl& templateDecl = *templateIt->second;
+        if (templateDecl.genericParams.size() != concreteArgNames.size()) {
+            std::cerr << "frust: codegen error: '" << baseName << "' expects "
+                       << templateDecl.genericParams.size() << " type argument(s), got "
+                       << concreteArgNames.size() << "\n";
+            return false;
+        }
+
+        std::unordered_map<std::string, std::string> substitution;
+        for (size_t i = 0; i < templateDecl.genericParams.size(); ++i) {
+            substitution[templateDecl.genericParams[i]] = concreteArgNames[i];
+        }
+
+        auto& variantIndex = enumVariantIndex[mangled];
+        auto& payloadTypes = enumVariantPayloadType[mangled];
+        auto& fieldEnumTypes = enumVariantFieldEnumType[mangled];
+        auto& fieldStructTypes = enumVariantFieldStructType[mangled];
+        uint64_t maxPayloadSize = 0;
+        for (size_t i = 0; i < templateDecl.variants.size(); ++i) {
+            const EnumVariant& v = templateDecl.variants[i];
+            variantIndex[v.name] = static_cast<int>(i);
+            std::vector<llvm::Type*> llvmFieldTypes;
+            std::vector<std::optional<std::string>> fieldEnums;
+            std::vector<std::optional<std::string>> fieldStructs;
+            for (auto* t : v.payloadTypes) {
+                auto subIt = substitution.find(t->name);
+                llvm::Type* fieldTy = (subIt != substitution.end()) ? resolveTypeByName(subIt->second) : resolveType(t);
+                llvmFieldTypes.push_back(fieldTy);
+                // A substituted (generic-parameter) field isn't resolved to
+                // an enum name here - see this map's own header comment.
+                fieldEnums.push_back((subIt == substitution.end() && enumVariantIndex.count(t->name))
+                    ? std::optional<std::string>(t->name) : std::nullopt);
+                // Unlike fieldEnums above, a substituted field's CONCRETE
+                // type (e.g. T=Foo) is resolved here - this is what lets
+                // `Option::Some(f) => f.v` know `f` is a `Foo` even though
+                // the template only ever wrote `Some(T)`.
+                const std::string& concreteName = (subIt != substitution.end()) ? subIt->second : t->name;
+                fieldStructs.push_back(structTypes.count(concreteName) ? std::optional<std::string>(concreteName) : std::nullopt);
+            }
+            llvm::StructType* payloadTy = llvm::StructType::create(context, llvmFieldTypes, mangled + "::" + v.name);
+            payloadTypes[v.name] = payloadTy;
+            fieldEnumTypes[v.name] = std::move(fieldEnums);
+            fieldStructTypes[v.name] = std::move(fieldStructs);
+            uint64_t size = module.getDataLayout().getTypeAllocSize(payloadTy);
+            if (size > maxPayloadSize) maxPayloadSize = size;
+        }
+        enumPayloadSize[mangled] = maxPayloadSize;
+        return true;
+    }
+
+    // `impl<T> Box<T> { ... }` (LANGUAGE_GAPS.md's generic-impl-methods
+    // work) - remembers each method as a template, keyed by the BARE type
+    // name, mirroring indexStructs'/indexEnums' own "don't eagerly declare
+    // a signature that needs a concrete type to even resolve" convention.
+    // Scoped to plain inherent impls only (interfaceName always empty
+    // here - see the grammar's own comment on why a generic interface
+    // impl isn't attempted in this pass).
+    void indexGenericImplTemplates(const Program& prog) {
+        for (auto* decl : prog.decls) {
+            if (decl->kind != DeclKind::Impl || decl->implDecl->genericParams.empty()) continue;
+            const ImplDecl& impl = *decl->implDecl;
+            for (auto* m : impl.methods) {
+                genericMethodTemplates[mangleMethodName(impl.typeName, m->name)] = GenericMethodTemplate{ m, impl.genericParams };
+            }
+        }
+    }
+
+    // Reverse of monomorphizedStructName - splits "Base<a,b>" back into
+    // ("Base", ["a","b"]). Safe for this codebase's actual scope: a
+    // concrete type ARGUMENT is always a flat type name (resolveType's
+    // own generic-instantiation branch takes `arg.type->name` directly,
+    // never recursing into that argument's OWN genericArgs - a real,
+    // separate, pre-existing scope limit on nested generics, not new
+    // here), so a naive split on the first "<" then top-level "," can't
+    // be fooled by a nested "<...>" that would otherwise need bracket-
+    // depth tracking.
+    static bool splitMonomorphizedName(const std::string& mangled, std::string& baseOut, std::vector<std::string>& argsOut) {
+        auto lt = mangled.find('<');
+        if (lt == std::string::npos || mangled.empty() || mangled.back() != '>') return false;
+        baseOut = mangled.substr(0, lt);
+        std::string argsStr = mangled.substr(lt + 1, mangled.size() - lt - 2);
+        argsOut.clear();
+        size_t start = 0;
+        while (start <= argsStr.size()) {
+            size_t comma = argsStr.find(',', start);
+            if (comma == std::string::npos) { argsOut.push_back(argsStr.substr(start)); break; }
+            argsOut.push_back(argsStr.substr(start, comma - start));
+            start = comma + 1;
+        }
+        return true;
+    }
+
+    // Lazily monomorphizes a generic impl method the first time it's
+    // actually called on a concrete instantiation (compileMethodCall) -
+    // mirrors getOrCreateMonomorphizedFunction exactly, one level up: the
+    // clone's selfTypeName becomes the MANGLED concrete type ("Box<i64>",
+    // not "Box"), so declareFunctionSignature's existing mangleMethodName
+    // call produces exactly the "Box<i64>::get" name compileMethodCall's
+    // plain lookup already expects - zero changes needed to method
+    // dispatch beyond adding this as a fallback when that plain lookup
+    // misses. currentGenericSubstitution carries T -> the concrete arg
+    // through resolveType/resolveStructTypeName exactly like a generic
+    // free function's own monomorphization already does.
+    llvm::Function* getOrCreateMonomorphizedMethod(const std::string& baseTypeName, const std::string& methodName,
+                                                      const std::vector<std::string>& concreteArgNames) {
+        std::string mangledType = monomorphizedStructName(baseTypeName, concreteArgNames);
+        std::string mangledMethod = mangleMethodName(mangledType, methodName);
+        if (llvm::Function* existing = module.getFunction(mangledMethod)) return existing;
+
+        auto templateIt = genericMethodTemplates.find(mangleMethodName(baseTypeName, methodName));
+        if (templateIt == genericMethodTemplates.end()) return nullptr; // not a generic method - caller reports its own "no such method" error
+
+        const GenericMethodTemplate& tmpl = templateIt->second;
+        if (tmpl.implGenericParams.size() != concreteArgNames.size()) {
+            std::cerr << "frust: codegen error: '" << baseTypeName << "' expects "
+                       << tmpl.implGenericParams.size() << " type argument(s), got "
+                       << concreteArgNames.size() << "\n";
+            return nullptr;
+        }
+
+        auto mono = std::make_unique<FunctionDecl>(*tmpl.method);
+        mono->selfTypeName = mangledType;
+        mono->isMethod = true;
+        FunctionDecl* monoPtr = mono.get();
+        monomorphizedFunctionStorage.push_back(std::move(mono));
+
+        // Unlike a generic FREE function (pre-scanned and monomorphized
+        // entirely in Pass 1.5, before any Pass-2 body starts compiling -
+        // see getOrCreateMonomorphizedFunction's own comment on why that
+        // matters), a generic METHOD's concrete instantiation can only be
+        // known once its receiver's STATIC type is known, which in
+        // general needs the caller's own body compilation already under
+        // way (a `let`-bound local's type, say) - so this genuinely IS
+        // called reentrantly, from inside compileMethodCall, itself
+        // called mid-compilation of whatever function is calling this
+        // method. compileFunction unconditionally clears namedValues (and
+        // its sibling side tables) - without saving/restoring around it
+        // here, compiling THIS method's body would wipe out the CALLER's
+        // own in-progress locals. Mirrors compileClosureLiteral's
+        // trampoline save/restore exactly, for the same reason.
+        auto savedIP = builder.saveIP();
+        auto savedNamedValues = namedValues;
+        auto savedStructType = namedValueStructType;
+        auto savedRawPointee = namedValueRawPointeeType;
+        auto savedVectorElem = namedValueVectorElementType;
+        auto savedInterfaceType = namedValueInterfaceType;
+        auto savedClosureSig = namedValueClosureSignature;
+        auto savedSharedType = namedValueSharedType;
+        auto savedEnumType = namedValueEnumType;
+        auto savedWeakType = namedValueWeakType;
+        auto savedSharedScopeStack = sharedScopeStack;
+        auto savedLoopSharedScopeDepth = loopSharedScopeDepth;
+        auto savedOwnScopeStack = ownScopeStack;
+        auto savedLoopOwnScopeDepth = loopOwnScopeDepth;
+        llvm::Type* savedRetType = currentFnRetType;
+        bool savedBlockTerminated = blockTerminated;
+
+        // Real, named limitation mirroring getOrCreateMonomorphizedFunction's
+        // own: NOT reentrant-safe against being triggered from within
+        // ANOTHER generic function/method's own monomorphization (a
+        // generic method's body calling a further generic-arg call) -
+        // currentGenericSubstitution is simply reset, not saved/restored,
+        // same scope cut, same reason.
+        currentGenericSubstitution.clear();
+        for (size_t i = 0; i < tmpl.implGenericParams.size(); ++i) {
+            currentGenericSubstitution[tmpl.implGenericParams[i]] = concreteArgNames[i];
+        }
+
+        // declareFunctionSignature resolves param/return types via
+        // resolveType, which consults currentGenericSubstitution - must
+        // run AFTER the substitution is set up above, not before.
+        declareFunctionSignature(*monoPtr);
+        llvm::Function* result = compileFunction(*monoPtr);
+
+        currentGenericSubstitution.clear();
+        builder.restoreIP(savedIP);
+        namedValues = savedNamedValues;
+        namedValueStructType = savedStructType;
+        namedValueRawPointeeType = savedRawPointee;
+        namedValueVectorElementType = savedVectorElem;
+        namedValueInterfaceType = savedInterfaceType;
+        namedValueClosureSignature = savedClosureSig;
+        namedValueSharedType = savedSharedType;
+        namedValueEnumType = savedEnumType;
+        namedValueWeakType = savedWeakType;
+        sharedScopeStack = savedSharedScopeStack;
+        loopSharedScopeDepth = savedLoopSharedScopeDepth;
+        ownScopeStack = savedOwnScopeStack;
+        loopOwnScopeDepth = savedLoopOwnScopeDepth;
+        currentFnRetType = savedRetType;
+        blockTerminated = savedBlockTerminated;
+        return result;
+    }
+
     static std::string monomorphizedStructName(const std::string& baseName,
                                                  const std::vector<std::string>& concreteArgNames) {
         std::string mangled = baseName + "<";
@@ -879,6 +1319,59 @@ private:
     // *be* a struct in v1 are covered; everything else (nested Member,
     // struct-returning Call) is deliberately out of scope for this pass and
     // returns nullopt, same as it already falls through to "unsupported".
+    // A method-call expression's (`x.method(...)`) result type - shared by
+    // inferStructTypeName/inferEnumTypeName below, since the logic to find
+    // it is identical between them (only the final resolve call differs).
+    // Was previously not handled AT ALL by either (a real, pre-existing
+    // gap for ordinary non-generic methods too, not new here - found
+    // while wiring up generic-impl-methods, closed for both at once): a
+    // method's return type is looked up via `methods` if it's already a
+    // real compiled function, or via genericMethodTemplates with a
+    // temporarily-established substitution (mirroring the explicit-
+    // generic-arg Call branch just above/below - same proven pattern,
+    // not a new mechanism) if it's a not-yet-monomorphized generic method.
+    std::optional<std::string> inferMethodCallResultType(const Expr* expr, bool wantEnum) {
+        if (!expr || expr->kind != ExprKind::Call || !expr->lhs || expr->lhs->kind != ExprKind::Member) return std::nullopt;
+        const Expr& member = *expr->lhs;
+        auto receiverType = inferStructTypeName(member.lhs);
+        if (!receiverType) receiverType = inferEnumTypeName(member.lhs);
+        if (!receiverType) return std::nullopt;
+
+        // A monomorphized receiver's method - even one ALREADY compiled
+        // (methods[mangled] would already have an entry) - must go
+        // through the substitution-aware genericMethodTemplates path
+        // here, not the plain methods[] lookup below: getOrCreateMonomorphizedMethod's
+        // clone is a SHALLOW copy of its template, so methodDecl->returnType
+        // still points at the template's own shared, UNSUBSTITUTED
+        // TypeExpr (e.g. "Box<T>", not "Box<i64>") - resolving that
+        // directly, outside a substitution window, is exactly the bug
+        // getOrCreateMonomorphizedMethod's own arg-coercion fix already
+        // had to work around once (see compileMethodCall's own comment).
+        std::string base;
+        std::vector<std::string> concreteArgs;
+        if (splitMonomorphizedName(*receiverType, base, concreteArgs)) {
+            auto tmplIt = genericMethodTemplates.find(mangleMethodName(base, member.text));
+            if (tmplIt != genericMethodTemplates.end() && tmplIt->second.implGenericParams.size() == concreteArgs.size()) {
+                auto saved = currentGenericSubstitution;
+                currentGenericSubstitution.clear();
+                for (size_t i = 0; i < concreteArgs.size(); ++i) currentGenericSubstitution[tmplIt->second.implGenericParams[i]] = concreteArgs[i];
+                auto result = wantEnum ? resolveEnumTypeName(tmplIt->second.method->returnType) : resolveStructTypeName(tmplIt->second.method->returnType);
+                currentGenericSubstitution = saved;
+                return result;
+            }
+        }
+
+        // Not a generic-impl method (or no template found) - an ordinary
+        // non-generic method's already-declared, never-substituted
+        // returnType is safe to resolve directly.
+        std::string mangled = mangleMethodName(*receiverType, member.text);
+        auto methodIt = methods.find(mangled);
+        if (methodIt != methods.end()) {
+            return wantEnum ? resolveEnumTypeName(methodIt->second->returnType) : resolveStructTypeName(methodIt->second->returnType);
+        }
+        return std::nullopt;
+    }
+
     std::optional<std::string> inferStructTypeName(const Expr* expr) {
         if (!expr) return std::nullopt;
         if (expr->kind == ExprKind::Identifier) {
@@ -890,12 +1383,19 @@ private:
             if (expr->pathSegments.empty()) return std::nullopt;
             return expr->pathSegments.front();
         }
-        if (expr->kind == ExprKind::SmartPtrNew) {
+        if (expr->kind == ExprKind::SmartPtrNew && expr->smartPtrKind != SmartPtrKind::Weak) {
             // `own Foo { ... }` / `raw Foo { ... }` - same struct identity
             // as the literal it wraps, just heap-allocated instead of
             // stack (compileHeapStructLiteral). Let/call-site coercion
             // and method dispatch shouldn't care which allocation
-            // strategy produced the pointer.
+            // strategy produced the pointer. `weak` is deliberately
+            // EXCLUDED here (LANGUAGE_GAPS.md #7) - a weak reference is
+            // NOT a directly-struct-accessible value (that's the entire
+            // safety point of it existing - the payload might already be
+            // freed), so it must never be treated as an ordinary struct
+            // type by inferStructTypeName/field access/method dispatch;
+            // only `.upgrade()` (namedValueWeakType, compileWeakMethodCall)
+            // is ever allowed to reach the payload.
             return inferStructTypeName(expr->lhs);
         }
         if (expr->kind == ExprKind::Call && expr->lhs && !expr->lhs->explicitGenericArgs.empty()) {
@@ -946,10 +1446,125 @@ private:
             // yet, and a Path-based static-method call shape doesn't
             // exist in this language currently anyway.
             auto it = functionDeclsByName.find(expr->lhs->text);
-            if (it != functionDeclsByName.end()) {
+            // A weak-returning function (LANGUAGE_GAPS.md #7) is
+            // deliberately EXCLUDED here - see inferStructTypeName's own
+            // SmartPtrNew case above for why treating a weak value as an
+            // ordinary struct type would be unsafe; inferWeakTypeName
+            // (below) is where a weak-typed return is actually handled.
+            if (it != functionDeclsByName.end()
+                && !(it->second->returnType && it->second->returnType->ptrKind == SmartPtrKind::Weak)) {
                 return resolveStructTypeName(it->second->returnType);
             }
         }
+        if (auto methodResult = inferMethodCallResultType(expr, false)) return methodResult;
+        return std::nullopt;
+    }
+
+    // Which Frust struct type (if any) a given expression is a WEAK
+    // reference TO - LANGUAGE_GAPS.md #7's remaining piece. Deliberately
+    // narrow, matching this feature's own overall scope: only a plain
+    // identifier already tracked in namedValueWeakType, or a call to a
+    // free function whose DECLARED return type is `weak T` (the one way
+    // this pass lets a weak reference cross a function boundary - own/
+    // shared already do the equivalent via resolveStructTypeName on a
+    // plain free-function's return type; this mirrors that exactly, one
+    // level narrower). No block-tail-value propagation, no method-call
+    // results, no reassignment tracking - a real, named scope cut, same
+    // spirit as every other "minimal but real" cut in this file.
+    std::optional<std::string> inferWeakTypeName(const Expr* expr) {
+        if (!expr) return std::nullopt;
+        if (expr->kind == ExprKind::Identifier) {
+            auto it = namedValueWeakType.find(expr->text);
+            if (it != namedValueWeakType.end()) return it->second;
+            return std::nullopt;
+        }
+        if (expr->kind == ExprKind::SmartPtrNew && expr->smartPtrKind == SmartPtrKind::Weak) {
+            // `weak existing_var` itself - the wrapped expression must
+            // already be a live shared-typed struct value.
+            return inferStructTypeName(expr->lhs);
+        }
+        if (expr->kind == ExprKind::Call && expr->lhs && expr->lhs->kind == ExprKind::Identifier) {
+            auto it = functionDeclsByName.find(expr->lhs->text);
+            if (it != functionDeclsByName.end() && it->second->returnType
+                && it->second->returnType->ptrKind == SmartPtrKind::Weak) {
+                return it->second->returnType->name;
+            }
+        }
+        return std::nullopt;
+    }
+
+    // Which Frust enum type (if any) a given expression statically is -
+    // the enum-typed sibling of inferStructTypeName, same "opaque pointer
+    // erases identity" reasoning and same scope (Identifier, and a Call
+    // whose target's declared return type names an enum - covers a
+    // variant constructor call like `Shape::Circle(3.0)` or a generic one
+    // like `Option::some::<i64>(5)`, both via the SAME functionDeclsByName/
+    // explicit-generic-args handling inferStructTypeName's Call branches
+    // already establish).
+    std::optional<std::string> inferEnumTypeName(const Expr* expr) {
+        if (!expr) return std::nullopt;
+        if (expr->kind == ExprKind::Identifier) {
+            auto it = namedValueEnumType.find(expr->text);
+            if (it != namedValueEnumType.end()) return it->second;
+            return std::nullopt;
+        }
+        // A bare no-payload variant reference (`Piece::King`, ExprKind::Path,
+        // no call syntax) - same case compileExpr's own Path handling
+        // special-cases for construction (see that comment for why).
+        if (expr->kind == ExprKind::Path && expr->pathSegments.size() == 2) {
+            auto variantMapIt = enumVariantIndex.find(expr->pathSegments[0]);
+            if (variantMapIt != enumVariantIndex.end() && variantMapIt->second.count(expr->pathSegments[1])) {
+                return expr->pathSegments[0];
+            }
+        }
+        if (expr->kind != ExprKind::Call || !expr->lhs) return std::nullopt;
+
+        // `w.upgrade()` (LANGUAGE_GAPS.md #7) - special-cased the same
+        // way Vector<T>'s .get()/.push() are (not a real registered
+        // method, so it never reaches functionDeclsByName/methods below
+        // at all), and a weak-bound name is deliberately NOT struct/enum-
+        // tracked itself (namedValueWeakType's own header comment) - the
+        // ordinary receiver-type lookup this function otherwise relies
+        // on can never find it, so it's checked directly here instead.
+        // Its result type is always Option<targetType>, monomorphized
+        // (and thus confirmed to exist) the same way .upgrade()'s own
+        // codegen (compileWeakMethodCall) does.
+        if (expr->lhs->kind == ExprKind::Member && expr->lhs->text == "upgrade"
+            && expr->lhs->lhs->kind == ExprKind::Identifier) {
+            auto weakIt = namedValueWeakType.find(expr->lhs->lhs->text);
+            if (weakIt != namedValueWeakType.end() && getOrCreateMonomorphizedEnum("Option", {weakIt->second})) {
+                return monomorphizedStructName("Option", {weakIt->second});
+            }
+        }
+
+        std::string targetName;
+        if (expr->lhs->kind == ExprKind::Identifier) {
+            targetName = expr->lhs->text;
+        } else if (expr->lhs->kind == ExprKind::Path) {
+            targetName = expr->lhs->pathSegments.front();
+            for (size_t i = 1; i < expr->lhs->pathSegments.size(); ++i) targetName += "::" + expr->lhs->pathSegments[i];
+        }
+
+        if (!expr->lhs->explicitGenericArgs.empty()) {
+            auto templateIt = genericFunctionTemplates.find(targetName);
+            if (templateIt != genericFunctionTemplates.end()
+                && templateIt->second->genericParams.size() == expr->lhs->explicitGenericArgs.size()) {
+                auto savedSubstitution = currentGenericSubstitution;
+                currentGenericSubstitution.clear();
+                for (size_t i = 0; i < templateIt->second->genericParams.size(); ++i) {
+                    auto& arg = expr->lhs->explicitGenericArgs[i];
+                    if (!arg.isIntConst && arg.type) {
+                        currentGenericSubstitution[templateIt->second->genericParams[i]] = arg.type->name;
+                    }
+                }
+                auto result = resolveEnumTypeName(templateIt->second->returnType);
+                currentGenericSubstitution = savedSubstitution;
+                return result;
+            }
+        }
+        auto it = functionDeclsByName.find(targetName);
+        if (it != functionDeclsByName.end()) return resolveEnumTypeName(it->second->returnType);
+        if (auto methodResult = inferMethodCallResultType(expr, true)) return methodResult;
         return std::nullopt;
     }
 
@@ -1088,6 +1703,24 @@ private:
             }
         }
 
+        // `enum Shape { ... }` - LANGUAGE_GAPS.md's algebraic-data-types
+        // work. Pointer-represented, same convention as structs above -
+        // see enumVariantIndex/enumVariantPayloadType's own header comment
+        // for the actual malloc'd { tag, payload } shape.
+        if (enumVariantIndex.count(n)) return llvm::PointerType::getUnqual(context);
+
+        if (genericEnumTemplates.count(n) && !type->genericArgs.empty()) {
+            std::vector<std::string> concreteArgNames;
+            bool allTypeArgs = true;
+            for (auto& arg : type->genericArgs) {
+                if (arg.isIntConst || !arg.type) { allTypeArgs = false; break; }
+                concreteArgNames.push_back(arg.type->name);
+            }
+            if (allTypeArgs && getOrCreateMonomorphizedEnum(n, concreteArgNames)) {
+                return llvm::PointerType::getUnqual(context);
+            }
+        }
+
         // A declared `interface Name { ... }` - values of this type are a
         // fat pointer { data, vtable }, not a plain struct pointer (see
         // buildVtable/compileMethodCall's interface-dispatch branch).
@@ -1134,6 +1767,32 @@ private:
                 concreteArgNames.push_back(arg.type->name);
             }
             if (getOrCreateMonomorphizedStruct(type->name, concreteArgNames)) {
+                return monomorphizedStructName(type->name, concreteArgNames);
+            }
+        }
+        return std::nullopt;
+    }
+
+    // Same alias-following/generic-monomorphizing shape as
+    // resolveStructTypeName, for enum names instead (LANGUAGE_GAPS.md's
+    // algebraic-data-types work).
+    std::optional<std::string> resolveEnumTypeName(const TypeExpr* type, int depth = 0) {
+        if (!type || depth > 16) return std::nullopt;
+        if (!currentGenericSubstitution.empty()) {
+            std::vector<std::unique_ptr<TypeExpr>> storage;
+            const TypeExpr* substituted = substituteGenericType(type, storage);
+            if (substituted != type) return resolveEnumTypeName(substituted, depth + 1);
+        }
+        auto aliasIt = typeAliases.find(type->name);
+        if (aliasIt != typeAliases.end()) return resolveEnumTypeName(aliasIt->second, depth + 1);
+        if (enumVariantIndex.count(type->name)) return type->name;
+        if (genericEnumTemplates.count(type->name) && !type->genericArgs.empty()) {
+            std::vector<std::string> concreteArgNames;
+            for (auto& arg : type->genericArgs) {
+                if (arg.isIntConst || !arg.type) return std::nullopt;
+                concreteArgNames.push_back(arg.type->name);
+            }
+            if (getOrCreateMonomorphizedEnum(type->name, concreteArgNames)) {
                 return monomorphizedStructName(type->name, concreteArgNames);
             }
         }
@@ -1416,24 +2075,50 @@ private:
                 std::string fullName = expr->pathSegments.front();
                 for (size_t i = 1; i < expr->pathSegments.size(); ++i) fullName += "::" + expr->pathSegments[i];
                 auto it = namedValues.find(fullName);
-                if (it == namedValues.end()) {
-                    std::cerr << "frust: codegen error: unknown path '" << fullName << "'\n";
-                    return nullptr;
+                if (it != namedValues.end()) return it->second;
+
+                // A bare no-payload variant reference (`Piece::King`, no
+                // call syntax needed since there's nothing to pass) -
+                // LANGUAGE_GAPS.md's algebraic-data-types work. Dispatches
+                // to the SAME synthesized constructor function every other
+                // variant already goes through via ordinary Call syntax
+                // (synthesizeEnumVariantConstructor) - invoked directly
+                // here with zero arguments, since a bare path (no
+                // trailing "(...)") never reaches compileCall's own
+                // dispatch at all. Only ever matches a non-generic enum's
+                // constructor, or a generic one that happens to already be
+                // monomorphized under this exact bare name (neither
+                // possible generically without a turbofish, which needs
+                // call syntax anyway - consistent with Result::ok/
+                // Option::some's existing convention).
+                if (expr->pathSegments.size() == 2) {
+                    auto variantMapIt = enumVariantIndex.find(expr->pathSegments[0]);
+                    if (variantMapIt != enumVariantIndex.end() && variantMapIt->second.count(expr->pathSegments[1])) {
+                        if (llvm::Function* ctorFn = module.getFunction(fullName)) {
+                            return builder.CreateCall(ctorFn, {});
+                        }
+                    }
                 }
-                return it->second;
+
+                std::cerr << "frust: codegen error: unknown path '" << fullName << "'\n";
+                return nullptr;
             }
 
             case ExprKind::Binary: return compileBinary(*expr);
             case ExprKind::Unary: return compileUnary(*expr);
             case ExprKind::Call: return compileCall(*expr);
             case ExprKind::If: return compileIf(*expr);
+            case ExprKind::Match: return compileMatch(*expr);
             case ExprKind::While: return compileWhile(*expr);
             case ExprKind::Loop: return compileLoop(*expr);
             case ExprKind::For: return compileFor(*expr);
             case ExprKind::Break: return compileBreak(*expr);
             case ExprKind::Continue: return compileContinue(*expr);
             case ExprKind::StructLiteral: return compileStructLiteral(*expr);
-            case ExprKind::SmartPtrNew: return compileHeapStructLiteral(*expr);
+            case ExprKind::SmartPtrNew:
+                if (expr->smartPtrKind == SmartPtrKind::Weak) return compileWeakNew(*expr);
+                return compileHeapStructLiteral(*expr);
+            case ExprKind::EnumVariantNew: return compileEnumVariantNew(*expr);
             case ExprKind::Closure: return compileClosureLiteral(*expr);
             case ExprKind::ArrayLiteral: return compileArrayLiteral(*expr);
             case ExprKind::Index: return compileIndex(*expr);
@@ -1593,7 +2278,53 @@ private:
                         }
                         namedValueSharedType.insert(expr->text);
                         if (!sharedScopeStack.empty()) sharedScopeStack.back().push_back(expr->text);
+                    } else if (expr->lhs->kind == ExprKind::SmartPtrNew && expr->lhs->smartPtrKind == SmartPtrKind::Own
+                               && currentBlockStatements) {
+                        // `own T { ... }` automatic drop (LANGUAGE_GAPS.md
+                        // #7's remaining piece) - ONLY a FRESH own
+                        // construction is ever considered here (never a
+                        // rebind like `let b = a;` where `a` is own - own
+                        // has no refcount to make a second owner safe,
+                        // unlike shared's retain, so a rebind is simply
+                        // never tracked at all here; ownValueEscapes
+                        // already treats the rebind itself as an escaping
+                        // use of `a`, so `a` won't be tracked either -
+                        // both names permanently un-freed, matching this
+                        // project's own "leak, never double-free" bar).
+                        // ownValueEscapes scans the REST of this exact
+                        // block (from just after this `let`, onward) - see
+                        // that function's own header comment for exactly
+                        // what it does and doesn't catch.
+                        bool escapes = false;
+                        for (size_t j = currentBlockStatementIndex + 1; j < currentBlockStatements->size(); ++j) {
+                            if (ownValueEscapes(expr->text, (*currentBlockStatements)[j])) { escapes = true; break; }
+                        }
+                        if (!escapes) {
+                            if (!ownScopeStack.empty()) ownScopeStack.back().push_back(expr->text);
+                        }
                     }
+                } else if (auto enumTypeName = inferEnumTypeName(expr->lhs)) {
+                    // Enums are pointer-represented exactly like structs
+                    // (enumVariantIndex's own header comment) - same
+                    // direct-bind, no extra wrapping alloca regardless of
+                    // `mut`, same reasoning as the struct branch above.
+                    namedValues[expr->text] = val;
+                    namedValueEnumType[expr->text] = *enumTypeName;
+                } else if (auto weakTargetType = inferWeakTypeName(expr->lhs)) {
+                    // `weak existing_var`, or a call to a function
+                    // declared `-> weak T` (LANGUAGE_GAPS.md #7's
+                    // remaining piece - see inferWeakTypeName's own
+                    // comment on why the latter is included, narrowly).
+                    // Bind the SAME payload pointer a shared reference
+                    // would hold, but tracked ONLY via namedValueWeakType,
+                    // deliberately NOT namedValueStructType
+                    // (inferStructTypeName excludes Weak - see that
+                    // function's own comment) - so ordinary field access/
+                    // method dispatch can never reach the payload
+                    // directly; only `.upgrade()` (compileWeakMethodCall)
+                    // may, and only after checking strongCount first.
+                    namedValues[expr->text] = val;
+                    namedValueWeakType[expr->text] = *weakTargetType;
                 } else if (expr->isMut) {
                     llvm::Function* theFunction = builder.GetInsertBlock()->getParent();
                     llvm::IRBuilder<> tmpBuilder(&theFunction->getEntryBlock(), theFunction->getEntryBlock().begin());
@@ -1629,6 +2360,12 @@ private:
                 for (auto scopeIt = sharedScopeStack.rbegin(); scopeIt != sharedScopeStack.rend(); ++scopeIt) {
                     emitScopeDrops(*scopeIt, skipName);
                 }
+                // Same skipName gates ownScopeStack's own drops too
+                // (LANGUAGE_GAPS.md #7) - `return name;` propagates
+                // ownership out of the function, not ending it here.
+                for (auto scopeIt = ownScopeStack.rbegin(); scopeIt != ownScopeStack.rend(); ++scopeIt) {
+                    emitOwnScopeDrops(*scopeIt, skipName);
+                }
 
                 builder.CreateRet(coerced);
                 blockTerminated = true;
@@ -1637,26 +2374,81 @@ private:
 
             case ExprKind::Block: {
                 sharedScopeStack.push_back({});
+                ownScopeStack.push_back({});
+                // Real block-level lexical scoping (LANGUAGE_GAPS.md #10):
+                // snapshot every namedValue* side table on entry and restore
+                // on every exit path, so a `let` inside this block can't
+                // leak into (or clobber) the enclosing scope once the block
+                // ends. Mirrors the closure-literal trampoline's own
+                // whole-map save/restore (compileClosureLiteral, below) -
+                // same pattern, scoped to this block instead of a whole new
+                // function. sharedScopeStack itself is intentionally NOT
+                // included here - it already has its own correct per-block
+                // push/pop lifecycle for drop tracking, above and below.
+                auto savedNamedValues = namedValues;
+                auto savedStructType = namedValueStructType;
+                auto savedRawPointee = namedValueRawPointeeType;
+                auto savedVectorElem = namedValueVectorElementType;
+                auto savedInterfaceType = namedValueInterfaceType;
+                auto savedClosureSig = namedValueClosureSignature;
+                auto savedSharedType = namedValueSharedType;
+                auto savedEnumType = namedValueEnumType;
+        auto savedWeakType = namedValueWeakType;
+                auto restoreNamedValueState = [&]() {
+                    namedValues = savedNamedValues;
+                    namedValueStructType = savedStructType;
+                    namedValueRawPointeeType = savedRawPointee;
+                    namedValueVectorElementType = savedVectorElem;
+                    namedValueInterfaceType = savedInterfaceType;
+                    namedValueClosureSignature = savedClosureSig;
+                    namedValueSharedType = savedSharedType;
+                    namedValueEnumType = savedEnumType;
+                    namedValueWeakType = savedWeakType;
+                };
+
+                auto savedBlockStatements = currentBlockStatements;
+                auto savedBlockStatementIndex = currentBlockStatementIndex;
+                currentBlockStatements = &expr->statements;
+
                 llvm::Value* last = nullptr;
-                for (auto* stmt : expr->statements) {
+                for (size_t i = 0; i < expr->statements.size(); ++i) {
                     if (blockTerminated) break;
-                    last = compileExpr(stmt);
-                    if (!last) { sharedScopeStack.pop_back(); return nullptr; }
+                    currentBlockStatementIndex = i;
+                    last = compileExpr(expr->statements[i]);
+                    if (!last) {
+                        sharedScopeStack.pop_back();
+                        ownScopeStack.pop_back();
+                        currentBlockStatements = savedBlockStatements;
+                        currentBlockStatementIndex = savedBlockStatementIndex;
+                        restoreNamedValueState();
+                        return nullptr;
+                    }
                 }
+                currentBlockStatements = savedBlockStatements;
+                currentBlockStatementIndex = savedBlockStatementIndex;
                 if (!blockTerminated) {
                     // A bare-identifier tail statement is this block's own
                     // value propagating OUT (to an enclosing block/let/
                     // return) - if it names one of THIS scope's own
                     // shared-owning locals, skip dropping it here (see
                     // namedValueSharedType's header comment: ownership
-                    // genuinely leaves untouched, tracked no further).
+                    // genuinely leaves untouched, tracked no further). The
+                    // llvm::Value* itself is already captured in `last`
+                    // above, so restoring the NAME bindings below doesn't
+                    // lose it - only the binding, not the value, disappears.
+                    // Same skipName also gates ownScopeStack's own drops
+                    // (LANGUAGE_GAPS.md #7) - an own-bound name propagating
+                    // out as this block's own tail must not be freed here.
                     std::string skipName;
                     if (!expr->statements.empty() && expr->statements.back()->kind == ExprKind::Identifier) {
                         skipName = expr->statements.back()->text;
                     }
                     emitScopeDrops(sharedScopeStack.back(), skipName);
+                    emitOwnScopeDrops(ownScopeStack.back(), skipName);
                 }
                 sharedScopeStack.pop_back();
+                ownScopeStack.pop_back();
+                restoreNamedValueState();
                 return last;
             }
 
@@ -1895,6 +2687,66 @@ private:
         }
 
         if (expr.lhs->kind == ExprKind::Index) {
+            // `v[i] = x` for a Vector<T> (LANGUAGE_GAPS.md #3's own
+            // named, deliberately-deferred follow-on - .push()/.get()/
+            // bracket READ covered construction/readback, bracket WRITE
+            // didn't). Checked before the Vec<N> SSA-vector case below -
+            // a real heap pointer (vectorHeaderType), not an SSA vector
+            // value, same "anchor via a named binding" convention this
+            // file uses throughout for Vector<T> (compileIndex's own
+            // read-path check, mirrored here).
+            if (expr.lhs->lhs->kind == ExprKind::Identifier) {
+                const Expr& indexExpr = *expr.lhs;
+                auto vecElemIt = namedValueVectorElementType.find(indexExpr.lhs->text);
+                if (vecElemIt != namedValueVectorElementType.end()) {
+                    llvm::Value* headerPtr = compileExpr(indexExpr.lhs);
+                    if (!headerPtr) return nullptr;
+                    llvm::Value* idx = compileExpr(indexExpr.rhs);
+                    if (!idx) return nullptr;
+                    auto* val = compileExpr(expr.rhs);
+                    if (!val) return nullptr;
+
+                    llvm::StructType* hdrTy = vectorHeaderType();
+                    llvm::Type* elemTy = resolveTypeByName(vecElemIt->second);
+                    llvm::Type* ptrTy = llvm::PointerType::getUnqual(context);
+                    llvm::Type* i64Ty = llvm::Type::getInt64Ty(context);
+
+                    // Bounds check - a clear runtime error, not silent
+                    // corruption (out-of-bounds writes are the actual
+                    // dangerous case a growable collection needs this
+                    // for), matching this project's existing bar. Mirrors
+                    // emitRefinementCheck's own panic sequence exactly.
+                    llvm::Value* lenFieldPtr = builder.CreateStructGEP(hdrTy, headerPtr, 1);
+                    llvm::Value* len = builder.CreateLoad(i64Ty, lenFieldPtr, "veclen");
+                    llvm::Value* idxOk = builder.CreateAnd(
+                        builder.CreateICmpSGE(idx, llvm::ConstantInt::get(i64Ty, 0)),
+                        builder.CreateICmpSLT(idx, len));
+
+                    llvm::Function* theFunction = builder.GetInsertBlock()->getParent();
+                    llvm::BasicBlock* okBB = llvm::BasicBlock::Create(context, "vecwrite_ok", theFunction);
+                    llvm::BasicBlock* panicBB = llvm::BasicBlock::Create(context, "vecwrite_oob", theFunction);
+                    builder.CreateCondBr(idxOk, okBB, panicBB);
+
+                    builder.SetInsertPoint(panicBB);
+                    llvm::FunctionCallee printFn = module.getOrInsertFunction("frust_print_str",
+                        llvm::FunctionType::get(llvm::Type::getVoidTy(context), {ptrTy}, false));
+                    llvm::Constant* msgConst = llvm::ConstantDataArray::getString(context, "frust: Vector index out of bounds\n");
+                    auto* msgGlobal = new llvm::GlobalVariable(module, msgConst->getType(), true, llvm::GlobalValue::PrivateLinkage, msgConst, ".vec_oob_msg");
+                    builder.CreateCall(printFn, {msgGlobal});
+                    llvm::FunctionCallee exitFn = module.getOrInsertFunction("exit", llvm::FunctionType::get(llvm::Type::getVoidTy(context), {llvm::Type::getInt32Ty(context)}, false));
+                    builder.CreateCall(exitFn, {llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), 1)});
+                    builder.CreateUnreachable();
+
+                    builder.SetInsertPoint(okBB);
+                    val = coerceToType(val, elemTy);
+                    llvm::Value* dataFieldPtr = builder.CreateStructGEP(hdrTy, headerPtr, 0);
+                    llvm::Value* dataPtr = builder.CreateLoad(ptrTy, dataFieldPtr, "vecdata");
+                    llvm::Value* elemPtr = builder.CreateGEP(elemTy, dataPtr, idx, "vecelemptr");
+                    builder.CreateStore(val, elemPtr);
+                    return val;
+                }
+            }
+
             // `v[i] = x` for a `mut` Vec<N> variable. Vec<N> values are
             // genuine SSA vector values (see compileArrayLiteral), not
             // pointer-backed - there's no address to GEP into and store
@@ -2138,24 +2990,21 @@ private:
     // (same pre-existing gap noted throughout this file for struct
     // mutation not being gated on `mut`), so both currently just malloc
     // and return the pointer. `shared` (LANGUAGE_GAPS.md #7) is real:
-    // the malloc'd block is an 8-byte i64 strong-count header
-    // immediately followed by the payload, initialized to 1 - the
-    // POINTER RETURNED HERE is still just the payload address (header
-    // + 8), so every existing struct-field/method-call code path keeps
-    // working completely unchanged; only construction/binding/drop
-    // needs to know about the header at all (see namedValueSharedType,
-    // sharedHeaderPtr, dropSharedLocal). `weak` genuinely needs a
-    // second, different mechanism (a control block that can outlive
-    // the payload) - real, separate, deliberately not built here;
-    // rejected with a clear error instead of silently behaving like
-    // `shared` or `own`.
+    // the malloc'd block is a 16-byte { strongCount, weakCount } header
+    // immediately followed by the payload, strongCount initialized to 1
+    // - the POINTER RETURNED HERE is still just the payload address
+    // (header + 16), so every existing struct-field/method-call code
+    // path keeps working completely unchanged; only construction/
+    // binding/drop needs to know about the header at all (see
+    // namedValueSharedType, sharedHeaderPtr, dropSharedLocal). `weak`
+    // (this same gap's remaining piece, now done - see compileWeakNew,
+    // right below) genuinely needed a DIFFERENT construction path
+    // entirely - it never mallocs anything itself, it borrows an
+    // EXISTING shared value's header, so it never reaches this
+    // function at all (routed separately in compileExpr's own switch).
     // typeNameOverride: see compileStructLiteral's own doc - same
     // reasoning, for `own Box { ... }`/`shared Box { ... }`.
     llvm::Value* compileHeapStructLiteral(const Expr& smartPtrExpr, const std::string& typeNameOverride = "") {
-        if (smartPtrExpr.smartPtrKind == SmartPtrKind::Weak) {
-            std::cerr << "frust: codegen error: 'weak' construction isn't implemented yet (needs a separate control-block mechanism) - 'own'/'raw'/'shared' heap construction all are\n";
-            return nullptr;
-        }
         bool isShared = (smartPtrExpr.smartPtrKind == SmartPtrKind::Shared);
         const Expr* lit = smartPtrExpr.lhs;
         if (!lit || lit->kind != ExprKind::StructLiteral) {
@@ -2175,19 +3024,225 @@ private:
         llvm::StructType* structTy = typeIt->second;
         auto& fieldIndex = structFieldIndex[typeName];
 
+        // shared's header is 16 bytes as of LANGUAGE_GAPS.md #7's weak-
+        // pointer work: { i64 strongCount, i64 weakCount } (was just an
+        // 8-byte strongCount before `weak` existed) - see sharedHeaderPtr/
+        // dropSharedLocal for why weak needs a second count: a weak
+        // reference has to be able to read strongCount even after it
+        // hits zero (to know upgrade() must fail), so the HEADER block
+        // can only be freed once BOTH counts are zero, not just strong.
         uint64_t payloadSize = module.getDataLayout().getTypeAllocSize(structTy);
-        uint64_t totalSize = payloadSize + (isShared ? 8 : 0);
+        uint64_t totalSize = payloadSize + (isShared ? 16 : 0);
         llvm::Value* totalSizeV = llvm::ConstantInt::get(llvm::Type::getInt64Ty(context), totalSize);
         llvm::Value* rawPtr = builder.CreateCall(getMallocFn(), {totalSizeV});
 
         llvm::Value* payloadPtr = rawPtr;
         if (isShared) {
+            llvm::Type* i64Ty = llvm::Type::getInt64Ty(context);
             builder.CreateStore(builder.getInt64(1), rawPtr); // strong count = 1
-            payloadPtr = builder.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(context), rawPtr, 8);
+            llvm::Value* weakCountPtr = builder.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(context), rawPtr, 8);
+            builder.CreateStore(llvm::ConstantInt::get(i64Ty, 0), weakCountPtr); // weak count = 0
+            payloadPtr = builder.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(context), rawPtr, 16);
         }
 
         if (!initStructFields(*lit, typeName, structTy, fieldIndex, payloadPtr)) return nullptr;
         return payloadPtr;
+    }
+
+    // `weak existing_shared_var` (LANGUAGE_GAPS.md #7's remaining piece)
+    // - takes a weak reference to an ALREADY-live shared value,
+    // incrementing its header's weakCount. Unlike own/shared/raw (which
+    // each construct a FRESH struct literal), weak's own lhs must be an
+    // expression that's already a live shared reference - there is
+    // nothing to malloc here at all; weak just borrows the SAME
+    // header+payload block shared already owns, via the exact same
+    // payload pointer (sharedHeaderPtr walks back from it identically
+    // either way). Deliberately scoped to a plain identifier for v1 -
+    // matches the "named binding" convention used throughout this file
+    // for anything opaque-pointer-typed (namedValueStructType,
+    // namedValueRawPointeeType, etc.).
+    llvm::Value* compileWeakNew(const Expr& smartPtrExpr) {
+        const Expr* target = smartPtrExpr.lhs;
+        if (!target || target->kind != ExprKind::Identifier) {
+            std::cerr << "frust: codegen error: 'weak' currently only wraps a plain shared-bound variable, e.g. `weak existing_var`\n";
+            return nullptr;
+        }
+        if (!namedValueSharedType.count(target->text)) {
+            std::cerr << "frust: codegen error: 'weak " << target->text << "' - '" << target->text << "' is not a shared-bound variable\n";
+            return nullptr;
+        }
+        llvm::Value* payloadPtr = compileExpr(target);
+        if (!payloadPtr) return nullptr;
+
+        llvm::Value* headerPtr = sharedHeaderPtr(payloadPtr);
+        llvm::Value* weakCountPtr = sharedWeakCountPtr(headerPtr);
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(context);
+        llvm::Value* weak = builder.CreateLoad(i64Ty, weakCountPtr, "weakcount");
+        llvm::Value* newWeak = builder.CreateAdd(weak, builder.getInt64(1));
+        builder.CreateStore(newWeak, weakCountPtr);
+        return payloadPtr;
+    }
+
+    // `w.upgrade()` on a `weak T` value (LANGUAGE_GAPS.md #7's remaining
+    // piece) - returns a real `Option<T>` (`Some(payload)` if the strong
+    // count is still > 0, `None` otherwise) rather than EVER handing
+    // back a pointer that might already be freed - the entire reason
+    // this project's own "real algebraic data types" work (enum/match)
+    // had to land before this could. Reuses the EXACT SAME synthesized
+    // `Option::Some`/`Option::None` variant-constructor functions
+    // ordinary `Option::Some::<T>(v)` source already goes through
+    // (synthesizeEnumVariantConstructor) - requires the compiled
+    // program to have `enum Option<T> { Some(T), None }` declared
+    // somewhere; this pass does not synthesize Option itself, a real,
+    // named scope cut (matching this project's "don't build a second
+    // competing mechanism" precedent). Only `.upgrade()` is supported -
+    // a weak reference has no other methods.
+    //
+    // Like compileMethodCall's own generic-method dispatch, resolving
+    // Option::Some/Option::None here is genuinely reentrant (discovered
+    // mid-compilation of whatever function calls .upgrade()) - needs the
+    // SAME save/restore compileClosureLiteral/getOrCreateMonomorphizedMethod
+    // already use, for the identical reason (compileFunction's
+    // unconditional namedValues.clear() would otherwise wipe the
+    // caller's own in-progress locals).
+    llvm::Value* compileWeakMethodCall(const Expr& expr, const Expr& member, std::string targetTypeName) {
+        if (member.text != "upgrade") {
+            std::cerr << "frust: codegen error: 'weak' has no method '" << member.text << "' - only .upgrade() is supported\n";
+            return nullptr;
+        }
+        if (!expr.args.empty()) {
+            std::cerr << "frust: codegen error: 'upgrade' takes no arguments\n";
+            return nullptr;
+        }
+        if (!genericEnumTemplates.count("Option")) {
+            std::cerr << "frust: codegen error: '.upgrade()' needs 'enum Option<T> { Some(T), None }' declared in this program\n";
+            return nullptr;
+        }
+
+        llvm::Value* payloadPtr = compileExpr(member.lhs);
+        if (!payloadPtr) return nullptr;
+        llvm::Value* headerPtr = sharedHeaderPtr(payloadPtr);
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(context);
+        llvm::Value* strong = builder.CreateLoad(i64Ty, headerPtr, "weakupgrade.strong");
+        llvm::Value* isLive = builder.CreateICmpSGT(strong, builder.getInt64(0));
+
+        auto savedIP = builder.saveIP();
+        auto savedNamedValues = namedValues;
+        auto savedStructType = namedValueStructType;
+        auto savedRawPointee = namedValueRawPointeeType;
+        auto savedVectorElem = namedValueVectorElementType;
+        auto savedInterfaceType = namedValueInterfaceType;
+        auto savedClosureSig = namedValueClosureSignature;
+        auto savedSharedType = namedValueSharedType;
+        auto savedEnumType = namedValueEnumType;
+        auto savedWeakType = namedValueWeakType;
+        auto savedSharedScopeStack = sharedScopeStack;
+        auto savedLoopSharedScopeDepth = loopSharedScopeDepth;
+        auto savedOwnScopeStack = ownScopeStack;
+        auto savedLoopOwnScopeDepth = loopOwnScopeDepth;
+        llvm::Type* savedRetType = currentFnRetType;
+        bool savedBlockTerminated = blockTerminated;
+
+        llvm::Function* someFn = getOrCreateMonomorphizedFunction("Option::Some", {targetTypeName});
+        llvm::Function* noneFn = getOrCreateMonomorphizedFunction("Option::None", {targetTypeName});
+
+        builder.restoreIP(savedIP);
+        namedValues = savedNamedValues;
+        namedValueStructType = savedStructType;
+        namedValueRawPointeeType = savedRawPointee;
+        namedValueVectorElementType = savedVectorElem;
+        namedValueInterfaceType = savedInterfaceType;
+        namedValueClosureSignature = savedClosureSig;
+        namedValueSharedType = savedSharedType;
+        namedValueEnumType = savedEnumType;
+        namedValueWeakType = savedWeakType;
+        sharedScopeStack = savedSharedScopeStack;
+        loopSharedScopeDepth = savedLoopSharedScopeDepth;
+        ownScopeStack = savedOwnScopeStack;
+        loopOwnScopeDepth = savedLoopOwnScopeDepth;
+        currentFnRetType = savedRetType;
+        blockTerminated = savedBlockTerminated;
+
+        if (!someFn || !noneFn) {
+            std::cerr << "frust: codegen error: could not resolve Option::Some/Option::None for '" << targetTypeName << "'\n";
+            return nullptr;
+        }
+
+        llvm::Function* theFunction = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* someBB = llvm::BasicBlock::Create(context, "weakupgrade.some", theFunction);
+        llvm::BasicBlock* noneBB = llvm::BasicBlock::Create(context, "weakupgrade.none", theFunction);
+        llvm::BasicBlock* mergeBB = llvm::BasicBlock::Create(context, "weakupgrade.end", theFunction);
+        builder.CreateCondBr(isLive, someBB, noneBB);
+
+        builder.SetInsertPoint(someBB);
+        llvm::Value* someResult = builder.CreateCall(someFn, {payloadPtr}, "some");
+        builder.CreateBr(mergeBB);
+        someBB = builder.GetInsertBlock();
+
+        builder.SetInsertPoint(noneBB);
+        llvm::Value* noneResult = builder.CreateCall(noneFn, {}, "none");
+        builder.CreateBr(mergeBB);
+        noneBB = builder.GetInsertBlock();
+
+        builder.SetInsertPoint(mergeBB);
+        llvm::PHINode* phi = builder.CreatePHI(llvm::PointerType::getUnqual(context), 2, "upgraded");
+        phi->addIncoming(someResult, someBB);
+        phi->addIncoming(noneResult, noneBB);
+        return phi;
+    }
+
+    // Body codegen for a synthesized `EnumName::VariantName` constructor
+    // (see synthesizeEnumVariantConstructor) - same malloc+GEP-by-hand
+    // technique compileHeapStructLiteral uses for shared's strong-count
+    // header, just tag+payload instead of count+payload. expr.typeAnnotation
+    // is the constructor's OWN declared return type (`EnumName` or
+    // `EnumName<T,...>`) - resolving it through resolveEnumTypeName here
+    // (rather than trusting a name baked in at synthesis time) is what
+    // makes this work correctly for a GENERIC enum's constructor too:
+    // currentGenericSubstitution is live during this exact call (set by
+    // getOrCreateMonomorphizedFunction before compiling this body), so the
+    // same resolve call that's a no-op for a plain enum monomorphizes and
+    // returns the concrete mangled name for a generic one.
+    llvm::Value* compileEnumVariantNew(const Expr& expr) {
+        auto enumNameOpt = resolveEnumTypeName(expr.typeAnnotation);
+        if (!enumNameOpt) {
+            std::cerr << "frust: codegen error: could not resolve enum type constructing '" << expr.text << "'\n";
+            return nullptr;
+        }
+        const std::string& enumName = *enumNameOpt;
+        auto variantMapIt = enumVariantIndex.find(enumName);
+        if (variantMapIt == enumVariantIndex.end()) {
+            std::cerr << "frust: codegen error: unknown enum type '" << enumName << "'\n";
+            return nullptr;
+        }
+        auto variantIt = variantMapIt->second.find(expr.text);
+        if (variantIt == variantMapIt->second.end()) {
+            std::cerr << "frust: codegen error: '" << enumName << "' has no variant '" << expr.text << "'\n";
+            return nullptr;
+        }
+        int tag = variantIt->second;
+        llvm::StructType* payloadTy = enumVariantPayloadType[enumName][expr.text];
+        uint64_t payloadSize = enumPayloadSize[enumName];
+
+        llvm::Value* totalSizeV = builder.getInt64(8 + payloadSize);
+        llvm::Value* rawPtr = builder.CreateCall(getMallocFn(), {totalSizeV});
+        builder.CreateStore(builder.getInt64(tag), rawPtr);
+        llvm::Value* payloadPtr = builder.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(context), rawPtr, 8);
+
+        for (size_t i = 0; i < expr.args.size(); ++i) {
+            llvm::Value* argVal = compileExpr(expr.args[i]);
+            if (!argVal) return nullptr;
+            llvm::Value* fieldPtr = builder.CreateStructGEP(payloadTy, payloadPtr, static_cast<unsigned>(i));
+            builder.CreateStore(argVal, fieldPtr);
+        }
+        // Unlike shared's payload-pointer-skips-the-header convention (kept
+        // there so ordinary struct-field code stays oblivious to sharedness),
+        // an enum's bound VALUE is the BASE pointer, tag at offset 0 -
+        // there's no "existing plain-struct-field-access path" to stay
+        // compatible with here; compilePatternTest's own tag load/payload
+        // GEP (CreateLoad at offset 0, then +8 for payload) is written
+        // against exactly this convention.
+        return rawPtr;
     }
 
     llvm::Value* compileMember(const Expr& expr) {
@@ -2246,15 +3301,43 @@ private:
             if (vecElemIt != namedValueVectorElementType.end()) {
                 return compileVectorMethodCall(expr, member, vecElemIt->second);
             }
+            // `weak T` (LANGUAGE_GAPS.md #7) - checked here for the same
+            // reason: a weak-bound name is deliberately never in
+            // namedValueStructType (inferStructTypeName excludes Weak),
+            // so it can only ever reach this special-cased path, never
+            // the ordinary struct-method path below - `.upgrade()` is
+            // the only thing a weak reference supports.
+            auto weakTypeIt = namedValueWeakType.find(member.lhs->text);
+            if (weakTypeIt != namedValueWeakType.end()) {
+                return compileWeakMethodCall(expr, member, weakTypeIt->second);
+            }
         }
 
+        // Enum-typed receivers (LANGUAGE_GAPS.md's generic-impl-methods
+        // work - a generic impl method works identically on `impl<T>
+        // Option<T> { ... }` as on a generic struct) - checked as a
+        // fallback since inferStructTypeName/inferEnumTypeName are
+        // mutually exclusive (a concrete type is one or the other, never
+        // both).
         auto typeName = inferStructTypeName(member.lhs);
+        if (!typeName) typeName = inferEnumTypeName(member.lhs);
         if (!typeName) {
             std::cerr << "frust: codegen error: cannot call a method on an expression of unknown struct type\n";
             return nullptr;
         }
         std::string mangled = mangleMethodName(*typeName, member.text);
         llvm::Function* callee = module.getFunction(mangled);
+        if (!callee) {
+            // Lazily monomorphize a generic impl method the first time
+            // it's called on THIS concrete instantiation - mirrors how a
+            // generic free function's first turbofish call site triggers
+            // its own monomorphization (getOrCreateMonomorphizedFunction).
+            std::string base;
+            std::vector<std::string> concreteArgs;
+            if (splitMonomorphizedName(*typeName, base, concreteArgs)) {
+                callee = getOrCreateMonomorphizedMethod(base, member.text, concreteArgs);
+            }
+        }
         if (!callee || !methods.count(mangled)) {
             std::cerr << "frust: codegen error: no such method '" << member.text << "' on struct '" << *typeName << "'\n";
             return nullptr;
@@ -2273,6 +3356,24 @@ private:
         auto methodDeclIt = methods.find(mangled);
         const FunctionDecl* methodDecl = (methodDeclIt != methods.end()) ? methodDeclIt->second : nullptr;
 
+        // A monomorphized generic method's FunctionDecl (getOrCreateMonomorphizedMethod)
+        // is a SHALLOW copy of its template - `methodDecl->params[i].type`
+        // still points at the template's own shared, UNSUBSTITUTED TypeExpr
+        // (e.g. bare "T"), and resolving it here (outside the
+        // currentGenericSubstitution window that only exists while that
+        // method's own body/signature was being compiled) would silently
+        // fall through to resolveType's "unknown type" i64 default -
+        // numerically harmless for an i64 T, silently WRONG for anything
+        // else. coerceArgForParam's interface-typed-parameter handling is
+        // still correct either way (resolveInterfaceName(T) legitimately
+        // finds nothing, same as it would for any other non-interface
+        // type) - only ITS OWN final coerceToType(argVal, resolveType(paramType))
+        // fallback is the broken part for a monomorphized receiver, so
+        // that's the only piece replaced here, with the callee's own
+        // already-compiled (and correctly substituted) LLVM parameter
+        // type instead.
+        bool isMonomorphizedReceiver = typeName->find('<') != std::string::npos;
+
         std::vector<llvm::Value*> args;
         args.push_back(selfPtr);
         auto argTypeIt = callee->arg_begin();
@@ -2283,7 +3384,10 @@ private:
             // methodDecl->params has no self entry either (self is
             // synthetic, added separately - see declareFunctionSignature),
             // so index i lines up directly here too.
-            if (methodDecl && i < methodDecl->params.size()) {
+            if (methodDecl && i < methodDecl->params.size() && !isMonomorphizedReceiver) {
+                v = coerceArgForParam(v, expr.args[i], methodDecl->params[i].type);
+            } else if (methodDecl && i < methodDecl->params.size()
+                       && resolveInterfaceName(methodDecl->params[i].type)) {
                 v = coerceArgForParam(v, expr.args[i], methodDecl->params[i].type);
             } else {
                 v = coerceToType(v, argTypeIt->getType());
@@ -2728,6 +3832,275 @@ private:
         return phi;
     }
 
+    // Recursive pattern-match codegen (LANGUAGE_GAPS.md's algebraic-data-
+    // types work) - a chain of tag/literal/binding checks, deliberately
+    // NOT a flat LLVM switch: a single switch can't express nested sub-
+    // pattern checks the way this needs to (`Node::Pair(Node::Leaf(Shape::
+    // Circle(r)), _)` only tests the inner Shape/Circle check AFTER the
+    // outer Pair/Leaf checks already succeeded - genuinely sequential,
+    // short-circuit control flow, not a flat dispatch table). Returns
+    // false only on a genuine COMPILE error (unsupported pattern kind,
+    // unknown variant, wrong argument count) - a runtime pattern mismatch
+    // is not a compile error, it's the normal CondBr-to-onFailure path.
+    // onSuccess binds this pattern's names into namedValues directly (the
+    // caller - compileMatch - saves/restores namedValues around the WHOLE
+    // arm, same per-arm scoping item #10's Block fix already established,
+    // reapplied here since an arm's body isn't always itself a `{ }` block).
+    bool compilePatternTest(const Pattern* pattern, llvm::Value* value,
+                             const std::optional<std::string>& enumTypeName,
+                             llvm::BasicBlock* onSuccess, llvm::BasicBlock* onFailure,
+                             llvm::Function* currentFn,
+                             const std::optional<std::string>& structTypeName = std::nullopt) {
+        switch (pattern->kind) {
+            case PatternKind::Wildcard: {
+                builder.CreateBr(onSuccess);
+                return true;
+            }
+            case PatternKind::Binding: {
+                namedValues[pattern->text] = value;
+                // `value`'s static type, if known - what lets a bound
+                // payload variable (`Option::Some(f) => f.v`) be field-
+                // accessed or re-matched, not just passed around opaquely.
+                if (structTypeName) namedValueStructType[pattern->text] = *structTypeName;
+                else if (enumTypeName) namedValueEnumType[pattern->text] = *enumTypeName;
+                builder.CreateBr(onSuccess);
+                return true;
+            }
+            case PatternKind::IntLiteral: {
+                llvm::Value* cmp = value->getType()->isIntegerTy()
+                    ? builder.CreateICmpEQ(value, llvm::ConstantInt::get(value->getType(), static_cast<uint64_t>(pattern->intValue), true))
+                    : llvm::ConstantInt::getFalse(context);
+                builder.CreateCondBr(cmp, onSuccess, onFailure);
+                return true;
+            }
+            case PatternKind::FloatLiteral: {
+                llvm::Value* cmp = value->getType()->isFloatingPointTy()
+                    ? builder.CreateFCmpOEQ(value, llvm::ConstantFP::get(value->getType(), pattern->floatValue))
+                    : llvm::ConstantInt::getFalse(context);
+                builder.CreateCondBr(cmp, onSuccess, onFailure);
+                return true;
+            }
+            case PatternKind::BoolLiteral: {
+                llvm::Value* cmp = builder.CreateICmpEQ(value, builder.getInt1(pattern->boolValue));
+                builder.CreateCondBr(cmp, onSuccess, onFailure);
+                return true;
+            }
+            case PatternKind::StringLiteral: {
+                // Real gap, not silently wrong: this language's own `==`
+                // already only does POINTER comparison for String (see
+                // compileBinary's Eq case) - reusing that here would make
+                // a string pattern silently never match (a freshly
+                // materialized literal constant's address can never equal
+                // a runtime string's), which is worse than an honest
+                // compile error. Real content comparison needs a runtime
+                // strcmp-style helper this pass doesn't add.
+                std::cerr << "frust: codegen error: string literal patterns in `match` are not supported yet\n";
+                return false;
+            }
+            case PatternKind::Struct: {
+                std::cerr << "frust: codegen error: struct patterns in `match` are not supported yet\n";
+                return false;
+            }
+            case PatternKind::Variant: {
+                if (!enumTypeName) {
+                    std::cerr << "frust: codegen error: pattern '" << (pattern->pathSegments.empty() ? "" : pattern->pathSegments.back())
+                               << "' expects an enum value, but this scrutinee's enum type is unknown\n";
+                    return false;
+                }
+                if (pattern->pathSegments.empty()) {
+                    std::cerr << "frust: codegen internal error: variant pattern with no path\n";
+                    return false;
+                }
+                const std::string& variantName = pattern->pathSegments.back();
+                auto variantMapIt = enumVariantIndex.find(*enumTypeName);
+                if (variantMapIt == enumVariantIndex.end() || !variantMapIt->second.count(variantName)) {
+                    std::cerr << "frust: codegen error: '" << *enumTypeName << "' has no variant '" << variantName << "'\n";
+                    return false;
+                }
+                int tag = variantMapIt->second.at(variantName);
+                llvm::Value* tagVal = builder.CreateLoad(llvm::Type::getInt64Ty(context), value);
+                llvm::Value* tagMatch = builder.CreateICmpEQ(tagVal, builder.getInt64(tag));
+
+                if (pattern->subPatterns.empty()) {
+                    builder.CreateCondBr(tagMatch, onSuccess, onFailure);
+                    return true;
+                }
+
+                llvm::StructType* payloadTy = enumVariantPayloadType[*enumTypeName][variantName];
+                if (pattern->subPatterns.size() != payloadTy->getNumElements()) {
+                    std::cerr << "frust: codegen error: '" << *enumTypeName << "::" << variantName << "' takes "
+                               << payloadTy->getNumElements() << " argument(s), pattern has "
+                               << pattern->subPatterns.size() << "\n";
+                    return false;
+                }
+
+                llvm::BasicBlock* payloadBB = llvm::BasicBlock::Create(context, "match.payload", currentFn);
+                builder.CreateCondBr(tagMatch, payloadBB, onFailure);
+                builder.SetInsertPoint(payloadBB);
+
+                llvm::Value* payloadPtr = builder.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(context), value, 8);
+                auto& fieldEnumTypes = enumVariantFieldEnumType[*enumTypeName][variantName];
+                auto& fieldStructTypes = enumVariantFieldStructType[*enumTypeName][variantName];
+
+                for (size_t i = 0; i < pattern->subPatterns.size(); ++i) {
+                    llvm::Type* fieldLLVMTy = payloadTy->getElementType(static_cast<unsigned>(i));
+                    llvm::Value* fieldPtr = builder.CreateStructGEP(payloadTy, payloadPtr, static_cast<unsigned>(i));
+                    llvm::Value* fieldVal = builder.CreateLoad(fieldLLVMTy, fieldPtr);
+
+                    bool isLastField = (i + 1 == pattern->subPatterns.size());
+                    llvm::BasicBlock* fieldSuccessBB = isLastField ? onSuccess : llvm::BasicBlock::Create(context, "match.field", currentFn);
+                    std::optional<std::string> fieldEnumName = (i < fieldEnumTypes.size()) ? fieldEnumTypes[i] : std::nullopt;
+                    std::optional<std::string> fieldStructName = (i < fieldStructTypes.size()) ? fieldStructTypes[i] : std::nullopt;
+                    if (!compilePatternTest(pattern->subPatterns[i], fieldVal, fieldEnumName, fieldSuccessBB, onFailure, currentFn, fieldStructName)) return false;
+                    if (!isLastField) builder.SetInsertPoint(fieldSuccessBB);
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // `match scrutinee { pattern => expr ... }` - a generalized (N-way,
+    // not just 2-way) version of compileIf's own then/else merge: each
+    // arm's pattern is tested top-to-bottom via compilePatternTest, first
+    // match wins, then the arm's body value feeds into a shared PHI merge
+    // exactly like compileIf's thenV/elseV coercion above, just widened
+    // from 2 incoming values to N.
+    llvm::Value* compileMatch(const Expr& expr) {
+        llvm::Value* scrutinee = compileExpr(expr.condExpr);
+        if (!scrutinee) return nullptr;
+
+        auto enumNameOpt = inferEnumTypeName(expr.condExpr);
+
+        // Exhaustiveness (top-level only, per the plan - a nested
+        // sub-pattern is not separately checked): every declared variant
+        // covered, or a wildcard/binding catch-all arm present. A
+        // non-enum scrutinee can never be proven exhaustive without a
+        // catch-all, so one is always required there.
+        bool hasCatchAll = false;
+        std::set<std::string> coveredVariants;
+        for (auto& arm : expr.matchArms) {
+            if (arm.pattern->kind == PatternKind::Wildcard || arm.pattern->kind == PatternKind::Binding) {
+                hasCatchAll = true;
+            } else if (arm.pattern->kind == PatternKind::Variant && !arm.pattern->pathSegments.empty()) {
+                coveredVariants.insert(arm.pattern->pathSegments.back());
+            }
+        }
+        if (!hasCatchAll) {
+            if (!enumNameOpt) {
+                std::cerr << "frust: codegen error: match is not exhaustive - add a `_` arm\n";
+                return nullptr;
+            }
+            auto variantMapIt = enumVariantIndex.find(*enumNameOpt);
+            if (variantMapIt != enumVariantIndex.end()) {
+                for (auto& kv : variantMapIt->second) {
+                    if (!coveredVariants.count(kv.first)) {
+                        std::cerr << "frust: codegen error: match is not exhaustive - missing variant '"
+                                   << kv.first << "' of '" << *enumNameOpt << "' (add a `_` arm or cover every variant)\n";
+                        return nullptr;
+                    }
+                }
+            }
+        }
+
+        llvm::Function* theFunction = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* mergeBB = llvm::BasicBlock::Create(context, "match.end");
+        std::vector<std::pair<llvm::Value*, llvm::BasicBlock*>> incoming;
+
+        for (size_t i = 0; i < expr.matchArms.size(); ++i) {
+            const MatchArm& arm = expr.matchArms[i];
+            bool isLast = (i + 1 == expr.matchArms.size());
+
+            llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "match.arm", theFunction);
+            llvm::BasicBlock* nextBB = isLast
+                ? llvm::BasicBlock::Create(context, "match.no_match")
+                : llvm::BasicBlock::Create(context, "match.next");
+
+            // Per-arm scoping (mirrors item #10's Block fix) - this arm's
+            // pattern bindings (both the value AND, since a bound payload
+            // can now be struct/enum-typed - see enumVariantFieldStructType
+            // - its static type) must not leak into the NEXT arm's test/
+            // body, nor past the whole match.
+            auto savedNamedValues = namedValues;
+            auto savedNamedValueStructType = namedValueStructType;
+            auto savedNamedValueEnumType = namedValueEnumType;
+
+            if (!compilePatternTest(arm.pattern, scrutinee, enumNameOpt, bodyBB, nextBB, theFunction)) return nullptr;
+
+            builder.SetInsertPoint(bodyBB);
+            llvm::Value* armV = compileExpr(arm.body);
+            if (!armV) return nullptr;
+            bool armTerminated = blockTerminated;
+            if (!armTerminated) builder.CreateBr(mergeBB);
+            llvm::BasicBlock* armEndBB = builder.GetInsertBlock();
+            blockTerminated = false;
+            namedValues = savedNamedValues;
+            namedValueStructType = savedNamedValueStructType;
+            namedValueEnumType = savedNamedValueEnumType;
+            if (!armTerminated) incoming.push_back({armV, armEndBB});
+
+            theFunction->insert(theFunction->end(), nextBB);
+            builder.SetInsertPoint(nextBB);
+
+            if (isLast) {
+                // Reached only if no arm's pattern matched at runtime -
+                // per the exhaustiveness check above this should be
+                // statically unreachable for an enum scrutinee with no
+                // catch-all, but "should be" isn't "proven to the
+                // compiler's own satisfaction" (no real semantic-analysis
+                // pass exists - see this file's own header comment), so
+                // fail loudly at runtime rather than fall through to
+                // undefined behavior. Mirrors emitRefinementCheck's own
+                // panic sequence exactly.
+                llvm::FunctionCallee printFn = module.getOrInsertFunction("frust_print_str",
+                    llvm::FunctionType::get(llvm::Type::getVoidTy(context), {llvm::PointerType::getUnqual(context)}, false));
+                llvm::Constant* msgConst = llvm::ConstantDataArray::getString(context, "frust: no match arm matched at runtime\n");
+                auto* msgGlobal = new llvm::GlobalVariable(module, msgConst->getType(), true, llvm::GlobalValue::PrivateLinkage, msgConst, ".match_panic_msg");
+                builder.CreateCall(printFn, {msgGlobal});
+                llvm::FunctionCallee exitFn = module.getOrInsertFunction("exit", llvm::FunctionType::get(llvm::Type::getVoidTy(context), {llvm::Type::getInt32Ty(context)}, false));
+                builder.CreateCall(exitFn, {llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), 1)});
+                builder.CreateUnreachable();
+            }
+        }
+
+        theFunction->insert(theFunction->end(), mergeBB);
+        builder.SetInsertPoint(mergeBB);
+
+        if (incoming.empty()) {
+            // Every arm terminated (e.g. every arm ends in `return`) -
+            // mergeBB is unreachable, mirroring compileIf's own
+            // both-branches-terminated case.
+            builder.CreateUnreachable();
+            blockTerminated = true;
+            return llvm::ConstantInt::getTrue(context);
+        }
+        if (incoming.size() == 1) return incoming.front().first;
+
+        bool allFirstClass = true;
+        bool allSameType = true;
+        llvm::Type* mergeType = incoming.front().first->getType();
+        for (auto& inc : incoming) {
+            if (!inc.first->getType()->isFirstClassType()) allFirstClass = false;
+            if (inc.first->getType() != mergeType) allSameType = false;
+        }
+        if (!allFirstClass) return llvm::ConstantInt::getTrue(context); // dummy void-like value, mirrors compileIf
+
+        if (!allSameType) {
+            bool anyFloat = false;
+            unsigned maxIntWidth = 0;
+            for (auto& inc : incoming) {
+                if (inc.first->getType()->isFloatingPointTy()) anyFloat = true;
+                else if (inc.first->getType()->isIntegerTy() && inc.first->getType()->getIntegerBitWidth() > maxIntWidth) maxIntWidth = inc.first->getType()->getIntegerBitWidth();
+            }
+            mergeType = anyFloat ? llvm::Type::getDoubleTy(context) : llvm::Type::getIntNTy(context, maxIntWidth > 0 ? maxIntWidth : 64);
+            for (auto& inc : incoming) inc.first = coerceToType(inc.first, mergeType);
+        }
+
+        llvm::PHINode* phi = builder.CreatePHI(mergeType, static_cast<unsigned>(incoming.size()), "matchtmp");
+        for (auto& inc : incoming) phi->addIncoming(inc.first, inc.second);
+        return phi;
+    }
+
     llvm::Value* compileWhile(const Expr& expr) {
         llvm::Function* theFunction = builder.GetInsertBlock()->getParent();
 
@@ -2758,9 +4131,11 @@ private:
         // "recheck" step instead of needing a dedicated increment block.
         loopStack.push_back({condBB, mergeBB});
         loopSharedScopeDepth.push_back(sharedScopeStack.size());
+        loopOwnScopeDepth.push_back(ownScopeStack.size());
         llvm::Value* bodyV = compileExpr(expr.lhs);
         loopStack.pop_back();
         loopSharedScopeDepth.pop_back();
+        loopOwnScopeDepth.pop_back();
         if (!bodyV) return nullptr;
 
         if (!blockTerminated) {
@@ -2792,9 +4167,11 @@ private:
 
         loopStack.push_back({bodyBB, mergeBB});
         loopSharedScopeDepth.push_back(sharedScopeStack.size());
+        loopOwnScopeDepth.push_back(ownScopeStack.size());
         llvm::Value* bodyV = compileExpr(expr.lhs);
         loopStack.pop_back();
         loopSharedScopeDepth.pop_back();
+        loopOwnScopeDepth.pop_back();
         if (!bodyV) return nullptr;
 
         if (!blockTerminated) {
@@ -2848,9 +4225,11 @@ private:
 
         loopStack.push_back({incrBB, mergeBB});
         loopSharedScopeDepth.push_back(sharedScopeStack.size());
+        loopOwnScopeDepth.push_back(ownScopeStack.size());
         llvm::Value* bodyV = compileExpr(expr.lhs);
         loopStack.pop_back();
         loopSharedScopeDepth.pop_back();
+        loopOwnScopeDepth.pop_back();
         if (!bodyV) return nullptr;
 
         if (!blockTerminated) {
@@ -2890,6 +4269,7 @@ private:
             return nullptr;
         }
         dropSharedScopesSinceLoopEntry();
+        dropOwnScopesSinceLoopEntry();
         builder.CreateBr(loopStack.back().second);
         blockTerminated = true;
         return llvm::ConstantFP::get(context, llvm::APFloat(0.0));
@@ -2902,6 +4282,7 @@ private:
             return nullptr;
         }
         dropSharedScopesSinceLoopEntry();
+        dropOwnScopesSinceLoopEntry();
         builder.CreateBr(loopStack.back().first);
         blockTerminated = true;
         return llvm::ConstantFP::get(context, llvm::APFloat(0.0));
@@ -2921,35 +4302,56 @@ private:
         return builder.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(context), basePtr, index * 8);
     }
 
-    // A `shared`-allocated block is one contiguous malloc: an 8-byte i64
-    // strong-count header immediately followed by the payload struct -
-    // the payload pointer (what every existing struct code path
-    // actually holds and operates on) is always exactly 8 bytes past
-    // the real (malloc'd) header pointer.
+    // A `shared`-allocated block is one contiguous malloc: a 16-byte
+    // { i64 strongCount, i64 weakCount } header immediately followed by
+    // the payload struct (LANGUAGE_GAPS.md #7's weak-pointer work grew
+    // this from a bare 8-byte strongCount, once `weak` needed a second
+    // count alongside it) - the payload pointer (what every existing
+    // struct code path actually holds and operates on) is always
+    // exactly 16 bytes past the real (malloc'd) header pointer.
     llvm::Value* sharedHeaderPtr(llvm::Value* payloadPtr) {
-        return builder.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(context), payloadPtr, -8);
+        return builder.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(context), payloadPtr, -16);
+    }
+    llvm::Value* sharedWeakCountPtr(llvm::Value* headerPtr) {
+        return builder.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(context), headerPtr, 8);
     }
 
-    // Decrements `name`'s strong count and frees the whole block (header
-    // + payload, one malloc) if it just reached zero. Emits real
-    // conditional control flow (new "shared.free"/"shared.cont" blocks)
-    // right at the current insert point, then leaves the builder
-    // positioned in "shared.cont" so subsequent code (another drop, or
-    // the actual return/branch instruction) chains after it correctly.
+    // Decrements `name`'s strong count. The PAYLOAD becomes unsafe to
+    // read the moment strong hits zero (matches this project's existing
+    // shared-drop contract exactly), but the HEADER BLOCK itself is only
+    // actually free()'d once weakCount is ALSO zero - a `weak` reference
+    // has to be able to read strongCount even after it hits zero (to
+    // know upgrade() must correctly return None, not read freed memory).
+    // If a weak reference was ever taken (weakCount > 0) and outlives
+    // the last strong owner, the 16-byte header block is a real,
+    // deliberate small leak - this pass has no automatic weak-drop
+    // tracking (weakCount only ever increments, see compileWeakNew) - a
+    // named, honest scope cut, not silently different from the "worst
+    // case is always a leak" bar every other smart pointer in this file
+    // is already held to. Emits real conditional control flow ("shared.
+    // free"/"shared.cont" blocks) right at the current insert point,
+    // then leaves the builder positioned in "shared.cont" so subsequent
+    // code (another drop, or the actual return/branch instruction)
+    // chains after it correctly.
     void dropSharedLocal(const std::string& name) {
         auto it = namedValues.find(name);
         if (it == namedValues.end()) return;
         llvm::Value* payloadPtr = it->second;
         llvm::Value* headerPtr = sharedHeaderPtr(payloadPtr);
-        llvm::Value* strong = builder.CreateLoad(llvm::Type::getInt64Ty(context), headerPtr, name + ".strong");
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(context);
+        llvm::Value* strong = builder.CreateLoad(i64Ty, headerPtr, name + ".strong");
         llvm::Value* newStrong = builder.CreateSub(strong, builder.getInt64(1));
         builder.CreateStore(newStrong, headerPtr);
-        llvm::Value* isZero = builder.CreateICmpEQ(newStrong, builder.getInt64(0));
+        llvm::Value* strongIsZero = builder.CreateICmpEQ(newStrong, builder.getInt64(0));
+        llvm::Value* weakCountPtr = sharedWeakCountPtr(headerPtr);
+        llvm::Value* weak = builder.CreateLoad(i64Ty, weakCountPtr, name + ".weak");
+        llvm::Value* weakIsZero = builder.CreateICmpEQ(weak, builder.getInt64(0));
+        llvm::Value* shouldFree = builder.CreateAnd(strongIsZero, weakIsZero);
 
         llvm::Function* theFunction = builder.GetInsertBlock()->getParent();
         llvm::BasicBlock* freeBB = llvm::BasicBlock::Create(context, "shared.free", theFunction);
         llvm::BasicBlock* contBB = llvm::BasicBlock::Create(context, "shared.cont", theFunction);
-        builder.CreateCondBr(isZero, freeBB, contBB);
+        builder.CreateCondBr(shouldFree, freeBB, contBB);
 
         builder.SetInsertPoint(freeBB);
         llvm::FunctionCallee freeFn = module.getOrInsertFunction("free",
@@ -2987,6 +4389,108 @@ private:
             if (*it == skipName) continue;
             if (namedValueSharedType.count(*it)) dropSharedLocal(*it);
         }
+    }
+
+    // `own T { ... }` automatic drop (LANGUAGE_GAPS.md #7's remaining
+    // piece). Straight `free()`, no header, no refcount, no conditional
+    // control flow - unlike dropSharedLocal, an `own` value is never
+    // header-prefixed (payloadPtr IS the malloc'd pointer, see
+    // compileHeapStructLiteral), so there's nothing to offset or check.
+    void dropOwnLocal(const std::string& name) {
+        auto it = namedValues.find(name);
+        if (it == namedValues.end()) return;
+        llvm::FunctionCallee freeFn = module.getOrInsertFunction("free",
+            llvm::FunctionType::get(llvm::Type::getVoidTy(context), {llvm::PointerType::getUnqual(context)}, false));
+        builder.CreateCall(freeFn, {it->second});
+    }
+
+    // Mirrors emitScopeDrops exactly, for ownScopeStack instead of
+    // sharedScopeStack.
+    void emitOwnScopeDrops(const std::vector<std::string>& names, const std::string& skipName) {
+        for (auto it = names.rbegin(); it != names.rend(); ++it) {
+            if (*it == skipName) continue;
+            dropOwnLocal(*it);
+        }
+    }
+
+    // Mirrors dropSharedScopesSinceLoopEntry exactly, for ownScopeStack.
+    void dropOwnScopesSinceLoopEntry() {
+        size_t depth = loopOwnScopeDepth.back();
+        for (size_t i = ownScopeStack.size(); i-- > depth; ) {
+            emitOwnScopeDrops(ownScopeStack[i], "");
+        }
+    }
+
+    // Unconditional "does this subtree mention `name` as a bare
+    // Identifier ANYWHERE" - deliberately position-blind (unlike
+    // ownValueEscapes below), used only to decide whether `name` appears
+    // AT ALL inside a nested control-flow construct, where this pass
+    // doesn't attempt to reason about which branch/path actually runs.
+    bool referencesIdentifier(const std::string& name, const Expr* node) {
+        if (!node) return false;
+        if (node->kind == ExprKind::Identifier && node->text == name) return true;
+        if (referencesIdentifier(name, node->lhs)) return true;
+        if (referencesIdentifier(name, node->rhs)) return true;
+        if (referencesIdentifier(name, node->condExpr)) return true;
+        if (referencesIdentifier(name, node->elseExpr)) return true;
+        for (auto* s : node->statements) if (referencesIdentifier(name, s)) return true;
+        for (auto* a : node->args) if (referencesIdentifier(name, a)) return true;
+        for (auto& hc : node->handleCases) if (referencesIdentifier(name, hc.body)) return true;
+        for (auto& arm : node->matchArms) if (referencesIdentifier(name, arm.body)) return true;
+        return false;
+    }
+
+    // Recursively scans `node` (a statement in the SAME block an `own`-
+    // bound name was just declared in, and everything after it) for a
+    // use that this minimal pass can't safely reason about - LANGUAGE_GAPS.md
+    // #7's remaining piece. Two real escape modes, checked directly:
+    // passed as a Call argument, or used as the RHS-target of ANOTHER
+    // `let` (a rebinding/aliasing use - `own` has no refcount to make a
+    // second owner safe the way `shared`'s retain does). A THIRD,
+    // broader check: ANY reference to `name` at all inside a nested
+    // control-flow construct (if/while/loop/for/match/handle) is ALSO
+    // treated as escaping, deliberately more conservative than strictly
+    // necessary - a value propagating out through a nested block's own
+    // tail (`if cond { x } else { other }`) needs cross-block reasoning
+    // this minimal pass doesn't attempt, and getting that specific case
+    // wrong would free a pointer still in active use. An explicit
+    // `return name;`/the block's OWN direct tail identifier are
+    // deliberately NOT checked here - those already have a real,
+    // separate skip-at-that-exit-point mechanism (mirroring shared's own
+    // skipName, wired into the Block/Return cases below), so tracking
+    // still safely applies to them. Field/method-call-receiver reads are
+    // NOT escapes either (a read through the pointer, not a hand-off) -
+    // deliberately not flagged, or this feature would never track
+    // anything (`self.value`-style access is a Member whose own lhs is
+    // an Identifier, indistinguishable from an escape without this
+    // narrower, position-aware check).
+    bool ownValueEscapes(const std::string& name, const Expr* node) {
+        if (!node) return false;
+
+        if ((node->kind == ExprKind::If || node->kind == ExprKind::While
+             || node->kind == ExprKind::Loop || node->kind == ExprKind::For
+             || node->kind == ExprKind::Match || node->kind == ExprKind::Handle)
+            && referencesIdentifier(name, node)) {
+            return true;
+        }
+
+        for (auto* a : node->args) {
+            if (a->kind == ExprKind::Identifier && a->text == name) return true;
+        }
+        if (node->kind == ExprKind::Let && node->lhs
+            && node->lhs->kind == ExprKind::Identifier && node->lhs->text == name) {
+            return true;
+        }
+
+        if (ownValueEscapes(name, node->lhs)) return true;
+        if (ownValueEscapes(name, node->rhs)) return true;
+        if (ownValueEscapes(name, node->condExpr)) return true;
+        if (ownValueEscapes(name, node->elseExpr)) return true;
+        for (auto* s : node->statements) if (ownValueEscapes(name, s)) return true;
+        for (auto* a : node->args) if (ownValueEscapes(name, a)) return true;
+        for (auto& hc : node->handleCases) if (ownValueEscapes(name, hc.body)) return true;
+        for (auto& arm : node->matchArms) if (ownValueEscapes(name, arm.body)) return true;
+        return false;
     }
 
     llvm::Value* compilePerform(const Expr& expr) {
@@ -3278,6 +4782,7 @@ private:
         for (auto* s : node->statements) collectGenericCallSites(s, sites);
         for (auto* a : node->args) collectGenericCallSites(a, sites);
         for (auto& hc : node->handleCases) collectGenericCallSites(hc.body, sites);
+        for (auto& arm : node->matchArms) collectGenericCallSites(arm.body, sites);
     }
 
     // Recursively collects free-variable references in a closure body -
@@ -3374,8 +4879,12 @@ private:
         auto savedInterfaceType = namedValueInterfaceType;
         auto savedClosureSig = namedValueClosureSignature;
         auto savedSharedType = namedValueSharedType;
+        auto savedEnumType = namedValueEnumType;
+        auto savedWeakType = namedValueWeakType;
         auto savedSharedScopeStack = sharedScopeStack;
         auto savedLoopSharedScopeDepth = loopSharedScopeDepth;
+        auto savedOwnScopeStack = ownScopeStack;
+        auto savedLoopOwnScopeDepth = loopOwnScopeDepth;
         llvm::Type* savedRetType = currentFnRetType;
         bool savedBlockTerminated = blockTerminated;
 
@@ -3388,8 +4897,12 @@ private:
             namedValueInterfaceType = savedInterfaceType;
             namedValueClosureSignature = savedClosureSig;
             namedValueSharedType = savedSharedType;
+            namedValueEnumType = savedEnumType;
+            namedValueWeakType = savedWeakType;
             sharedScopeStack = savedSharedScopeStack;
             loopSharedScopeDepth = savedLoopSharedScopeDepth;
+            ownScopeStack = savedOwnScopeStack;
+            loopOwnScopeDepth = savedLoopOwnScopeDepth;
             currentFnRetType = savedRetType;
             blockTerminated = savedBlockTerminated;
         };
@@ -3401,8 +4914,12 @@ private:
         namedValueInterfaceType.clear();
         namedValueClosureSignature.clear();
         namedValueSharedType.clear();
+        namedValueEnumType.clear();
+        namedValueWeakType.clear();
         sharedScopeStack.clear();
         loopSharedScopeDepth.clear();
+        ownScopeStack.clear();
+        loopOwnScopeDepth.clear();
 
         llvm::BasicBlock* bb = llvm::BasicBlock::Create(context, "entry", trampolineFn);
         builder.SetInsertPoint(bb);
@@ -3423,6 +4940,8 @@ private:
             if (savedVectorElem.count(name)) namedValueVectorElementType[name] = savedVectorElem[name];
             if (savedInterfaceType.count(name)) namedValueInterfaceType[name] = savedInterfaceType[name];
             if (savedClosureSig.count(name)) namedValueClosureSignature[name] = savedClosureSig[name];
+            if (savedEnumType.count(name)) namedValueEnumType[name] = savedEnumType[name];
+            if (savedWeakType.count(name)) namedValueWeakType[name] = savedWeakType[name];
         }
 
         for (auto& p : expr.params) {
@@ -3548,14 +5067,30 @@ public:
         namedValueVectorElementType.clear();
         namedValueClosureSignature.clear();
         namedValueSharedType.clear();
+        namedValueEnumType.clear();
+        namedValueWeakType.clear();
         sharedScopeStack.clear();
         loopSharedScopeDepth.clear();
+        ownScopeStack.clear();
+        loopOwnScopeDepth.clear();
 
         auto argIt = llvmFn->args().begin();
         if (fn.isMethod) {
             argIt->setName("self");
             namedValues["self"] = &*argIt;
-            namedValueStructType["self"] = fn.selfTypeName;
+            // An impl block's Self type can now be an enum too
+            // (LANGUAGE_GAPS.md's generic-impl-methods work - `impl<T>
+            // Option2<T> { ... }`), not just a struct - this used to
+            // unconditionally assume struct, which silently left an
+            // enum-typed `self` out of namedValueEnumType entirely
+            // (compileMatch's inferEnumTypeName(self) would find nothing,
+            // wrongly demanding a `_` catch-all arm even for an otherwise-
+            // exhaustive match on self).
+            if (enumVariantIndex.count(fn.selfTypeName)) {
+                namedValueEnumType["self"] = fn.selfTypeName;
+            } else {
+                namedValueStructType["self"] = fn.selfTypeName;
+            }
             ++argIt;
         }
         for (auto& p : fn.params) {
@@ -3563,6 +5098,12 @@ public:
             namedValues[p.name] = &*argIt;
             if (auto structName = resolveStructTypeName(p.type)) {
                 namedValueStructType[p.name] = *structName;
+            }
+            // Enum-typed parameter (LANGUAGE_GAPS.md's algebraic-data-types
+            // work) - same "opaque pointer erases identity" reasoning as
+            // namedValueStructType right above.
+            if (auto enumName = resolveEnumTypeName(p.type)) {
+                namedValueEnumType[p.name] = *enumName;
             }
             // Interface-typed parameter (a fat pointer at the ABI level,
             // per resolveType) - record it the same way namedValueStructType
@@ -3728,6 +5269,8 @@ public:
         blockTerminated = false;
         sharedScopeStack.clear();
         loopSharedScopeDepth.clear();
+        ownScopeStack.clear();
+        loopOwnScopeDepth.clear();
 
         llvm::Value* result = compileExpr(body);
         currentFnRetType = prevFnRetType;
