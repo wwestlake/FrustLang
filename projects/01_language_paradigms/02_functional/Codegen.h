@@ -1637,11 +1637,38 @@ private:
 
             case ExprKind::Block: {
                 sharedScopeStack.push_back({});
+                // Real block-level lexical scoping (LANGUAGE_GAPS.md #10):
+                // snapshot every namedValue* side table on entry and restore
+                // on every exit path, so a `let` inside this block can't
+                // leak into (or clobber) the enclosing scope once the block
+                // ends. Mirrors the closure-literal trampoline's own
+                // whole-map save/restore (compileClosureLiteral, below) -
+                // same pattern, scoped to this block instead of a whole new
+                // function. sharedScopeStack itself is intentionally NOT
+                // included here - it already has its own correct per-block
+                // push/pop lifecycle for drop tracking, above and below.
+                auto savedNamedValues = namedValues;
+                auto savedStructType = namedValueStructType;
+                auto savedRawPointee = namedValueRawPointeeType;
+                auto savedVectorElem = namedValueVectorElementType;
+                auto savedInterfaceType = namedValueInterfaceType;
+                auto savedClosureSig = namedValueClosureSignature;
+                auto savedSharedType = namedValueSharedType;
+                auto restoreNamedValueState = [&]() {
+                    namedValues = savedNamedValues;
+                    namedValueStructType = savedStructType;
+                    namedValueRawPointeeType = savedRawPointee;
+                    namedValueVectorElementType = savedVectorElem;
+                    namedValueInterfaceType = savedInterfaceType;
+                    namedValueClosureSignature = savedClosureSig;
+                    namedValueSharedType = savedSharedType;
+                };
+
                 llvm::Value* last = nullptr;
                 for (auto* stmt : expr->statements) {
                     if (blockTerminated) break;
                     last = compileExpr(stmt);
-                    if (!last) { sharedScopeStack.pop_back(); return nullptr; }
+                    if (!last) { sharedScopeStack.pop_back(); restoreNamedValueState(); return nullptr; }
                 }
                 if (!blockTerminated) {
                     // A bare-identifier tail statement is this block's own
@@ -1649,7 +1676,10 @@ private:
                     // return) - if it names one of THIS scope's own
                     // shared-owning locals, skip dropping it here (see
                     // namedValueSharedType's header comment: ownership
-                    // genuinely leaves untouched, tracked no further).
+                    // genuinely leaves untouched, tracked no further). The
+                    // llvm::Value* itself is already captured in `last`
+                    // above, so restoring the NAME bindings below doesn't
+                    // lose it - only the binding, not the value, disappears.
                     std::string skipName;
                     if (!expr->statements.empty() && expr->statements.back()->kind == ExprKind::Identifier) {
                         skipName = expr->statements.back()->text;
@@ -1657,6 +1687,7 @@ private:
                     emitScopeDrops(sharedScopeStack.back(), skipName);
                 }
                 sharedScopeStack.pop_back();
+                restoreNamedValueState();
                 return last;
             }
 

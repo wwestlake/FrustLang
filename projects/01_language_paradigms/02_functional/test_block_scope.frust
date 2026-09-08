@@ -1,0 +1,14 @@
+// LANGUAGE_GAPS.md #10: real block-level lexical scoping. Before the fix,
+// namedValues was a single flat function-wide map - a `let x` inside the
+// if-body below would silently clobber the SAME map entry as the outer
+// `x`, and stay clobbered after the block ends. Hand-predicted: the outer
+// x is untouched by the if-body's shadowing `let`, so main() must print
+// 100, not 999.
+fn main() -> i64 = {
+    let x: i64 = 100;
+    if true {
+        let x: i64 = 999;
+        x
+    };
+    x
+}

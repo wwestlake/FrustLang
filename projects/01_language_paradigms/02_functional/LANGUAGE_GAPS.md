@@ -581,8 +581,35 @@ needed the workaround in the first place.
 
 ## 10. Real block-level lexical scoping
 
-**Status: OPEN - found 2026-08-24, answering a real Quora question
-("What are the scoping rules for Frust?").**
+**Status: DONE - 2026-09-08.** Fixed as the first step of the algebraic-
+data-types push (a `match` expression's arms need real per-arm scoping,
+so this had to land first). The `ExprKind::Block` case (`Codegen.h`) now
+snapshots `namedValues`/`namedValueStructType`/`namedValueRawPointeeType`/
+`namedValueVectorElementType`/`namedValueInterfaceType`/
+`namedValueClosureSignature`/`namedValueSharedType` on entry and restores
+all seven on every exit path (fall-through, and the early-return-on-
+compile-failure path), mirroring the closure-literal trampoline's own
+whole-map save/restore exactly (see below) but scoped per block instead
+of per closure. `sharedScopeStack` itself was deliberately left untouched
+- it already had its own correct per-block push/pop lifecycle for drop
+tracking; this fix is purely about name *visibility*.
+
+Verified (`test_block_scope.frust`, `frust_compiler.exe` direct-run): an
+outer `let x: i64 = 100` with an `if`-body `let x: i64 = 999` shadowing
+it - hand-predicted the outer `x` survives untouched (`main() => 100`,
+not `999`, which is what the old flat-map bug would have produced).
+Negative case (`test_block_scope_negative.frust`): a `let y` introduced
+ONLY inside an `if`-body, referenced after the block ends - hand-
+predicted and confirmed a real compile error (`unknown identifier 'y'`),
+not silent success. Full `frust_plugin_host` regression sweep (all 17
+examples, Debug rebuild) and a full JUCE IDE Debug rebuild + launch
+smoke test both clean - this touched the single most-used codegen path
+in the whole compiler (every `{ }` body, including every function's own
+top-level block), so the full sweep was the actual bar for "done," per
+the standing rule.
+
+**Original finding (2026-08-24, kept for the record), answering a real
+Quora question ("What are the scoping rules for Frust?"):**
 
 Confirmed by direct read of `Codegen.h`: `namedValues` (the
 name -> `llvm::Value*` table every `let`/parameter binds into) is a
