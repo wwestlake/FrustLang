@@ -332,6 +332,34 @@ private:
     // enclosing scopes.
     std::vector<size_t> loopSharedScopeDepth;
 
+    // `own T { ... }` automatic scope-exit free (LANGUAGE_GAPS.md #7's
+    // remaining piece) - mirrors sharedScopeStack/loopSharedScopeDepth's
+    // shape exactly (same push/pop lifecycle, same Block/Return/Break/
+    // Continue integration points), but tracks a DIFFERENT, narrower set
+    // of names: `own` has exactly one owner and no refcount, so there is
+    // no retain/second-owner story the way `shared` has - a name only
+    // ever enters ownScopeStack when ownValueEscapes (below) can prove,
+    // via a real (if deliberately conservative) AST scan of the rest of
+    // its own directly-enclosing block, that it is never passed as a
+    // call argument, never rebound to another name, and never referenced
+    // at all inside any nested control-flow construct (if/while/loop/
+    // for/match/handle) - only a demonstrably straight-line-local value
+    // gets a real free() here; anything this scan can't rule out stays
+    // permanently un-freed, exactly like `own` already behaved before
+    // this feature existed. Worst case is therefore still always a LEAK,
+    // never a double-free or use-after-free - same bar `shared` itself
+    // was held to.
+    std::vector<std::vector<std::string>> ownScopeStack;
+    std::vector<size_t> loopOwnScopeDepth;
+    // ownValueEscapes needs to scan "the rest of the CURRENT block's
+    // statements, after the `let` being compiled" - the Block case below
+    // sets these two right before compiling each statement (and restores
+    // them around any nested Block's own compile, so a nested block's
+    // own escape-scans see ITS OWN remaining statements, not the
+    // enclosing block's).
+    const std::vector<Expr*>* currentBlockStatements = nullptr;
+    size_t currentBlockStatementIndex = 0;
+
     // `struct Box<T> { ... }` templates (LANGUAGE_GAPS.md #4) - name ->
     // the AST declaration, NOT an LLVM type. indexStructs() does not
     // eagerly create an LLVM struct type for a generic struct's bare
@@ -1086,6 +1114,8 @@ private:
         auto savedEnumType = namedValueEnumType;
         auto savedSharedScopeStack = sharedScopeStack;
         auto savedLoopSharedScopeDepth = loopSharedScopeDepth;
+        auto savedOwnScopeStack = ownScopeStack;
+        auto savedLoopOwnScopeDepth = loopOwnScopeDepth;
         llvm::Type* savedRetType = currentFnRetType;
         bool savedBlockTerminated = blockTerminated;
 
@@ -1118,6 +1148,8 @@ private:
         namedValueEnumType = savedEnumType;
         sharedScopeStack = savedSharedScopeStack;
         loopSharedScopeDepth = savedLoopSharedScopeDepth;
+        ownScopeStack = savedOwnScopeStack;
+        loopOwnScopeDepth = savedLoopOwnScopeDepth;
         currentFnRetType = savedRetType;
         blockTerminated = savedBlockTerminated;
         return result;
@@ -2149,6 +2181,30 @@ private:
                         }
                         namedValueSharedType.insert(expr->text);
                         if (!sharedScopeStack.empty()) sharedScopeStack.back().push_back(expr->text);
+                    } else if (expr->lhs->kind == ExprKind::SmartPtrNew && expr->lhs->smartPtrKind == SmartPtrKind::Own
+                               && currentBlockStatements) {
+                        // `own T { ... }` automatic drop (LANGUAGE_GAPS.md
+                        // #7's remaining piece) - ONLY a FRESH own
+                        // construction is ever considered here (never a
+                        // rebind like `let b = a;` where `a` is own - own
+                        // has no refcount to make a second owner safe,
+                        // unlike shared's retain, so a rebind is simply
+                        // never tracked at all here; ownValueEscapes
+                        // already treats the rebind itself as an escaping
+                        // use of `a`, so `a` won't be tracked either -
+                        // both names permanently un-freed, matching this
+                        // project's own "leak, never double-free" bar).
+                        // ownValueEscapes scans the REST of this exact
+                        // block (from just after this `let`, onward) - see
+                        // that function's own header comment for exactly
+                        // what it does and doesn't catch.
+                        bool escapes = false;
+                        for (size_t j = currentBlockStatementIndex + 1; j < currentBlockStatements->size(); ++j) {
+                            if (ownValueEscapes(expr->text, (*currentBlockStatements)[j])) { escapes = true; break; }
+                        }
+                        if (!escapes) {
+                            if (!ownScopeStack.empty()) ownScopeStack.back().push_back(expr->text);
+                        }
                     }
                 } else if (auto enumTypeName = inferEnumTypeName(expr->lhs)) {
                     // Enums are pointer-represented exactly like structs
@@ -2192,6 +2248,12 @@ private:
                 for (auto scopeIt = sharedScopeStack.rbegin(); scopeIt != sharedScopeStack.rend(); ++scopeIt) {
                     emitScopeDrops(*scopeIt, skipName);
                 }
+                // Same skipName gates ownScopeStack's own drops too
+                // (LANGUAGE_GAPS.md #7) - `return name;` propagates
+                // ownership out of the function, not ending it here.
+                for (auto scopeIt = ownScopeStack.rbegin(); scopeIt != ownScopeStack.rend(); ++scopeIt) {
+                    emitOwnScopeDrops(*scopeIt, skipName);
+                }
 
                 builder.CreateRet(coerced);
                 blockTerminated = true;
@@ -2200,6 +2262,7 @@ private:
 
             case ExprKind::Block: {
                 sharedScopeStack.push_back({});
+                ownScopeStack.push_back({});
                 // Real block-level lexical scoping (LANGUAGE_GAPS.md #10):
                 // snapshot every namedValue* side table on entry and restore
                 // on every exit path, so a `let` inside this block can't
@@ -2229,12 +2292,26 @@ private:
                     namedValueEnumType = savedEnumType;
                 };
 
+                auto savedBlockStatements = currentBlockStatements;
+                auto savedBlockStatementIndex = currentBlockStatementIndex;
+                currentBlockStatements = &expr->statements;
+
                 llvm::Value* last = nullptr;
-                for (auto* stmt : expr->statements) {
+                for (size_t i = 0; i < expr->statements.size(); ++i) {
                     if (blockTerminated) break;
-                    last = compileExpr(stmt);
-                    if (!last) { sharedScopeStack.pop_back(); restoreNamedValueState(); return nullptr; }
+                    currentBlockStatementIndex = i;
+                    last = compileExpr(expr->statements[i]);
+                    if (!last) {
+                        sharedScopeStack.pop_back();
+                        ownScopeStack.pop_back();
+                        currentBlockStatements = savedBlockStatements;
+                        currentBlockStatementIndex = savedBlockStatementIndex;
+                        restoreNamedValueState();
+                        return nullptr;
+                    }
                 }
+                currentBlockStatements = savedBlockStatements;
+                currentBlockStatementIndex = savedBlockStatementIndex;
                 if (!blockTerminated) {
                     // A bare-identifier tail statement is this block's own
                     // value propagating OUT (to an enclosing block/let/
@@ -2245,13 +2322,18 @@ private:
                     // llvm::Value* itself is already captured in `last`
                     // above, so restoring the NAME bindings below doesn't
                     // lose it - only the binding, not the value, disappears.
+                    // Same skipName also gates ownScopeStack's own drops
+                    // (LANGUAGE_GAPS.md #7) - an own-bound name propagating
+                    // out as this block's own tail must not be freed here.
                     std::string skipName;
                     if (!expr->statements.empty() && expr->statements.back()->kind == ExprKind::Identifier) {
                         skipName = expr->statements.back()->text;
                     }
                     emitScopeDrops(sharedScopeStack.back(), skipName);
+                    emitOwnScopeDrops(ownScopeStack.back(), skipName);
                 }
                 sharedScopeStack.pop_back();
+                ownScopeStack.pop_back();
                 restoreNamedValueState();
                 return last;
             }
@@ -3762,9 +3844,11 @@ private:
         // "recheck" step instead of needing a dedicated increment block.
         loopStack.push_back({condBB, mergeBB});
         loopSharedScopeDepth.push_back(sharedScopeStack.size());
+        loopOwnScopeDepth.push_back(ownScopeStack.size());
         llvm::Value* bodyV = compileExpr(expr.lhs);
         loopStack.pop_back();
         loopSharedScopeDepth.pop_back();
+        loopOwnScopeDepth.pop_back();
         if (!bodyV) return nullptr;
 
         if (!blockTerminated) {
@@ -3796,9 +3880,11 @@ private:
 
         loopStack.push_back({bodyBB, mergeBB});
         loopSharedScopeDepth.push_back(sharedScopeStack.size());
+        loopOwnScopeDepth.push_back(ownScopeStack.size());
         llvm::Value* bodyV = compileExpr(expr.lhs);
         loopStack.pop_back();
         loopSharedScopeDepth.pop_back();
+        loopOwnScopeDepth.pop_back();
         if (!bodyV) return nullptr;
 
         if (!blockTerminated) {
@@ -3852,9 +3938,11 @@ private:
 
         loopStack.push_back({incrBB, mergeBB});
         loopSharedScopeDepth.push_back(sharedScopeStack.size());
+        loopOwnScopeDepth.push_back(ownScopeStack.size());
         llvm::Value* bodyV = compileExpr(expr.lhs);
         loopStack.pop_back();
         loopSharedScopeDepth.pop_back();
+        loopOwnScopeDepth.pop_back();
         if (!bodyV) return nullptr;
 
         if (!blockTerminated) {
@@ -3894,6 +3982,7 @@ private:
             return nullptr;
         }
         dropSharedScopesSinceLoopEntry();
+        dropOwnScopesSinceLoopEntry();
         builder.CreateBr(loopStack.back().second);
         blockTerminated = true;
         return llvm::ConstantFP::get(context, llvm::APFloat(0.0));
@@ -3906,6 +3995,7 @@ private:
             return nullptr;
         }
         dropSharedScopesSinceLoopEntry();
+        dropOwnScopesSinceLoopEntry();
         builder.CreateBr(loopStack.back().first);
         blockTerminated = true;
         return llvm::ConstantFP::get(context, llvm::APFloat(0.0));
@@ -3991,6 +4081,108 @@ private:
             if (*it == skipName) continue;
             if (namedValueSharedType.count(*it)) dropSharedLocal(*it);
         }
+    }
+
+    // `own T { ... }` automatic drop (LANGUAGE_GAPS.md #7's remaining
+    // piece). Straight `free()`, no header, no refcount, no conditional
+    // control flow - unlike dropSharedLocal, an `own` value is never
+    // header-prefixed (payloadPtr IS the malloc'd pointer, see
+    // compileHeapStructLiteral), so there's nothing to offset or check.
+    void dropOwnLocal(const std::string& name) {
+        auto it = namedValues.find(name);
+        if (it == namedValues.end()) return;
+        llvm::FunctionCallee freeFn = module.getOrInsertFunction("free",
+            llvm::FunctionType::get(llvm::Type::getVoidTy(context), {llvm::PointerType::getUnqual(context)}, false));
+        builder.CreateCall(freeFn, {it->second});
+    }
+
+    // Mirrors emitScopeDrops exactly, for ownScopeStack instead of
+    // sharedScopeStack.
+    void emitOwnScopeDrops(const std::vector<std::string>& names, const std::string& skipName) {
+        for (auto it = names.rbegin(); it != names.rend(); ++it) {
+            if (*it == skipName) continue;
+            dropOwnLocal(*it);
+        }
+    }
+
+    // Mirrors dropSharedScopesSinceLoopEntry exactly, for ownScopeStack.
+    void dropOwnScopesSinceLoopEntry() {
+        size_t depth = loopOwnScopeDepth.back();
+        for (size_t i = ownScopeStack.size(); i-- > depth; ) {
+            emitOwnScopeDrops(ownScopeStack[i], "");
+        }
+    }
+
+    // Unconditional "does this subtree mention `name` as a bare
+    // Identifier ANYWHERE" - deliberately position-blind (unlike
+    // ownValueEscapes below), used only to decide whether `name` appears
+    // AT ALL inside a nested control-flow construct, where this pass
+    // doesn't attempt to reason about which branch/path actually runs.
+    bool referencesIdentifier(const std::string& name, const Expr* node) {
+        if (!node) return false;
+        if (node->kind == ExprKind::Identifier && node->text == name) return true;
+        if (referencesIdentifier(name, node->lhs)) return true;
+        if (referencesIdentifier(name, node->rhs)) return true;
+        if (referencesIdentifier(name, node->condExpr)) return true;
+        if (referencesIdentifier(name, node->elseExpr)) return true;
+        for (auto* s : node->statements) if (referencesIdentifier(name, s)) return true;
+        for (auto* a : node->args) if (referencesIdentifier(name, a)) return true;
+        for (auto& hc : node->handleCases) if (referencesIdentifier(name, hc.body)) return true;
+        for (auto& arm : node->matchArms) if (referencesIdentifier(name, arm.body)) return true;
+        return false;
+    }
+
+    // Recursively scans `node` (a statement in the SAME block an `own`-
+    // bound name was just declared in, and everything after it) for a
+    // use that this minimal pass can't safely reason about - LANGUAGE_GAPS.md
+    // #7's remaining piece. Two real escape modes, checked directly:
+    // passed as a Call argument, or used as the RHS-target of ANOTHER
+    // `let` (a rebinding/aliasing use - `own` has no refcount to make a
+    // second owner safe the way `shared`'s retain does). A THIRD,
+    // broader check: ANY reference to `name` at all inside a nested
+    // control-flow construct (if/while/loop/for/match/handle) is ALSO
+    // treated as escaping, deliberately more conservative than strictly
+    // necessary - a value propagating out through a nested block's own
+    // tail (`if cond { x } else { other }`) needs cross-block reasoning
+    // this minimal pass doesn't attempt, and getting that specific case
+    // wrong would free a pointer still in active use. An explicit
+    // `return name;`/the block's OWN direct tail identifier are
+    // deliberately NOT checked here - those already have a real,
+    // separate skip-at-that-exit-point mechanism (mirroring shared's own
+    // skipName, wired into the Block/Return cases below), so tracking
+    // still safely applies to them. Field/method-call-receiver reads are
+    // NOT escapes either (a read through the pointer, not a hand-off) -
+    // deliberately not flagged, or this feature would never track
+    // anything (`self.value`-style access is a Member whose own lhs is
+    // an Identifier, indistinguishable from an escape without this
+    // narrower, position-aware check).
+    bool ownValueEscapes(const std::string& name, const Expr* node) {
+        if (!node) return false;
+
+        if ((node->kind == ExprKind::If || node->kind == ExprKind::While
+             || node->kind == ExprKind::Loop || node->kind == ExprKind::For
+             || node->kind == ExprKind::Match || node->kind == ExprKind::Handle)
+            && referencesIdentifier(name, node)) {
+            return true;
+        }
+
+        for (auto* a : node->args) {
+            if (a->kind == ExprKind::Identifier && a->text == name) return true;
+        }
+        if (node->kind == ExprKind::Let && node->lhs
+            && node->lhs->kind == ExprKind::Identifier && node->lhs->text == name) {
+            return true;
+        }
+
+        if (ownValueEscapes(name, node->lhs)) return true;
+        if (ownValueEscapes(name, node->rhs)) return true;
+        if (ownValueEscapes(name, node->condExpr)) return true;
+        if (ownValueEscapes(name, node->elseExpr)) return true;
+        for (auto* s : node->statements) if (ownValueEscapes(name, s)) return true;
+        for (auto* a : node->args) if (ownValueEscapes(name, a)) return true;
+        for (auto& hc : node->handleCases) if (ownValueEscapes(name, hc.body)) return true;
+        for (auto& arm : node->matchArms) if (ownValueEscapes(name, arm.body)) return true;
+        return false;
     }
 
     llvm::Value* compilePerform(const Expr& expr) {
@@ -4382,6 +4574,8 @@ private:
         auto savedEnumType = namedValueEnumType;
         auto savedSharedScopeStack = sharedScopeStack;
         auto savedLoopSharedScopeDepth = loopSharedScopeDepth;
+        auto savedOwnScopeStack = ownScopeStack;
+        auto savedLoopOwnScopeDepth = loopOwnScopeDepth;
         llvm::Type* savedRetType = currentFnRetType;
         bool savedBlockTerminated = blockTerminated;
 
@@ -4397,6 +4591,8 @@ private:
             namedValueEnumType = savedEnumType;
             sharedScopeStack = savedSharedScopeStack;
             loopSharedScopeDepth = savedLoopSharedScopeDepth;
+            ownScopeStack = savedOwnScopeStack;
+            loopOwnScopeDepth = savedLoopOwnScopeDepth;
             currentFnRetType = savedRetType;
             blockTerminated = savedBlockTerminated;
         };
@@ -4411,6 +4607,8 @@ private:
         namedValueEnumType.clear();
         sharedScopeStack.clear();
         loopSharedScopeDepth.clear();
+        ownScopeStack.clear();
+        loopOwnScopeDepth.clear();
 
         llvm::BasicBlock* bb = llvm::BasicBlock::Create(context, "entry", trampolineFn);
         builder.SetInsertPoint(bb);
@@ -4560,6 +4758,8 @@ public:
         namedValueEnumType.clear();
         sharedScopeStack.clear();
         loopSharedScopeDepth.clear();
+        ownScopeStack.clear();
+        loopOwnScopeDepth.clear();
 
         auto argIt = llvmFn->args().begin();
         if (fn.isMethod) {
@@ -4756,6 +4956,8 @@ public:
         blockTerminated = false;
         sharedScopeStack.clear();
         loopSharedScopeDepth.clear();
+        ownScopeStack.clear();
+        loopOwnScopeDepth.clear();
 
         llvm::Value* result = compileExpr(body);
         currentFnRetType = prevFnRetType;

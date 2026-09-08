@@ -1,0 +1,17 @@
+// LANGUAGE_GAPS.md #7: an `own` value referenced inside a nested if/
+// while/etc. is deliberately treated as too complex to track (not
+// freed at all - permanent leak, same as before this feature existed),
+// since this minimal pass doesn't reason about which branch runs.
+// Hand-predicted: 9 (the value must still be correct - proves it was
+// NOT freed out from under this read).
+struct Box4 { v: i64 }
+
+fn main() -> i64 = {
+    let flag: bool = true;
+    let b: Box4 = own Box4 { v: 9 };
+    if flag == true {
+        b.v
+    } else {
+        0
+    }
+}

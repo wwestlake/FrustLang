@@ -1,0 +1,14 @@
+// LANGUAGE_GAPS.md #7: an `own` value returned out of its constructing
+// function's tail position must NOT be freed there - it must still be
+// alive and correct at the call site. Hand-predicted: 42.
+struct Box2 { v: i64 }
+
+fn make(x: i64) -> Box2 = {
+    let b: Box2 = own Box2 { v: x };
+    b
+}
+
+fn main() -> i64 = {
+    let result: Box2 = make(42);
+    result.v
+}

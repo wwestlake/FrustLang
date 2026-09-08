@@ -1,0 +1,21 @@
+// LANGUAGE_GAPS.md #7: the simple, straight-line, non-escaping case -
+// checked against the PRE-optimization IR directly (see this item's own
+// commit/LANGUAGE_GAPS.md notes on why: LLVM's own optimizer aggressively
+// eliminates a malloc'd block it can prove never escapes a function,
+// REGARDLESS of whether this pass's own free() is present or correct -
+// runtime memory measurement can't distinguish "my code freed it" from
+// "the optimizer deleted the whole allocation as dead code" once
+// optimized, so this is verified against output_pre_opt.ll instead,
+// which reflects exactly what THIS pass emitted, unclouded by later
+// optimization). Hand-predicted: 5 (the drop itself doesn't affect this
+// value - the point of this program is to give the compiler something
+// real to emit codegen for; the IR inspection below is the actual check).
+struct Blob {
+    a: i64,
+    b: i64
+}
+
+fn main() -> i64 = {
+    let blob: Blob = own Blob { a: 5, b: 6 };
+    blob.a
+}

@@ -638,9 +638,94 @@ separate, smaller follow-ons if ever needed, not silently folded in.
 
 ## 7. `own`/`shared`/`weak` smart pointers (real reference counting / move semantics)
 
-**Status: PARTIAL, `shared` now real (2026-08-23) - `own` heap
-allocation still has no automatic drop, `weak` remains entirely
-unimplemented.**
+**Status: PARTIAL - `own`'s automatic drop landed 2026-09-08 for a real
+but deliberately narrow scope; `weak` remains entirely unimplemented.**
+The highest-risk item in this whole document by its own original
+reasoning (below) - a wrong answer here is a real double-free, not just
+a missing feature - so the scope stayed strictly to what could be
+PROVEN safe by a real (if conservative) AST scan, not extended to cover
+every case `shared` does.
+
+**What ships**: a `let`-bound `own T { ... }` local gets a real
+scope-exit `free()` (straight `free()`, no header, no refcount - unlike
+`dropSharedLocal`, an `own` value is never header-prefixed) IF AND ONLY
+IF `ownValueEscapes` (`Codegen.h`) can prove, by scanning the rest of
+its own directly-enclosing block, that the name is never: passed as a
+Call argument, used as the RHS-target of ANOTHER `let` (a rebinding/
+aliasing use - `own` has no refcount to make a second owner safe the
+way `shared`'s retain does, so a rebind is simply never tracked at all,
+not even conditionally), or referenced AT ALL inside a nested
+control-flow construct (`if`/`while`/`loop`/`for`/`match`/`handle`) -
+this last check is deliberately broader than strictly necessary (it
+doesn't matter WHAT the reference inside the nested construct is doing,
+ANY reference disqualifies tracking) because a value propagating out
+through a nested block's own tail (`if cond { x } else { other }`)
+needs cross-block reasoning this minimal pass doesn't attempt, and
+getting that specific case wrong would free a pointer still in active
+use. An explicit `return name;` and the block's own direct tail
+identifier are handled the SAME way `shared` already does (a `skipName`
+parameter threaded through `Block`/`Return`, now also gating
+`ownScopeStack`, mirroring `sharedScopeStack` one-to-one including the
+`break`/`continue`/loop-depth machinery) - NOT flagged as escaping by
+`ownValueEscapes` itself, since a real, separate skip-at-that-exact-
+exit mechanism already covers them correctly.
+
+**A real reentrancy risk was checked and closed as part of this work**:
+`getOrCreateMonomorphizedMethod` (item #4/generic-impl-methods) already
+needed a full `namedValue*`/`sharedScopeStack` save/restore around its
+own reentrant `compileFunction` call - `ownScopeStack`/
+`loopOwnScopeDepth` were added to that exact save/restore list (and to
+every other site `sharedScopeStack` is saved/restored/cleared -
+`compileClosureLiteral`'s trampoline, `compileFunction`, `compileAnonymous`)
+so this feature doesn't reintroduce the same class of bug fixed for
+generic methods.
+
+**Real, surprising finding while verifying this**: the ORIGINAL
+verification plan (a large stress loop, watching process memory
+externally to prove no leak growth, mirroring `shared`'s own 2000-cycle
+test) turned out not to work FOR THIS SPECIFIC COMPILER - LLVM's own
+`-O2` optimizer (run unconditionally on every compiled program, see
+`Main.cpp`'s `optimizeModule`) proves a malloc'd block that never
+escapes a function has no observable effect and deletes the ENTIRE
+malloc/store/free sequence as dead code, regardless of whether this
+pass's own `free()` was present, correct, or even reached - confirmed
+directly: a 5-million-iteration stress-test program's `main()` compiled
+down to a bare `ret i64 5000000`, zero `malloc`/`free` calls anywhere
+in the post-optimization IR. Runtime memory measurement therefore can't
+distinguish "this pass correctly freed it" from "the optimizer deleted
+the allocation as dead code" - **verified against `output_pre_opt.ll`
+directly instead** (frust_compiler's own pre-optimization IR dump,
+reflecting exactly what THIS pass emits, unclouded by later
+optimization) for six real scenarios: a simple non-escaping local (real
+`malloc`→stores→load→`call void @free`→`ret`, value safely loaded into
+an SSA register BEFORE the free, no use-after-free), a tail-returned
+value (`ret ptr %0`, zero `free` calls), an argument-passed value
+(`call @read_it(ptr %0)`, zero `free` calls), a value referenced inside
+a nested `if` (zero `free` calls), an explicit non-tail `return`
+(zero `free` calls, the dummy intervening statement confirming this
+isn't just the tail-identifier check firing), and a `let b = a;`
+rebind (zero `free` calls for either name). All six matched the
+intended shape exactly.
+
+**Named, deliberate scope cut** (worst case is always a LEAK, never a
+double-free or use-after-free - same bar `shared` was held to): an
+`own` value returned out of its OWN constructing function is correctly
+NOT freed there (via the skipName mechanism above), but the RECEIVING
+caller gets no NEW tracking of its own for that value - same
+call-boundary limitation `shared` already has. Confirmed real `own`
+usage elsewhere in this repo (`06_frust_library/core/src/automation.fr`'s
+`RampAutomation`/`DecayAutomation` constructors) is entirely
+UNAFFECTED by this change either way - both are bare function-tail
+`own` literals, never `let`-bound, so this pass's own tracking logic
+(which only ever triggers from the `Let` branch) never even runs for
+them; the existing `frust_plugin_host` regression examples that
+exercise `automation.fr` (`automation_example`, `multi_plugin_stress_example`)
+confirm this empirically too.
+
+Full `frust_plugin_host` regression sweep (17 examples) and a JUCE IDE
+Debug rebuild + launch smoke test both clean.
+
+### Original `shared` implementation (2026-08-23, kept for the record)
 
 Deliberately scoped down from "full" after tracing a real risk: `own`
 has exactly one owner and no refcount, so an automatic drop needs real

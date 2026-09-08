@@ -1,0 +1,16 @@
+// LANGUAGE_GAPS.md #7: an EXPLICIT `return b;` (not the block's own tail
+// position - a dummy statement follows the let so `b` isn't literally
+// the last statement) must still skip the drop at that return, mirroring
+// shared's own skipName mechanism. Hand-predicted: 55.
+struct Box5 { v: i64 }
+
+fn make2(x: i64) -> Box5 = {
+    let b: Box5 = own Box5 { v: x };
+    let unrelated: i64 = 1;
+    return b;
+}
+
+fn main() -> i64 = {
+    let result: Box5 = make2(55);
+    result.v
+}
