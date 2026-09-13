@@ -284,6 +284,23 @@ private:
     // branch of compileExpr, not in compileCall.
     std::unordered_map<std::string, std::string> namedValueVectorElementType;
 
+    // Array<N> (audio-safe fixed-capacity buffer): a plain malloc'd i64[N]
+    // pointer with NO length/capacity header at all -- unlike Vector<T>,
+    // N is a compile-time constant baked into the type, never grows, and
+    // needs no runtime size field for its bounds check to compare against.
+    // Recorded per-binding for the same reason namedValueVectorElementType
+    // is: an opaque pointer alone can't say how big the buffer behind it
+    // is, only the declared type ever knew. Threaded through every save/
+    // restore/clear site namedValueVectorElementType already has, in
+    // lockstep, so scope handling can't diverge between the two.
+    std::unordered_map<std::string, int64_t> namedValueArraySize;
+
+    // Array<N>'s element type name ("i64" for the sugar form, or whatever
+    // T is written in Array<T, N>) -- same "opaque pointer erases
+    // identity" reasoning as namedValueVectorElementType, threaded through
+    // every save/restore/clear site in lockstep with namedValueArraySize.
+    std::unordered_map<std::string, std::string> namedValueArrayElementType;
+
     // A closure value (LANGUAGE_GAPS.md #6) is a fat pointer
     // { ptr code, ptr env } - the exact same shape/mechanism
     // wrapAsInterface already builds for interface dispatch, reused
@@ -706,6 +723,27 @@ private:
         builder.CreateStore(llvm::ConstantInt::get(i64Ty, 0), builder.CreateStructGEP(hdrTy, headerPtr, 1));
         builder.CreateStore(llvm::ConstantInt::get(i64Ty, 0), builder.CreateStructGEP(hdrTy, headerPtr, 2));
         return headerPtr;
+    }
+
+    // `Array<N>::new()` - one malloc of exactly N*8 bytes (i64 elements),
+    // zero-filled, and never touched again by any allocator call for the
+    // rest of that value's life: no header, no length/capacity fields, no
+    // push/grow path exists for this type at all. That absence is the
+    // actual safety property real-time audio code needs -- see
+    // namedValueArraySize's own comment for why this is a distinct type
+    // from Vector<T> rather than a Vector<T> with growth disabled.
+    // Zero-filled on construction so an audio buffer reads as silence
+    // before anything writes into it, not garbage heap contents.
+    llvm::Value* compileArrayNew(llvm::Type* elemTy, int64_t count) {
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(context);
+        uint64_t elemSize = module.getDataLayout().getTypeAllocSize(elemTy);
+        uint64_t totalBytes = elemSize * static_cast<uint64_t>(count);
+
+        llvm::Value* dataPtr = builder.CreateCall(getMallocFn(),
+            {llvm::ConstantInt::get(i64Ty, totalBytes)}, "arraydata");
+        builder.CreateMemSet(dataPtr, llvm::ConstantInt::get(llvm::Type::getInt8Ty(context), 0),
+            totalBytes, llvm::MaybeAlign(elemSize));
+        return dataPtr;
     }
 
     // `receiver.push(x)` / `.len()` / `.get(i)` - the only three
@@ -1137,6 +1175,8 @@ private:
         auto savedStructType = namedValueStructType;
         auto savedRawPointee = namedValueRawPointeeType;
         auto savedVectorElem = namedValueVectorElementType;
+        auto savedArraySize = namedValueArraySize;
+        auto savedArrayElem = namedValueArrayElementType;
         auto savedInterfaceType = namedValueInterfaceType;
         auto savedClosureSig = namedValueClosureSignature;
         auto savedSharedType = namedValueSharedType;
@@ -1172,6 +1212,8 @@ private:
         namedValueStructType = savedStructType;
         namedValueRawPointeeType = savedRawPointee;
         namedValueVectorElementType = savedVectorElem;
+        namedValueArraySize = savedArraySize;
+        namedValueArrayElementType = savedArrayElem;
         namedValueInterfaceType = savedInterfaceType;
         namedValueClosureSignature = savedClosureSig;
         namedValueSharedType = savedSharedType;
@@ -1684,6 +1726,24 @@ private:
             return llvm::FixedVectorType::get(llvm::Type::getFloatTy(context), static_cast<unsigned>(count));
         }
 
+        // Array<N> (sugar for Array<i64, N>) or Array<T, N> - a fixed-
+        // capacity, heap-allocated T[N] buffer with NO push/grow path at
+        // all (unlike Vector<T>) and bounds checks on BOTH read and write
+        // (unlike Vec<N>, which only checks a literal index at compile
+        // time). Purpose-built for real-time-safe code: one malloc at
+        // construction, never again -- see namedValueArraySize/
+        // namedValueArrayElementType's own comments. Represented as a bare
+        // pointer, not a header struct, because N is baked into the type
+        // and never needs a runtime length field to check against.
+        if (n == "Array" && type->genericArgs.size() == 1 && type->genericArgs[0].isIntConst) {
+            return llvm::PointerType::getUnqual(context);
+        }
+        if (n == "Array" && type->genericArgs.size() == 2
+            && !type->genericArgs[0].isIntConst && type->genericArgs[0].type
+            && type->genericArgs[1].isIntConst) {
+            return llvm::PointerType::getUnqual(context);
+        }
+
         auto structIt = structTypes.find(n);
         if (structIt != structTypes.end()) return llvm::PointerType::getUnqual(context); // structs are always passed/held by pointer
 
@@ -2149,6 +2209,48 @@ private:
                     return header;
                 }
 
+                // `Array<N>::new()` construction -- same reasoning as
+                // Vector::new() above (the call site alone can't carry N;
+                // only this let's own type annotation does), mirrored with
+                // isIntConst true instead of false since Array's parameter
+                // is the fixed size, not an element type.
+                if (expr->typeAnnotation && expr->typeAnnotation->name == "Array"
+                    && expr->lhs->kind == ExprKind::Call
+                    && expr->lhs->lhs->kind == ExprKind::Path
+                    && expr->lhs->lhs->pathSegments.size() == 2
+                    && expr->lhs->lhs->pathSegments[0] == "Array"
+                    && expr->lhs->lhs->pathSegments[1] == "new") {
+                    const auto& genArgs = expr->typeAnnotation->genericArgs;
+                    // Array<N> (sugar for Array<i64, N>), or Array<T, N>
+                    // with an explicit element type -- "default int but
+                    // allow specify type and size."
+                    std::string elemTypeName;
+                    int64_t count = 0;
+                    bool recognized = false;
+                    if (genArgs.size() == 1 && genArgs[0].isIntConst) {
+                        elemTypeName = "i64";
+                        count = genArgs[0].intConst;
+                        recognized = true;
+                    } else if (genArgs.size() == 2 && !genArgs[0].isIntConst && genArgs[0].type && genArgs[1].isIntConst) {
+                        elemTypeName = genArgs[0].type->name;
+                        count = genArgs[1].intConst;
+                        recognized = true;
+                    }
+                    if (recognized) {
+                        if (count <= 0) {
+                            std::cerr << "frust: codegen error: Array<" << count << "> - size must be a positive integer\n";
+                            return nullptr;
+                        }
+                        llvm::Type* elemTy = resolveTypeByName(elemTypeName);
+                        llvm::Value* data = compileArrayNew(elemTy, count);
+                        if (!data) return nullptr;
+                        namedValues[expr->text] = data;
+                        namedValueArraySize[expr->text] = count;
+                        namedValueArrayElementType[expr->text] = elemTypeName;
+                        return data;
+                    }
+                }
+
                 // Generic struct construction (LANGUAGE_GAPS.md #4) -
                 // `let r: Result<i64, String> = Result { ... };` or
                 // `let r: Result<i64, String> = own Result { ... };`.
@@ -2389,6 +2491,8 @@ private:
                 auto savedStructType = namedValueStructType;
                 auto savedRawPointee = namedValueRawPointeeType;
                 auto savedVectorElem = namedValueVectorElementType;
+                auto savedArraySize = namedValueArraySize;
+                auto savedArrayElem = namedValueArrayElementType;
                 auto savedInterfaceType = namedValueInterfaceType;
                 auto savedClosureSig = namedValueClosureSignature;
                 auto savedSharedType = namedValueSharedType;
@@ -2399,6 +2503,8 @@ private:
                     namedValueStructType = savedStructType;
                     namedValueRawPointeeType = savedRawPointee;
                     namedValueVectorElementType = savedVectorElem;
+                    namedValueArraySize = savedArraySize;
+                    namedValueArrayElementType = savedArrayElem;
                     namedValueInterfaceType = savedInterfaceType;
                     namedValueClosureSignature = savedClosureSig;
                     namedValueSharedType = savedSharedType;
@@ -2747,6 +2853,54 @@ private:
                 }
             }
 
+            // `a[i] = x` for an Array<N> -- same bounds-check treatment as
+            // Array<N>'s bracket READ (compileIndex), compared against the
+            // compile-time constant size instead of a runtime length load.
+            if (expr.lhs->lhs->kind == ExprKind::Identifier) {
+                const Expr& indexExpr = *expr.lhs;
+                auto arrSizeIt = namedValueArraySize.find(indexExpr.lhs->text);
+                if (arrSizeIt != namedValueArraySize.end()) {
+                    llvm::Value* dataPtr = compileExpr(indexExpr.lhs);
+                    if (!dataPtr) return nullptr;
+                    llvm::Value* idx = compileExpr(indexExpr.rhs);
+                    if (!idx) return nullptr;
+                    auto* val = compileExpr(expr.rhs);
+                    if (!val) return nullptr;
+
+                    auto elemTypeIt = namedValueArrayElementType.find(indexExpr.lhs->text);
+                    llvm::Type* elemTy = elemTypeIt != namedValueArrayElementType.end()
+                                              ? resolveTypeByName(elemTypeIt->second)
+                                              : llvm::Type::getInt64Ty(context);
+
+                    llvm::Type* i64Ty = llvm::Type::getInt64Ty(context);
+                    llvm::Type* ptrTy = llvm::PointerType::getUnqual(context);
+                    llvm::Value* idxOk = builder.CreateAnd(
+                        builder.CreateICmpSGE(idx, llvm::ConstantInt::get(i64Ty, 0)),
+                        builder.CreateICmpSLT(idx, llvm::ConstantInt::get(i64Ty, arrSizeIt->second)));
+
+                    llvm::Function* theFunction = builder.GetInsertBlock()->getParent();
+                    llvm::BasicBlock* okBB = llvm::BasicBlock::Create(context, "arraywrite_ok", theFunction);
+                    llvm::BasicBlock* panicBB = llvm::BasicBlock::Create(context, "arraywrite_oob", theFunction);
+                    builder.CreateCondBr(idxOk, okBB, panicBB);
+
+                    builder.SetInsertPoint(panicBB);
+                    llvm::FunctionCallee printFn = module.getOrInsertFunction("frust_print_str",
+                        llvm::FunctionType::get(llvm::Type::getVoidTy(context), {ptrTy}, false));
+                    llvm::Constant* msgConst = llvm::ConstantDataArray::getString(context, "frust: Array index out of bounds\n");
+                    auto* msgGlobal = new llvm::GlobalVariable(module, msgConst->getType(), true, llvm::GlobalValue::PrivateLinkage, msgConst, ".array_oob_msg_write");
+                    builder.CreateCall(printFn, {msgGlobal});
+                    llvm::FunctionCallee exitFn = module.getOrInsertFunction("exit", llvm::FunctionType::get(llvm::Type::getVoidTy(context), {llvm::Type::getInt32Ty(context)}, false));
+                    builder.CreateCall(exitFn, {llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), 1)});
+                    builder.CreateUnreachable();
+
+                    builder.SetInsertPoint(okBB);
+                    val = coerceToType(val, elemTy);
+                    llvm::Value* elemPtr = builder.CreateGEP(elemTy, dataPtr, idx, "arrayelemptr");
+                    builder.CreateStore(val, elemPtr);
+                    return val;
+                }
+            }
+
             // `v[i] = x` for a `mut` Vec<N> variable. Vec<N> values are
             // genuine SSA vector values (see compileArrayLiteral), not
             // pointer-backed - there's no address to GEP into and store
@@ -2871,6 +3025,52 @@ private:
                 llvm::Value* dataPtr = builder.CreateLoad(ptrTy, dataFieldPtr, "vecdata");
                 llvm::Value* elemPtr = builder.CreateGEP(elemTy, dataPtr, idx, "vecelemptr");
                 return builder.CreateLoad(elemTy, elemPtr, "vecindex");
+            }
+        }
+
+        // `a[i]` for an Array<N> -- same "anchor via a named binding"
+        // convention as Vector<T> above, but bounds-checked here (unlike
+        // Vector<T>'s bracket READ, which LANGUAGE_GAPS.md #3 documents as
+        // never having had one). N is a compile-time constant from
+        // namedValueArraySize, so the check compares against an immediate,
+        // no runtime length load needed the way Vector's write check does.
+        if (expr.lhs->kind == ExprKind::Identifier) {
+            auto arrSizeIt = namedValueArraySize.find(expr.lhs->text);
+            if (arrSizeIt != namedValueArraySize.end()) {
+                llvm::Value* dataPtr = compileExpr(expr.lhs);
+                if (!dataPtr) return nullptr;
+                llvm::Value* idx = compileExpr(expr.rhs);
+                if (!idx) return nullptr;
+
+                auto elemTypeIt = namedValueArrayElementType.find(expr.lhs->text);
+                llvm::Type* elemTy = elemTypeIt != namedValueArrayElementType.end()
+                                          ? resolveTypeByName(elemTypeIt->second)
+                                          : llvm::Type::getInt64Ty(context);
+
+                llvm::Type* i64Ty = llvm::Type::getInt64Ty(context);
+                llvm::Value* idxOk = builder.CreateAnd(
+                    builder.CreateICmpSGE(idx, llvm::ConstantInt::get(i64Ty, 0)),
+                    builder.CreateICmpSLT(idx, llvm::ConstantInt::get(i64Ty, arrSizeIt->second)));
+
+                llvm::Function* theFunction = builder.GetInsertBlock()->getParent();
+                llvm::BasicBlock* okBB = llvm::BasicBlock::Create(context, "arrayread_ok", theFunction);
+                llvm::BasicBlock* panicBB = llvm::BasicBlock::Create(context, "arrayread_oob", theFunction);
+                builder.CreateCondBr(idxOk, okBB, panicBB);
+
+                builder.SetInsertPoint(panicBB);
+                llvm::Type* ptrTy = llvm::PointerType::getUnqual(context);
+                llvm::FunctionCallee printFn = module.getOrInsertFunction("frust_print_str",
+                    llvm::FunctionType::get(llvm::Type::getVoidTy(context), {ptrTy}, false));
+                llvm::Constant* msgConst = llvm::ConstantDataArray::getString(context, "frust: Array index out of bounds\n");
+                auto* msgGlobal = new llvm::GlobalVariable(module, msgConst->getType(), true, llvm::GlobalValue::PrivateLinkage, msgConst, ".array_oob_msg");
+                builder.CreateCall(printFn, {msgGlobal});
+                llvm::FunctionCallee exitFn = module.getOrInsertFunction("exit", llvm::FunctionType::get(llvm::Type::getVoidTy(context), {llvm::Type::getInt32Ty(context)}, false));
+                builder.CreateCall(exitFn, {llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), 1)});
+                builder.CreateUnreachable();
+
+                builder.SetInsertPoint(okBB);
+                llvm::Value* elemPtr = builder.CreateGEP(elemTy, dataPtr, idx, "arrayelemptr");
+                return builder.CreateLoad(elemTy, elemPtr, "arrayindex");
             }
         }
 
@@ -3131,6 +3331,8 @@ private:
         auto savedStructType = namedValueStructType;
         auto savedRawPointee = namedValueRawPointeeType;
         auto savedVectorElem = namedValueVectorElementType;
+        auto savedArraySize = namedValueArraySize;
+        auto savedArrayElem = namedValueArrayElementType;
         auto savedInterfaceType = namedValueInterfaceType;
         auto savedClosureSig = namedValueClosureSignature;
         auto savedSharedType = namedValueSharedType;
@@ -3151,6 +3353,8 @@ private:
         namedValueStructType = savedStructType;
         namedValueRawPointeeType = savedRawPointee;
         namedValueVectorElementType = savedVectorElem;
+        namedValueArraySize = savedArraySize;
+        namedValueArrayElementType = savedArrayElem;
         namedValueInterfaceType = savedInterfaceType;
         namedValueClosureSignature = savedClosureSig;
         namedValueSharedType = savedSharedType;
@@ -4876,6 +5080,8 @@ private:
         auto savedStructType = namedValueStructType;
         auto savedRawPointee = namedValueRawPointeeType;
         auto savedVectorElem = namedValueVectorElementType;
+        auto savedArraySize = namedValueArraySize;
+        auto savedArrayElem = namedValueArrayElementType;
         auto savedInterfaceType = namedValueInterfaceType;
         auto savedClosureSig = namedValueClosureSignature;
         auto savedSharedType = namedValueSharedType;
@@ -4894,6 +5100,8 @@ private:
             namedValueStructType = savedStructType;
             namedValueRawPointeeType = savedRawPointee;
             namedValueVectorElementType = savedVectorElem;
+            namedValueArraySize = savedArraySize;
+            namedValueArrayElementType = savedArrayElem;
             namedValueInterfaceType = savedInterfaceType;
             namedValueClosureSignature = savedClosureSig;
             namedValueSharedType = savedSharedType;
@@ -4911,6 +5119,8 @@ private:
         namedValueStructType.clear();
         namedValueRawPointeeType.clear();
         namedValueVectorElementType.clear();
+        namedValueArraySize.clear();
+        namedValueArrayElementType.clear();
         namedValueInterfaceType.clear();
         namedValueClosureSignature.clear();
         namedValueSharedType.clear();
@@ -4938,6 +5148,8 @@ private:
             if (savedStructType.count(name)) namedValueStructType[name] = savedStructType[name];
             if (savedRawPointee.count(name)) namedValueRawPointeeType[name] = savedRawPointee[name];
             if (savedVectorElem.count(name)) namedValueVectorElementType[name] = savedVectorElem[name];
+            if (savedArraySize.count(name)) namedValueArraySize[name] = savedArraySize[name];
+            if (savedArrayElem.count(name)) namedValueArrayElementType[name] = savedArrayElem[name];
             if (savedInterfaceType.count(name)) namedValueInterfaceType[name] = savedInterfaceType[name];
             if (savedClosureSig.count(name)) namedValueClosureSignature[name] = savedClosureSig[name];
             if (savedEnumType.count(name)) namedValueEnumType[name] = savedEnumType[name];
@@ -5065,6 +5277,8 @@ public:
         namedValueStructType.clear();
         namedValueRawPointeeType.clear();
         namedValueVectorElementType.clear();
+        namedValueArraySize.clear();
+        namedValueArrayElementType.clear();
         namedValueClosureSignature.clear();
         namedValueSharedType.clear();
         namedValueEnumType.clear();

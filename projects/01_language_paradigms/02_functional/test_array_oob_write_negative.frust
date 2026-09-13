@@ -1,0 +1,7 @@
+// Negative test: Array<N> bracket WRITE past the fixed capacity must hit
+// the real runtime panic (print + exit(1)), never silent heap corruption.
+fn main() -> i64 = {
+    let mut a: Array<3> = Array::new();
+    a[5] = 1;
+    0
+}
