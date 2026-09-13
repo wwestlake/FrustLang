@@ -31,7 +31,8 @@ the signal to stop and just build the Windows version.
 
 - **Debug builds, not Release.** Build/run with `--config Debug`, not `Release`, unless explicitly told otherwise for a specific test.
 - **Single-core builds only.** Never pass `/m` or `/maxcpucount` to MSBuild (or equivalent parallel-build flags to other build tools) on this machine — this is the user's own machine and they need it usable while a build runs. Plain `MSBuild.exe solution.sln /t:target /p:Configuration=Debug`, no parallelism flag, every time.
-- Frust core configures via a CMake preset (`windows-vcpkg`) that supplies the LLVM/WinFlexBison/JUCE paths for this machine - `cmake --preset windows-vcpkg` from `projects/01_language_paradigms/02_functional`, not a bare `cmake ..` (which will fail to find LLVM - the preset is what actually sets `CMAKE_PREFIX_PATH`).
+- Frust core configures via a CMake preset (`windows-vcpkg`) that supplies the LLVM install root plus WinFlexBison/JUCE paths for this machine - `cmake --preset windows-vcpkg` from `projects/01_language_paradigms/02_functional`, not a bare `cmake ..`.
+- Never configure Frust with vcpkg's CMake toolchain file and never run `vcpkg install` from this repo as part of a normal Frust build. The Windows preset consumes the already-built LLVM install at `D:/000 Creation Suite/apps/CreationEngine/vcpkg_installed/x64-windows`; `CMakeLists.txt` must fail if LLVM is not found inside that existing install tree.
 - Other subprojects (`09_frust_plugin_host`, `10_node_compiler`, `02_juce_language_host`) pull in Frust core via `add_subdirectory` using a relative path up to `01_language_paradigms/02_functional` - the `projects/` layout must stay intact for these to resolve.
 
 ## Standard workflow (every change, no exceptions)

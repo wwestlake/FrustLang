@@ -84,7 +84,10 @@ Windows only, by deliberate standing decision - no cross-platform
 consideration anywhere in this codebase.
 
 Frust core builds via a CMake preset that supplies the LLVM/WinFlexBison/JUCE
-paths for this machine's toolchain:
+paths for this machine's toolchain. On Windows this deliberately points at an
+already-installed `vcpkg_installed/x64-windows` tree and rejects the vcpkg
+CMake toolchain file, so configuring or building Frust cannot kick off a
+fresh LLVM build.
 
 ```bash
 cd projects/01_language_paradigms/02_functional
