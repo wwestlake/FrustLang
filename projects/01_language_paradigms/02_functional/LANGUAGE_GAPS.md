@@ -305,6 +305,67 @@ one wasted investigation this session before being understood. A real
 decision (new name for the growable kind, or rename the math one) gets
 made during implementation, not pre-decided here.
 
+### `Array<N>` / `Array<T, N>`: a real-time-safe, fixed-capacity companion (2026-09-13)
+
+**Status: DONE.** Not a gap in the plan above - a distinct type, added
+alongside `Vector<T>` rather than as a fix to it, specifically because
+`Vector<T>`'s two known weaknesses (`malloc`/`realloc` on every grow, and
+bracket READ never getting a bounds check even after bracket WRITE did)
+are exactly the properties real-time audio DSP code can't tolerate: an
+allocation - or an out-of-bounds read - inside an audio callback risks a
+missed buffer deadline or a crash, not just a bad value.
+
+**Representation**: a bare heap pointer, no header at all - no
+`{ data, length, capacity }` the way `Vector<T>` needs, because `N` is a
+compile-time constant baked into the type itself and never needs a
+runtime field to check against. One `malloc` of exactly `N * sizeof(T)`
+bytes at construction (`Array::new()`), zero-filled immediately so an
+unwritten audio buffer reads as silence, not garbage heap contents - and
+no allocator call of any kind for the rest of that value's life. There is
+no `.push()`, no grow path, no `realloc` - the absence of a growth API is
+the actual safety property, not an oversight.
+
+**Syntax**: `Array<N>` is sugar for `Array<i64, N>`; `Array<T, N>` names
+an explicit element type (e.g. `Array<f32, 256>` - a 256-sample float
+buffer, the concrete shape a real audio callback needs). Recognized via
+the same "only a plain `let`-bound identifier, checked before the
+generic call-compile path" convention `Vector::new()` already
+established (`compileExpr`'s `Let` branch), since `Array::new()`'s own
+call site has no way to know `T`/`N` on its own.
+
+**Bounds checks**: bracket READ and bracket WRITE are BOTH checked from
+day one - this is the one thing `Vector<T>` never fully got right, closed
+here rather than retrofitted there. Same panic sequence as `Vector<T>`'s
+write check (`frust_print_str` + `exit(1)`, never silent corruption),
+compared against the compile-time-constant `N` directly rather than a
+runtime-loaded length field.
+
+Verified (`test_array.frust`): construction zero-fills (an unwritten slot
+reads 0 before any write), five writes/reads at scattered indices
+(including the very first and last slots) all read back exactly what was
+written - hand-predicted `103050` matched exactly.
+Verified (`test_array_typed.frust`): `Array<f32, 256>` - the same
+zero-fill/write/read proof with an explicit non-default element type -
+hand-predicted `7.5` matched exactly.
+Verified (`test_array_oob_write_negative.frust`,
+`test_array_oob_read_negative.frust`, `test_array_typed_oob_negative.frust`):
+an out-of-range index panics cleanly (`frust: Array index out of
+bounds`, exit code 1) on bracket WRITE and bracket READ, on both the
+sugar and explicitly-typed forms - four distinct negative cases, not one.
+Existing `test_vector.frust`/`test_vector_oob_negative.frust` re-verified
+unaffected by the nearby codegen changes.
+
+**Follow-on, not yet done**: only `i64`/`f32`-style primitive element
+types have been exercised: `Array<T, N>` of a struct/enum element type is
+untested and would need its own verification pass (`resolveTypeByName`
+should already resolve a struct name to its pointer representation, but
+"pointer-sized element stored inline in a flat buffer" vs. "pointer to a
+separately-malloc'd struct" is a real design question not addressed
+here). Real-time-audio-pipeline usage (the actual motivating use case:
+compiling audio DSP node graphs to FRust functions that read/write an
+`Array<f32, N>` per callback) is a separate, larger piece of follow-on
+work - this item only proves the type itself is sound in isolation.
+
 ## 4. Generics (real, user-definable types/functions)
 
 **Status: DONE - generic `impl` methods landed 2026-09-08, closing the

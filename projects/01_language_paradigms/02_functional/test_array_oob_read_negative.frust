@@ -1,0 +1,9 @@
+// Negative test: Array<N> bracket READ past the fixed capacity must ALSO
+// hit the real runtime panic -- this is the actual gap Vector<T> never
+// closed (bracket read never had a bounds check, before or after
+// Vector's own write got one). Array<N> gets both from day one.
+fn main() -> i64 = {
+    let a: Array<3> = Array::new();
+    let x: i64 = a[10];
+    x
+}

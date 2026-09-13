@@ -1,0 +1,8 @@
+// Negative test: Array<T, N>'s bounds check (the resolveTypeByName-based
+// element-type path, distinct from the Array<N> i64-sugar path) must
+// ALSO panic cleanly on out-of-range access, not just the sugar form.
+fn main() -> f32 = {
+    let mut buf: Array<f32, 4> = Array::new();
+    buf[99] = 1.0;
+    0.0
+}

@@ -1,0 +1,24 @@
+// Array<T, N>: the generalized, explicitly-typed form -- Array<N> alone
+// is sugar for Array<i64, N>. This proves the actual audio-relevant
+// shape: a 256-sample f32 buffer, real-time-safe (one malloc at
+// construction, zero-filled, bounds-checked read+write, no growth path).
+// Hand-predicted: freshly-constructed slot 100 reads back 0.0 (zero-fill,
+// proving the buffer isn't garbage heap memory), then three writes at
+// scattered indices (including the very first and very last slot), then
+// reads confirm both write and read see the same buffer.
+// before=0.0, x0=1.5, x128=2.5, x255=3.5 -> before + x0 + x128 + x255
+// hand-predicted = 7.5
+fn main() -> f32 = {
+    let mut buf: Array<f32, 256> = Array::new();
+    let before: f32 = buf[100];
+
+    buf[0] = 1.5;
+    buf[128] = 2.5;
+    buf[255] = 3.5;
+
+    let x0: f32 = buf[0];
+    let x128: f32 = buf[128];
+    let x255: f32 = buf[255];
+
+    before + x0 + x128 + x255
+}
