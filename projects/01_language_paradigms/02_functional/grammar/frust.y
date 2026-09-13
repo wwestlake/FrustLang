@@ -492,12 +492,10 @@ use_decl:
         $$->loc = ToSourceLoc(@1);
     }
   | "import" IDENT "," STRING_LITERAL ";" {
-        // `import core, "current";` - a real cross-pod import, distinct
-        // from the plain `use core;` above (which parses but has always
-        // been a complete no-op - see AST.h's UseDecl::isImport comment
-        // for the full story). Reuses IDENT (not ident_path) for the pod
-        // name since a pod name is always a single bare identifier, same
-        // as "self" :: IDENT above.
+        // `import core, "current";` - explicit cross-pod import. Normal
+        // user code should prefer `use core;` and let frate.json own the
+        // version, but this low-level form remains useful for exact-version
+        // tests/tools.
         $$ = arena.NewUseDecl();
         $$->isImport = true;
         $$->pathSegments.push_back($2);

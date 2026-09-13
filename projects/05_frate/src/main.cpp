@@ -307,48 +307,71 @@ static bool sourceUsesAnySymbol(const juce::Array<juce::File>& sourceFiles,
     return false;
 }
 
-// `import <pod>, "<version>";` (real cross-pod import, distinct from the
-// always-inert `use somepod;`) - scans entryFile's text for import lines,
-// resolves each to a cached pod directory, and merges THAT pod's own full
-// self-use file set in, giving real name resolution across a pod boundary
-// with no extern fn needed by hand. "current" reads the version from
-// thisPodConfig's own declared dependencies (frate.json), so the version
-// doesn't have to be duplicated in source when it's already in the
-// manifest - matches the version already resolved/installed for a normal
-// dependency, no new resolver capability needed for that case.
+// `use <pod>;` / `import <pod>, "<version>";` real cross-pod source imports.
+//
+// `use <pod>;` is the normal developer-facing form: source names the API it
+// wants, frate.json owns the version. `import <pod>, "<version>";` remains
+// the explicit low-level form for tests/tools that really want the source to
+// pin an exact version. Both forms resolve the pod's entry file plus its
+// own `use self::...` file list and merge those sources into this compile,
+// giving real name resolution across a pod boundary with no hand-written
+// extern fn declarations.
 //
 // Deliberately NOT transitive: an imported pod's OWN import lines (if it
 // has any) aren't followed - same "not transitive" stance frate already
 // takes for plain dependencies (FRATE_SPEC.md 5.1). A real, separate
 // follow-on if it's ever actually needed, not assumed here.
 static bool collectImportedPodFiles(const juce::File& entryFile, const frate::FrateConfig& thisPodConfig,
+                                     const std::map<std::string, juce::File>& localWorkspaceMap,
                                      frate::FrateCache& cache, juce::Array<juce::File>& sourceFiles,
                                      juce::StringArray& importedPodNames, juce::String& errorOut) {
     juce::StringArray lines = juce::StringArray::fromLines(entryFile.loadFileAsString());
     for (const auto& rawLine : lines) {
         juce::String line = rawLine.upToFirstOccurrenceOf("//", false, false).trim();
-        if (!line.startsWith("import ")) continue;
+        if (line.isEmpty()) continue;
 
-        if (!line.endsWith(";")) {
-            errorOut = "Malformed 'import' directive (missing ';'): " + rawLine.trim();
-            return false;
+        juce::String podName;
+        juce::String version = "current";
+        bool isCrossPodImport = false;
+
+        if (line.startsWith("import ")) {
+            if (!line.endsWith(";")) {
+                errorOut = "Malformed 'import' directive (missing ';'): " + rawLine.trim();
+                return false;
+            }
+
+            // "import <pod>, \"<version>\";" -> pod name up to the comma,
+            // version the quoted text after it.
+            juce::String body = line.substring(juce::String("import").length(), line.length() - 1).trim();
+            int commaIdx = body.indexOfChar(',');
+            if (commaIdx < 0) {
+                errorOut = "Malformed 'import' directive (expected 'import <pod>, \"<version>\";'): " + rawLine.trim();
+                return false;
+            }
+            podName = body.substring(0, commaIdx).trim();
+            juce::String versionQuoted = body.substring(commaIdx + 1).trim();
+            if (!versionQuoted.startsWith("\"") || !versionQuoted.endsWith("\"") || versionQuoted.length() < 2) {
+                errorOut = "Malformed 'import' directive (version must be a quoted string): " + rawLine.trim();
+                return false;
+            }
+            version = versionQuoted.substring(1, versionQuoted.length() - 1);
+            isCrossPodImport = true;
+        } else if (line.startsWith("use ") && !line.startsWith("use self::")) {
+            if (!line.endsWith(";")) {
+                errorOut = "Malformed 'use' directive (missing ';'): " + rawLine.trim();
+                return false;
+            }
+
+            podName = line.substring(juce::String("use").length(), line.length() - 1).trim();
+            if (podName.isEmpty() || podName.containsAnyOf(" \t,:\"") || podName.contains("::")) {
+                // Not the v1 cross-pod shorthand. Leave future symbol imports
+                // (`use pod::Thing;`) for the compiler-level name resolver.
+                continue;
+            }
+            isCrossPodImport = true;
         }
 
-        // "import <pod>, \"<version>\";" -> pod name up to the comma,
-        // version the quoted text after it.
-        juce::String body = line.substring(juce::String("import").length(), line.length() - 1).trim();
-        int commaIdx = body.indexOfChar(',');
-        if (commaIdx < 0) {
-            errorOut = "Malformed 'import' directive (expected 'import <pod>, \"<version>\";'): " + rawLine.trim();
-            return false;
-        }
-        juce::String podName = body.substring(0, commaIdx).trim();
-        juce::String versionQuoted = body.substring(commaIdx + 1).trim();
-        if (!versionQuoted.startsWith("\"") || !versionQuoted.endsWith("\"") || versionQuoted.length() < 2) {
-            errorOut = "Malformed 'import' directive (version must be a quoted string): " + rawLine.trim();
-            return false;
-        }
-        juce::String version = versionQuoted.substring(1, versionQuoted.length() - 1);
+        if (!isCrossPodImport) continue;
 
         if (version == "current") {
             bool found = false;
@@ -367,26 +390,30 @@ static bool collectImportedPodFiles(const juce::File& entryFile, const frate::Fr
             }
         }
 
-        if (!cache.isCached(podName.toStdString(), version.toStdString())) {
-            cache.installBundledPodIfAvailable(podName.toStdString(), version.toStdString());
+        juce::File podDir;
+        if (localWorkspaceMap.count(podName.toStdString()) > 0) {
+            podDir = localWorkspaceMap.at(podName.toStdString());
+        } else {
+            if (!cache.isCached(podName.toStdString(), version.toStdString())) {
+                cache.installBundledPodIfAvailable(podName.toStdString(), version.toStdString());
+            }
+            if (!cache.isCached(podName.toStdString(), version.toStdString())) {
+                errorOut = "use " + podName + " - dependency v" + version + " is not cached. Run 'frate update' first.";
+                return false;
+            }
+            podDir = cache.getCachedPodDir(podName.toStdString(), version.toStdString());
         }
-        if (!cache.isCached(podName.toStdString(), version.toStdString())) {
-            errorOut = "import " + podName + ", \"" + version + "\" - not cached. Run 'frate update' first.";
-            return false;
-        }
-
-        juce::File podDir = cache.getCachedPodDir(podName.toStdString(), version.toStdString());
         juce::File podFrateJson = podDir.getChildFile("frate.json");
         frate::FrateConfig importedConfig;
         if (!importedConfig.load(podFrateJson)) {
-            errorOut = "import " + podName + ", \"" + version + "\" - couldn't read " + podFrateJson.getFullPathName();
+            errorOut = "use " + podName + " - couldn't read " + podFrateJson.getFullPathName();
             return false;
         }
         const auto& importedMeta = importedConfig.getMetadata();
         juce::String importedEntryPoint = (importedMeta.type == "lib") ? "src/lib.fr" : "src/main.fr";
         juce::File importedEntry = podDir.getChildFile(importedEntryPoint);
         if (!importedEntry.existsAsFile()) {
-            errorOut = "import " + podName + ", \"" + version + "\" - entry point not found: " + importedEntry.getFullPathName();
+            errorOut = "use " + podName + " - entry point not found: " + importedEntry.getFullPathName();
             return false;
         }
 
@@ -436,7 +463,7 @@ bool buildPod(const juce::File& podDir, bool isRun, const std::map<std::string, 
     juce::StringArray importedPodNames;
     {
         juce::String importErr;
-        if (!collectImportedPodFiles(entryFile, config, cache, importedSourceFiles, importedPodNames, importErr)) {
+        if (!collectImportedPodFiles(entryFile, config, localWorkspaceMap, cache, importedSourceFiles, importedPodNames, importErr)) {
             std::cerr << "Error: " << importErr << "\n";
             return false;
         }

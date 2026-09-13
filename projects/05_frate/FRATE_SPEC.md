@@ -30,12 +30,11 @@ is live and matches [6](#6-registry-api-contract).
 5. `frate build`/`frate run` actually compile Frust source (via
    `frust_compiler --emit-obj`) and link the result into a real executable
    or library, using JIT infrastructure Frust already has.
-6. Referencing a resolved pod's code *from inside Frust source* (`use
-   somepod::something`) is **not** part of this - Frust's grammar has no
-   module/import syntax yet. `frate build` links against a dependency's
-   precompiled object file, not its parsed AST; making pods importable
-   *code* (vs. linkable objects) is real follow-up work once that syntax
-   exists.
+6. Referencing a resolved pod's code from inside Frust source is supported
+   in its first useful form: `use somepod;` imports the dependency version
+   declared in `frate.json` and compiles that pod's `src/lib.fr` plus its
+   `use self::...` modules into the same build. Fine-grained symbol imports
+   such as `use somepod::Thing;` are still follow-up work.
 
 ## 2. Core Concepts
 
@@ -140,13 +139,9 @@ for each declared dependency (name, version):
   not walked/auto-resolved. Every dependency a pod needs must be declared
   directly in its own `frate.json`.
 - **Version ranges** - exact version strings only, matched exactly.
-- **Auto-compiling a resolved dependency's source.** `frate build` expects
-  a dependency's object file (`<cache>/<name>/<version>/<name>.o`, or a
-  workspace member's `build/<name>.o`) to already exist. Resolving a pod
-  from the registry does not compile it - today that object file only
-  exists if the dependency was built locally (e.g. as a workspace member)
-  before being packaged/installed. Compiling a bare-source dependency
-  on-demand at build time is a real gap, not yet implemented.
+- **Transitive source imports.** `use somepod;` imports that direct pod's
+  declared source file set. If that pod itself imports other pods, the
+  consumer must still declare/import those direct dependencies too.
 
 ### 5.2 Workspaces
 

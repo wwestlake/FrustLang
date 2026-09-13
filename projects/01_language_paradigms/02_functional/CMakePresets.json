@@ -13,7 +13,7 @@
         "rhs": "Windows"
       },
       "cacheVariables": {
-        "CMAKE_PREFIX_PATH": "D:/000 Creation Suite/apps/CreationEngine/vcpkg_installed/x64-windows/share/llvm",
+        "FRUST_VCPKG_INSTALLED_DIR": "D:/000 Creation Suite/apps/CreationEngine/vcpkg_installed/x64-windows",
         "FLEX_EXECUTABLE": "D:/tools/winflexbison/win_flex.exe",
         "BISON_EXECUTABLE": "D:/tools/winflexbison/win_bison.exe",
         "FRUST_WINFLEXBISON_DIR": "D:/tools/winflexbison",

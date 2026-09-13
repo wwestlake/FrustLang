@@ -9,13 +9,49 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(FRUST_BUILD_VERSION "development" CACHE STRING "FRust CLI build version")
 
 # ------------------------------------------------------------------------------
-# Locate LLVM - no hardcoded machine-specific paths here. CMAKE_PREFIX_PATH
-# (and, on Windows, FLEX_EXECUTABLE/BISON_EXECUTABLE/FRUST_WINFLEXBISON_DIR
-# below) come from the active CMakePresets.json preset instead - see that
-# file for the per-platform values.
+# Locate LLVM from an already-installed package tree. Do not use vcpkg's
+# CMake toolchain integration here: that path can decide to run vcpkg and
+# rebuild LLVM. Frust consumes the existing vcpkg_installed/<triplet> tree
+# produced by Creation Engine's one-time LLVM setup, then fails loudly if it
+# cannot find LLVM there.
 # ------------------------------------------------------------------------------
+set(FRUST_VCPKG_INSTALLED_DIR "" CACHE PATH "Existing vcpkg_installed/<triplet> directory containing LLVM; Frust never runs vcpkg.")
+
+if(WIN32)
+    if(CMAKE_TOOLCHAIN_FILE MATCHES "[/\\\\]vcpkg\\.cmake$")
+        message(FATAL_ERROR
+            "Frust must not be configured with the vcpkg CMake toolchain file. "
+            "That integration can rebuild LLVM. Use the windows-vcpkg preset, "
+            "which points at the existing vcpkg_installed/x64-windows tree instead.")
+    endif()
+
+    if(NOT FRUST_VCPKG_INSTALLED_DIR)
+        set(FRUST_VCPKG_INSTALLED_DIR "D:/000 Creation Suite/apps/CreationEngine/vcpkg_installed/x64-windows" CACHE PATH
+            "Existing vcpkg_installed/<triplet> directory containing LLVM; Frust never runs vcpkg." FORCE)
+    endif()
+
+    if(NOT EXISTS "${FRUST_VCPKG_INSTALLED_DIR}/share/llvm/LLVMConfig.cmake")
+        message(FATAL_ERROR
+            "FRUST_VCPKG_INSTALLED_DIR must point at an existing vcpkg_installed/x64-windows tree "
+            "that already contains share/llvm/LLVMConfig.cmake. Frust will not run vcpkg or rebuild LLVM.")
+    endif()
+
+    list(PREPEND CMAKE_PREFIX_PATH "${FRUST_VCPKG_INSTALLED_DIR}")
+endif()
+
 find_package(LLVM CONFIG REQUIRED)
 message(STATUS "FrustCompiler: Found LLVM ${LLVM_PACKAGE_VERSION} at ${LLVM_DIR}")
+
+if(WIN32)
+    cmake_path(ABSOLUTE_PATH FRUST_VCPKG_INSTALLED_DIR NORMALIZE OUTPUT_VARIABLE FRUST_VCPKG_INSTALLED_ABS)
+    cmake_path(ABSOLUTE_PATH LLVM_DIR NORMALIZE OUTPUT_VARIABLE FRUST_LLVM_DIR_ABS)
+    cmake_path(IS_PREFIX FRUST_VCPKG_INSTALLED_ABS "${FRUST_LLVM_DIR_ABS}" NORMALIZE FRUST_LLVM_FROM_INSTALLED_TREE)
+    if(NOT FRUST_LLVM_FROM_INSTALLED_TREE)
+        message(FATAL_ERROR
+            "LLVM was found at '${LLVM_DIR}', outside FRUST_VCPKG_INSTALLED_DIR='${FRUST_VCPKG_INSTALLED_DIR}'. "
+            "Refusing to configure because Frust must consume the existing LLVM install only, never a source/buildtree/toolchain path.")
+    endif()
+endif()
 
 # frate's AOT linker needs LLVM only when a pod pulls in the plugin host.
 # Keep the build's discovered install root as a fallback; packaged builds can
