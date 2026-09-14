@@ -36,6 +36,12 @@ juce::String loadIdeAuthToken() {
     return token;
 }
 
+static juce::File resolveSiblingTool(const juce::String& exeName) {
+    return juce::File::getSpecialLocation(juce::File::currentExecutableFile)
+        .getParentDirectory()
+        .getChildFile(exeName);
+}
+
 static juce::File resolveLlvmLibDir(const juce::String& configName) {
     // A release package cannot know where its user installed LLVM. CI and
     // callers can supply that root explicitly; source builds retain the
@@ -527,7 +533,15 @@ bool buildPod(const juce::File& podDir, bool isRun, const std::map<std::string, 
     std::cout << "Compiling " << meta.name << " (" << sourceFiles.size() << " source file(s))...\n";
     juce::ChildProcess compiler;
     juce::StringArray args;
-    args.add("frust_compiler");
+    juce::File compilerExe = resolveSiblingTool("frust_compiler.exe");
+    if (!compilerExe.existsAsFile()) compilerExe = resolveSiblingTool("frust_compiler");
+    if (!compilerExe.existsAsFile()) {
+        std::cerr << "Error: frust_compiler not found next to frate at "
+                  << juce::File::getSpecialLocation(juce::File::currentExecutableFile).getParentDirectory().getFullPathName()
+                  << "\n";
+        return false;
+    }
+    args.add(compilerExe.getFullPathName());
     args.add("--emit-obj");
     args.add(mainObj.getFullPathName());
     for (const auto& f : sourceFiles) args.add(f.getFullPathName());
@@ -539,7 +553,7 @@ bool buildPod(const juce::File& podDir, bool isRun, const std::map<std::string, 
             return false;
         }
     } else {
-        std::cerr << "Error: Failed to launch frust_compiler. Ensure it is in your PATH.\n";
+        std::cerr << "Error: Failed to launch frust_compiler at " << compilerExe.getFullPathName() << "\n";
         return false;
     }
     
