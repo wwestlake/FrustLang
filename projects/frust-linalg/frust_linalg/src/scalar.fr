@@ -1,0 +1,48 @@
+pub fn abs_f32(x: f32) -> f32 = {
+    if (x < 0.0) { -x } else { x }
+}
+
+pub fn min_f32(a: f32, b: f32) -> f32 = {
+    if (a < b) { a } else { b }
+}
+
+pub fn max_f32(a: f32, b: f32) -> f32 = {
+    if (a > b) { a } else { b }
+}
+
+pub fn clamp_f32(x: f32, lo: f32, hi: f32) -> f32 = {
+    if (x < lo) { lo } else {
+        if (x > hi) { hi } else { x }
+    }
+}
+
+pub fn lerp_f32(a: f32, b: f32, t: f32) -> f32 = {
+    a + (b - a) * t
+}
+
+pub fn near_zero_f32(x: f32, eps: f32) -> bool = {
+    abs_f32(x) <= eps
+}
+
+pub fn approx_eq_f32(a: f32, b: f32, eps: f32) -> bool = {
+    abs_f32(a - b) <= eps
+}
+
+pub fn saturate_f32(x: f32) -> f32 = {
+    clamp_f32(x, 0.0, 1.0)
+}
+
+pub fn sign_f32(x: f32) -> f32 = {
+    if (x < 0.0) { -1.0 } else {
+        if (x > 0.0) { 1.0 } else { 0.0 }
+    }
+}
+
+pub fn step_f32(edge: f32, x: f32) -> f32 = {
+    if (x < edge) { 0.0 } else { 1.0 }
+}
+
+pub fn smoothstep_f32(edge0: f32, edge1: f32, x: f32) -> f32 = {
+    let t: f32 = saturate_f32((x - edge0) / (edge1 - edge0));
+    t * t * (3.0 - 2.0 * t)
+}

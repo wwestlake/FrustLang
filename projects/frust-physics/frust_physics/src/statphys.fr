@@ -1,0 +1,50 @@
+struct RunningStats1f {
+    count: i64,
+    mean: f32,
+    m2: f32
+}
+
+pub fn running_stats1f() -> RunningStats1f = {
+    RunningStats1f { count: 0, mean: 0.0, m2: 0.0 }
+}
+
+pub fn running_stats1f_add(stats: RunningStats1f, value: f32) -> RunningStats1f = {
+    let count: i64 = stats.count + 1;
+    let count_f: f32 = count;
+    let delta: f32 = value - stats.mean;
+    let mean: f32 = stats.mean + delta / count_f;
+    let delta2: f32 = value - mean;
+    RunningStats1f { count: count, mean: mean, m2: stats.m2 + delta * delta2 }
+}
+
+pub fn running_stats1f_variance_population(stats: RunningStats1f) -> f32 = {
+    let count_f: f32 = stats.count;
+    if (stats.count <= 0) { 0.0 } else { stats.m2 / count_f }
+}
+
+pub fn running_stats1f_variance_sample(stats: RunningStats1f) -> f32 = {
+    let denom: f32 = stats.count - 1;
+    if (stats.count <= 1) { 0.0 } else { stats.m2 / denom }
+}
+
+pub fn boltzmann_weight_f32(energy: f32, beta: f32) -> f32 = {
+    exp(-beta * energy)
+}
+
+pub fn partition2_f32(e0: f32, e1: f32, beta: f32) -> f32 = {
+    boltzmann_weight_f32(e0, beta) + boltzmann_weight_f32(e1, beta)
+}
+
+pub fn expectation2_f32(v0: f32, e0: f32, v1: f32, e1: f32, beta: f32) -> f32 = {
+    let w0: f32 = boltzmann_weight_f32(e0, beta);
+    let w1: f32 = boltzmann_weight_f32(e1, beta);
+    (v0 * w0 + v1 * w1) / (w0 + w1)
+}
+
+pub fn entropy2_f32(p0: f32, p1: f32) -> f32 = {
+    -(p0 * log(p0) + p1 * log(p1))
+}
+
+pub fn heat_capacity_from_energy_variance_f32(energy_variance: f32, beta: f32) -> f32 = {
+    beta * beta * energy_variance
+}

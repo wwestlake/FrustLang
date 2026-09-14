@@ -1,0 +1,72 @@
+struct Transform3f {
+    position: Vec3f,
+    rotation: Quatf,
+    scale: Vec3f
+}
+
+pub fn transform3f(position: Vec3f, rotation: Quatf, scale: Vec3f) -> Transform3f = {
+    Transform3f { position: position, rotation: rotation, scale: scale }
+}
+
+pub fn transform3f_identity() -> Transform3f = {
+    transform3f(vec3f_zero(), quatf_identity(), vec3f(1.0, 1.0, 1.0))
+}
+
+pub fn transform3f_translation(position: Vec3f) -> Transform3f = {
+    transform3f(position, quatf_identity(), vec3f(1.0, 1.0, 1.0))
+}
+
+pub fn transform3f_scale(scale: Vec3f) -> Transform3f = {
+    transform3f(vec3f_zero(), quatf_identity(), scale)
+}
+
+pub fn transform3f_apply_point(t: Transform3f, p: Vec3f) -> Vec3f = {
+    let scaled: Vec3f = vec3f_hadamard(p, t.scale);
+    vec3f_add(quatf_rotate_vec3(t.rotation, scaled), t.position)
+}
+
+pub fn transform3f_apply_direction(t: Transform3f, v: Vec3f) -> Vec3f = {
+    let scaled: Vec3f = vec3f_hadamard(v, t.scale);
+    quatf_rotate_vec3(t.rotation, scaled)
+}
+
+pub fn transform3f_to_mat4f(t: Transform3f) -> Mat4f = {
+    let r: Quatf = t.rotation;
+    let s: Vec3f = t.scale;
+    let p: Vec3f = t.position;
+    let x2: f32 = r.x + r.x;
+    let y2: f32 = r.y + r.y;
+    let z2: f32 = r.z + r.z;
+    let xx: f32 = r.x * x2;
+    let yy: f32 = r.y * y2;
+    let zz: f32 = r.z * z2;
+    let xy: f32 = r.x * y2;
+    let xz: f32 = r.x * z2;
+    let yz: f32 = r.y * z2;
+    let wx: f32 = r.w * x2;
+    let wy: f32 = r.w * y2;
+    let wz: f32 = r.w * z2;
+    let mut data: Array<f32, 16> = Array::new();
+
+    data[0] = (1.0 - (yy + zz)) * s.x;
+    data[1] = (xy + wz) * s.x;
+    data[2] = (xz - wy) * s.x;
+    data[3] = 0.0;
+
+    data[4] = (xy - wz) * s.y;
+    data[5] = (1.0 - (xx + zz)) * s.y;
+    data[6] = (yz + wx) * s.y;
+    data[7] = 0.0;
+
+    data[8] = (xz + wy) * s.z;
+    data[9] = (yz - wx) * s.z;
+    data[10] = (1.0 - (xx + yy)) * s.z;
+    data[11] = 0.0;
+
+    data[12] = p.x;
+    data[13] = p.y;
+    data[14] = p.z;
+    data[15] = 1.0;
+
+    Mat4f { data: data }
+}

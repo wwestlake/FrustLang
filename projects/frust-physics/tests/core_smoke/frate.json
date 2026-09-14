@@ -1,0 +1,12 @@
+{
+  "name": "physics_core_smoke",
+  "version": "0.1.0",
+  "type": "bin",
+  "description": "Core computational physics smoke tests.",
+  "exports": [],
+  "dependencies": [
+    { "name": "core", "version": "1.0.1" },
+    { "name": "frust_linalg", "version": "0.1.0" },
+    { "name": "frust_physics", "version": "0.1.0" }
+  ]
+}

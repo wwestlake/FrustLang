@@ -1,0 +1,22 @@
+{
+  "name": "frust_linalg",
+  "version": "0.1.0",
+  "type": "lib",
+  "description": "Linear algebra, geometry, and realtime math primitives for Frust.",
+  "exports": [
+    "Vec2f", "Vec3f", "Vec4f", "Mat4f", "AudioBlock256f",
+    "vec2f", "vec3f", "vec4f",
+    "vec2f_dot", "vec3f_dot", "vec4f_dot", "vec3f_cross",
+    "vec2f_length", "vec3f_length", "vec4f_length",
+    "vec2f_distance", "vec3f_distance", "vec4f_distance",
+    "vec2f_normalize", "vec3f_normalize", "vec4f_normalize",
+    "mat4f_identity", "mat4f_mul", "mat4f_transform_point",
+    "mat4f_rotation_x", "mat4f_rotation_y", "mat4f_rotation_z",
+    "mat4f_perspective_fov_y", "mat4f_look_at",
+    "quatf_from_axis_angle",
+    "audio_block256f_fill", "audio_block256f_gain", "audio_block256f_mix"
+  ],
+  "dependencies": [
+    { "name": "core", "version": "1.0.1" }
+  ]
+}

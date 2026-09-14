@@ -1,0 +1,118 @@
+struct AudioBlock256f {
+    samples: Array<f32, 256>
+}
+
+pub fn audio_block256f_zero() -> AudioBlock256f = {
+    let samples: Array<f32, 256> = Array::new();
+    AudioBlock256f { samples: samples }
+}
+
+pub fn audio_block256f_fill(value: f32) -> AudioBlock256f = {
+    let mut samples: Array<f32, 256> = Array::new();
+    let mut i: i64 = 0;
+    while (i < 256) {
+        samples[i] = value;
+        i = i + 1;
+    };
+    AudioBlock256f { samples: samples }
+}
+
+pub fn audio_block256f_gain(input: AudioBlock256f, gain: f32) -> AudioBlock256f = {
+    let input_samples: Array<f32, 256> = input.samples;
+    let mut samples: Array<f32, 256> = Array::new();
+    let mut i: i64 = 0;
+    while (i < 256) {
+        samples[i] = input_samples[i] * gain;
+        i = i + 1;
+    };
+    AudioBlock256f { samples: samples }
+}
+
+pub fn audio_block256f_mix(a: AudioBlock256f, b: AudioBlock256f) -> AudioBlock256f = {
+    let a_samples: Array<f32, 256> = a.samples;
+    let b_samples: Array<f32, 256> = b.samples;
+    let mut samples: Array<f32, 256> = Array::new();
+    let mut i: i64 = 0;
+    while (i < 256) {
+        samples[i] = a_samples[i] + b_samples[i];
+        i = i + 1;
+    };
+    AudioBlock256f { samples: samples }
+}
+
+pub fn audio_block256f_add_scaled(a: AudioBlock256f, b: AudioBlock256f, b_gain: f32) -> AudioBlock256f = {
+    let a_samples: Array<f32, 256> = a.samples;
+    let b_samples: Array<f32, 256> = b.samples;
+    let mut samples: Array<f32, 256> = Array::new();
+    let mut i: i64 = 0;
+    while (i < 256) {
+        samples[i] = a_samples[i] + b_samples[i] * b_gain;
+        i = i + 1;
+    };
+    AudioBlock256f { samples: samples }
+}
+
+pub fn audio_block256f_offset(input: AudioBlock256f, offset: f32) -> AudioBlock256f = {
+    let input_samples: Array<f32, 256> = input.samples;
+    let mut samples: Array<f32, 256> = Array::new();
+    let mut i: i64 = 0;
+    while (i < 256) {
+        samples[i] = input_samples[i] + offset;
+        i = i + 1;
+    };
+    AudioBlock256f { samples: samples }
+}
+
+pub fn audio_block256f_clamp(input: AudioBlock256f, lo: f32, hi: f32) -> AudioBlock256f = {
+    let input_samples: Array<f32, 256> = input.samples;
+    let mut samples: Array<f32, 256> = Array::new();
+    let mut i: i64 = 0;
+    while (i < 256) {
+        samples[i] = clamp_f32(input_samples[i], lo, hi);
+        i = i + 1;
+    };
+    AudioBlock256f { samples: samples }
+}
+
+pub fn audio_block256f_dot(a: AudioBlock256f, b: AudioBlock256f) -> f32 = {
+    let a_samples: Array<f32, 256> = a.samples;
+    let b_samples: Array<f32, 256> = b.samples;
+    let mut total: f32 = 0.0;
+    let mut i: i64 = 0;
+    while (i < 256) {
+        total = total + a_samples[i] * b_samples[i];
+        i = i + 1;
+    };
+    total
+}
+
+pub fn audio_block256f_sum_squares(a: AudioBlock256f) -> f32 = {
+    audio_block256f_dot(a, a)
+}
+
+pub fn audio_block256f_sum(a: AudioBlock256f) -> f32 = {
+    let samples: Array<f32, 256> = a.samples;
+    let mut total: f32 = 0.0;
+    let mut i: i64 = 0;
+    while (i < 256) {
+        total = total + samples[i];
+        i = i + 1;
+    };
+    total
+}
+
+pub fn audio_block256f_mean(a: AudioBlock256f) -> f32 = {
+    audio_block256f_sum(a) / 256.0
+}
+
+pub fn audio_block256f_peak_abs(a: AudioBlock256f) -> f32 = {
+    let samples: Array<f32, 256> = a.samples;
+    let mut peak: f32 = 0.0;
+    let mut i: i64 = 0;
+    while (i < 256) {
+        let v: f32 = abs_f32(samples[i]);
+        peak = max_f32(peak, v);
+        i = i + 1;
+    };
+    peak
+}

@@ -1,0 +1,87 @@
+struct Ray3f {
+    origin: Vec3f,
+    direction: Vec3f
+}
+
+struct Plane3f {
+    normal: Vec3f,
+    d: f32
+}
+
+struct Aabb3f {
+    min: Vec3f,
+    max: Vec3f
+}
+
+struct Spheref {
+    center: Vec3f,
+    radius: f32
+}
+
+pub fn ray3f(origin: Vec3f, direction: Vec3f) -> Ray3f = {
+    Ray3f { origin: origin, direction: direction }
+}
+
+pub fn ray3f_at(ray: Ray3f, t: f32) -> Vec3f = {
+    vec3f_add(ray.origin, vec3f_scale(ray.direction, t))
+}
+
+pub fn plane3f(normal: Vec3f, d: f32) -> Plane3f = {
+    Plane3f { normal: normal, d: d }
+}
+
+pub fn plane3f_from_point_normal(point: Vec3f, normal: Vec3f) -> Plane3f = {
+    plane3f(normal, -vec3f_dot(normal, point))
+}
+
+pub fn plane3f_signed_distance(plane: Plane3f, point: Vec3f) -> f32 = {
+    vec3f_dot(plane.normal, point) + plane.d
+}
+
+pub fn aabb3f(minimum: Vec3f, maximum: Vec3f) -> Aabb3f = {
+    Aabb3f { min: minimum, max: maximum }
+}
+
+pub fn aabb3f_center(bounds: Aabb3f) -> Vec3f = {
+    let lo: Vec3f = bounds.min;
+    let hi: Vec3f = bounds.max;
+    vec3f_scale(vec3f_add(lo, hi), 0.5)
+}
+
+pub fn aabb3f_extents(bounds: Aabb3f) -> Vec3f = {
+    let lo: Vec3f = bounds.min;
+    let hi: Vec3f = bounds.max;
+    vec3f_scale(vec3f_sub(hi, lo), 0.5)
+}
+
+pub fn aabb3f_contains_point(bounds: Aabb3f, point: Vec3f) -> bool = {
+    let lo: Vec3f = bounds.min;
+    let hi: Vec3f = bounds.max;
+    if (point.x < lo.x) { false } else {
+        if (point.x > hi.x) { false } else {
+            if (point.y < lo.y) { false } else {
+                if (point.y > hi.y) { false } else {
+                    if (point.z < lo.z) { false } else {
+                        if (point.z > hi.z) { false } else { true }
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn aabb3f_union(a: Aabb3f, b: Aabb3f) -> Aabb3f = {
+    let amin: Vec3f = a.min;
+    let amax: Vec3f = a.max;
+    let bmin: Vec3f = b.min;
+    let bmax: Vec3f = b.max;
+    aabb3f(vec3f_min(amin, bmin), vec3f_max(amax, bmax))
+}
+
+pub fn spheref(center: Vec3f, radius: f32) -> Spheref = {
+    Spheref { center: center, radius: radius }
+}
+
+pub fn spheref_contains_point(sphere: Spheref, point: Vec3f) -> bool = {
+    vec3f_distance_sq(sphere.center, point) <= sphere.radius * sphere.radius
+}
