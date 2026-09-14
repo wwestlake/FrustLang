@@ -469,7 +469,7 @@ void RunFile(const std::vector<std::string>& paths) {
     });
 }
 
-void CompileToObject(const std::vector<std::string>& paths, const std::string& outputPath) {
+bool CompileToObject(const std::vector<std::string>& paths, const std::string& outputPath) {
     AstArena arena;
     std::vector<std::string> parseErrors;
     Program* prog = ParseAndMergeFiles(paths, arena, parseErrors);
@@ -477,7 +477,7 @@ void CompileToObject(const std::vector<std::string>& paths, const std::string& o
     if (!parseErrors.empty() || !prog) {
         std::cerr << "frust: " << parseErrors.size() << " error(s), aborting\n";
         for (const auto& err : parseErrors) std::cerr << err << "\n";
-        return;
+        return false;
     }
 
     auto context = std::make_unique<llvm::LLVMContext>();
@@ -486,7 +486,7 @@ void CompileToObject(const std::vector<std::string>& paths, const std::string& o
     Codegen codegen(*context, *module);
     if (!codegen.compileProgram(*prog)) {
         std::cerr << "\nfrust: codegen failed, not emitting object\n";
-        return;
+        return false;
     }
     
     optimizeModule(*module);
@@ -499,7 +499,7 @@ void CompileToObject(const std::vector<std::string>& paths, const std::string& o
 
     if (!Target) {
         llvm::errs() << Error;
-        return;
+        return false;
     }
 
     auto CPU = "generic";
@@ -515,7 +515,7 @@ void CompileToObject(const std::vector<std::string>& paths, const std::string& o
 
     if (EC) {
         llvm::errs() << "Could not open file: " << EC.message();
-        return;
+        return false;
     }
 
     llvm::legacy::PassManager pass;
@@ -523,11 +523,12 @@ void CompileToObject(const std::vector<std::string>& paths, const std::string& o
 
     if (TheTargetMachine->addPassesToEmitFile(pass, dest, nullptr, FileType)) {
         llvm::errs() << "TheTargetMachine can't emit a file of this type";
-        return;
+        return false;
     }
 
     pass.run(*module);
     dest.flush();
+    return true;
 }
 
 void RunRepl() {
@@ -588,7 +589,7 @@ int main(int argc, char** argv) {
     if (argc >= 4 && std::string(argv[1]) == "--emit-obj") {
         std::string outputFile = argv[2];
         std::vector<std::string> inputFiles(argv + 3, argv + argc);
-        frust::CompileToObject(inputFiles, outputFile);
+        if (!frust::CompileToObject(inputFiles, outputFile)) return 1;
     } else if (argc >= 2) {
         std::vector<std::string> inputFiles(argv + 1, argv + argc);
         frust::RunFile(inputFiles);

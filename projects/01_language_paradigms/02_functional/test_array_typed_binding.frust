@@ -1,0 +1,17 @@
+struct BufferBox {
+    data: Array<f32, 4>
+}
+
+fn main() -> f32 = {
+    let mut original: Array<f32, 4> = Array::new();
+    original[1] = 2.0;
+    original[3] = 5.0;
+
+    let boxed: BufferBox = BufferBox { data: original };
+    boxed.data[0] = 4.0;
+
+    let mut copied: Array<f32, 4> = boxed.data;
+    copied[2] = copied[1] + copied[3];
+
+    copied[2] + boxed.data[0]
+}

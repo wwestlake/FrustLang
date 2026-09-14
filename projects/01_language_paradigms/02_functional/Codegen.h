@@ -225,6 +225,7 @@ private:
     // possible anyway - see inferStructTypeName.
     std::unordered_map<std::string, llvm::StructType*> structTypes;
     std::unordered_map<std::string, std::unordered_map<std::string, int>> structFieldIndex; // struct name -> field name -> GEP index
+    std::unordered_map<std::string, std::unordered_map<std::string, const TypeExpr*>> structFieldTypes;
     std::unordered_map<std::string, std::string> namedValueStructType; // variable/param name -> struct type name
 
     // impl-block methods, keyed by the same "TypeName::methodName" scheme
@@ -746,6 +747,85 @@ private:
         return dataPtr;
     }
 
+    bool getArrayTypeInfo(const TypeExpr* type, std::string& elemTypeName, int64_t& count) {
+        if (!type || type->name != "Array") return false;
+        const auto& genArgs = type->genericArgs;
+        if (genArgs.size() == 1 && genArgs[0].isIntConst) {
+            elemTypeName = "i64";
+            count = genArgs[0].intConst;
+            return true;
+        }
+        if (genArgs.size() == 2 && !genArgs[0].isIntConst && genArgs[0].type && genArgs[1].isIntConst) {
+            elemTypeName = genArgs[0].type->name;
+            count = genArgs[1].intConst;
+            return true;
+        }
+        return false;
+    }
+
+    bool recordArrayBinding(const std::string& name, const TypeExpr* type) {
+        std::string elemTypeName;
+        int64_t count = 0;
+        if (!getArrayTypeInfo(type, elemTypeName, count)) return false;
+        if (count <= 0) {
+            std::cerr << "frust: codegen error: Array<" << count << "> - size must be a positive integer\n";
+            return false;
+        }
+        namedValueArraySize[name] = count;
+        namedValueArrayElementType[name] = elemTypeName;
+        return true;
+    }
+
+    const TypeExpr* inferMemberFieldType(const Expr& member) {
+        if (member.kind != ExprKind::Member) return nullptr;
+        auto typeName = inferStructTypeName(member.lhs);
+        if (!typeName) return nullptr;
+        auto structIt = structFieldTypes.find(*typeName);
+        if (structIt == structFieldTypes.end()) return nullptr;
+        auto fieldIt = structIt->second.find(member.text);
+        return fieldIt != structIt->second.end() ? fieldIt->second : nullptr;
+    }
+
+    void emitArrayBoundsCheck(llvm::Value* idx, int64_t count, const char* okName, const char* panicName, const char* globalName) {
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(context);
+        llvm::Value* idxOk = builder.CreateAnd(
+            builder.CreateICmpSGE(idx, llvm::ConstantInt::get(i64Ty, 0)),
+            builder.CreateICmpSLT(idx, llvm::ConstantInt::get(i64Ty, count)));
+
+        llvm::Function* theFunction = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* okBB = llvm::BasicBlock::Create(context, okName, theFunction);
+        llvm::BasicBlock* panicBB = llvm::BasicBlock::Create(context, panicName, theFunction);
+        builder.CreateCondBr(idxOk, okBB, panicBB);
+
+        builder.SetInsertPoint(panicBB);
+        llvm::Type* ptrTy = llvm::PointerType::getUnqual(context);
+        llvm::FunctionCallee printFn = module.getOrInsertFunction("frust_print_str",
+            llvm::FunctionType::get(llvm::Type::getVoidTy(context), {ptrTy}, false));
+        llvm::Constant* msgConst = llvm::ConstantDataArray::getString(context, "frust: Array index out of bounds\n");
+        auto* msgGlobal = new llvm::GlobalVariable(module, msgConst->getType(), true, llvm::GlobalValue::PrivateLinkage, msgConst, globalName);
+        builder.CreateCall(printFn, {msgGlobal});
+        llvm::FunctionCallee exitFn = module.getOrInsertFunction("exit",
+            llvm::FunctionType::get(llvm::Type::getVoidTy(context), {llvm::Type::getInt32Ty(context)}, false));
+        builder.CreateCall(exitFn, {llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), 1)});
+        builder.CreateUnreachable();
+
+        builder.SetInsertPoint(okBB);
+    }
+
+    llvm::Value* compileArrayElementLoad(llvm::Value* dataPtr, llvm::Value* idx, llvm::Type* elemTy, int64_t count) {
+        emitArrayBoundsCheck(idx, count, "arrayread_ok", "arrayread_oob", ".array_oob_msg");
+        llvm::Value* elemPtr = builder.CreateGEP(elemTy, dataPtr, idx, "arrayelemptr");
+        return builder.CreateLoad(elemTy, elemPtr, "arrayindex");
+    }
+
+    llvm::Value* compileArrayElementStore(llvm::Value* dataPtr, llvm::Value* idx, llvm::Value* val, llvm::Type* elemTy, int64_t count) {
+        emitArrayBoundsCheck(idx, count, "arraywrite_ok", "arraywrite_oob", ".array_oob_msg_write");
+        val = coerceToType(val, elemTy);
+        llvm::Value* elemPtr = builder.CreateGEP(elemTy, dataPtr, idx, "arrayelemptr");
+        builder.CreateStore(val, elemPtr);
+        return val;
+    }
+
     // `receiver.push(x)` / `.len()` / `.get(i)` - the only three
     // Vector<T> operations this pass ships (LANGUAGE_GAPS.md #3).
     // `push` grows the element buffer (realloc, doubling from a base
@@ -905,9 +985,11 @@ private:
 
             std::vector<llvm::Type*> fieldTypes;
             auto& fieldIndex = structFieldIndex[sd.name];
+            auto& fieldTypeMap = structFieldTypes[sd.name];
             for (size_t i = 0; i < sd.fields.size(); ++i) {
                 fieldTypes.push_back(resolveType(sd.fields[i].type));
                 fieldIndex[sd.fields[i].name] = static_cast<int>(i);
+                fieldTypeMap[sd.fields[i].name] = sd.fields[i].type;
             }
             structTypes[sd.name] = llvm::StructType::create(context, fieldTypes, sd.name);
         }
@@ -1279,6 +1361,7 @@ private:
 
         std::vector<llvm::Type*> fieldTypes;
         auto& fieldIndex = structFieldIndex[mangled];
+        auto& fieldTypeMap = structFieldTypes[mangled];
         for (size_t i = 0; i < templateDecl.fields.size(); ++i) {
             const std::string& fieldTypeName = templateDecl.fields[i].type->name;
             auto subIt = substitution.find(fieldTypeName);
@@ -1287,6 +1370,7 @@ private:
                 : resolveType(templateDecl.fields[i].type);
             fieldTypes.push_back(fieldTy);
             fieldIndex[templateDecl.fields[i].name] = static_cast<int>(i);
+            fieldTypeMap[templateDecl.fields[i].name] = templateDecl.fields[i].type;
         }
         llvm::StructType* structTy = llvm::StructType::create(context, fieldTypes, mangled);
         structTypes[mangled] = structTy;
@@ -2220,23 +2304,12 @@ private:
                     && expr->lhs->lhs->pathSegments.size() == 2
                     && expr->lhs->lhs->pathSegments[0] == "Array"
                     && expr->lhs->lhs->pathSegments[1] == "new") {
-                    const auto& genArgs = expr->typeAnnotation->genericArgs;
+                    std::string elemTypeName;
+                    int64_t count = 0;
                     // Array<N> (sugar for Array<i64, N>), or Array<T, N>
                     // with an explicit element type -- "default int but
                     // allow specify type and size."
-                    std::string elemTypeName;
-                    int64_t count = 0;
-                    bool recognized = false;
-                    if (genArgs.size() == 1 && genArgs[0].isIntConst) {
-                        elemTypeName = "i64";
-                        count = genArgs[0].intConst;
-                        recognized = true;
-                    } else if (genArgs.size() == 2 && !genArgs[0].isIntConst && genArgs[0].type && genArgs[1].isIntConst) {
-                        elemTypeName = genArgs[0].type->name;
-                        count = genArgs[1].intConst;
-                        recognized = true;
-                    }
-                    if (recognized) {
+                    if (getArrayTypeInfo(expr->typeAnnotation, elemTypeName, count)) {
                         if (count <= 0) {
                             std::cerr << "frust: codegen error: Array<" << count << "> - size must be a positive integer\n";
                             return nullptr;
@@ -2245,8 +2318,7 @@ private:
                         llvm::Value* data = compileArrayNew(elemTy, count);
                         if (!data) return nullptr;
                         namedValues[expr->text] = data;
-                        namedValueArraySize[expr->text] = count;
-                        namedValueArrayElementType[expr->text] = elemTypeName;
+                        recordArrayBinding(expr->text, expr->typeAnnotation);
                         return data;
                     }
                 }
@@ -2325,6 +2397,10 @@ private:
                 // a change to how the value itself gets stored.
                 if (expr->typeAnnotation && expr->typeAnnotation->isRawPointer) {
                     namedValueRawPointeeType[expr->text] = expr->typeAnnotation->name;
+                }
+
+                if (expr->typeAnnotation && expr->typeAnnotation->name == "Array") {
+                    if (!recordArrayBinding(expr->text, expr->typeAnnotation)) return nullptr;
                 }
 
                 // `let x: SomeInterface = <concrete struct value>;` - wrap
@@ -2801,8 +2877,22 @@ private:
             // value, same "anchor via a named binding" convention this
             // file uses throughout for Vector<T> (compileIndex's own
             // read-path check, mirrored here).
+            const Expr& indexExpr = *expr.lhs;
+            if (indexExpr.lhs->kind == ExprKind::Member) {
+                std::string elemTypeName;
+                int64_t count = 0;
+                if (getArrayTypeInfo(inferMemberFieldType(*indexExpr.lhs), elemTypeName, count)) {
+                    llvm::Value* dataPtr = compileExpr(indexExpr.lhs);
+                    if (!dataPtr) return nullptr;
+                    llvm::Value* idx = compileExpr(indexExpr.rhs);
+                    if (!idx) return nullptr;
+                    auto* val = compileExpr(expr.rhs);
+                    if (!val) return nullptr;
+                    return compileArrayElementStore(dataPtr, idx, val, resolveTypeByName(elemTypeName), count);
+                }
+            }
+
             if (expr.lhs->lhs->kind == ExprKind::Identifier) {
-                const Expr& indexExpr = *expr.lhs;
                 auto vecElemIt = namedValueVectorElementType.find(indexExpr.lhs->text);
                 if (vecElemIt != namedValueVectorElementType.end()) {
                     llvm::Value* headerPtr = compileExpr(indexExpr.lhs);
@@ -2857,7 +2947,6 @@ private:
             // Array<N>'s bracket READ (compileIndex), compared against the
             // compile-time constant size instead of a runtime length load.
             if (expr.lhs->lhs->kind == ExprKind::Identifier) {
-                const Expr& indexExpr = *expr.lhs;
                 auto arrSizeIt = namedValueArraySize.find(indexExpr.lhs->text);
                 if (arrSizeIt != namedValueArraySize.end()) {
                     llvm::Value* dataPtr = compileExpr(indexExpr.lhs);
@@ -2909,7 +2998,6 @@ private:
             // CreateInsertElement to produce a NEW vector with index i
             // replaced, store that back - the standard LLVM pattern for
             // "mutating" one lane of an SSA vector value.
-            const Expr& indexExpr = *expr.lhs;
             if (indexExpr.lhs->kind != ExprKind::Identifier) {
                 std::cerr << "frust: codegen error: indexed assignment only supports a plain variable base (v[i] = x, not expr[i] = x)\n";
                 return nullptr;
@@ -3025,6 +3113,18 @@ private:
                 llvm::Value* dataPtr = builder.CreateLoad(ptrTy, dataFieldPtr, "vecdata");
                 llvm::Value* elemPtr = builder.CreateGEP(elemTy, dataPtr, idx, "vecelemptr");
                 return builder.CreateLoad(elemTy, elemPtr, "vecindex");
+            }
+        }
+
+        if (expr.lhs->kind == ExprKind::Member) {
+            std::string elemTypeName;
+            int64_t count = 0;
+            if (getArrayTypeInfo(inferMemberFieldType(*expr.lhs), elemTypeName, count)) {
+                llvm::Value* dataPtr = compileExpr(expr.lhs);
+                if (!dataPtr) return nullptr;
+                llvm::Value* idx = compileExpr(expr.rhs);
+                if (!idx) return nullptr;
+                return compileArrayElementLoad(dataPtr, idx, resolveTypeByName(elemTypeName), count);
             }
         }
 
@@ -5162,6 +5262,11 @@ private:
             if (auto structName = resolveStructTypeName(p.type)) namedValueStructType[p.name] = *structName;
             if (auto ifaceName = resolveInterfaceName(p.type)) namedValueInterfaceType[p.name] = *ifaceName;
             if (p.type && p.type->isRawPointer) namedValueRawPointeeType[p.name] = p.type->name;
+            if (p.type && p.type->name == "Array" && !recordArrayBinding(p.name, p.type)) {
+                restoreState();
+                trampolineFn->eraseFromParent();
+                return nullptr;
+            }
             ++argIt;
         }
 
@@ -5329,6 +5434,10 @@ public:
             }
             if (p.type && p.type->isRawPointer) {
                 namedValueRawPointeeType[p.name] = p.type->name;
+            }
+            if (p.type && p.type->name == "Array" && !recordArrayBinding(p.name, p.type)) {
+                currentFnRetType = prevFnRetType;
+                return nullptr;
             }
             ++argIt;
         }
