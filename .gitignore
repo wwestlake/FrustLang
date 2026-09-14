@@ -42,3 +42,9 @@ logs/
 
 # Node.js (07_vscode_frust)
 node_modules/
+
+# Wiki content is its own separate git repo (github.com/wwestlake/FrustLang.wiki.git),
+# accidentally committed here as an untracked gitlink with no matching .gitmodules
+# entry -- broke "git submodule foreach --recursive" for every downstream consumer
+# (Creation-Suite CI). Never re-track it from here.
+wiki/
