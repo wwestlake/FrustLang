@@ -2,6 +2,7 @@
 build/
 build-linux/
 verify_build/
+build.aborted-codex-*/
 bin/
 lib/
 out/
@@ -31,6 +32,7 @@ output.obj
 # Captured process output
 stdout.txt
 stderr.txt
+logs/
 
 # process_task.fr's file-based IPC convention (task-id-named input/
 # output files) - written to whatever the cwd was when a multiprocessing
