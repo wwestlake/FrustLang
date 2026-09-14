@@ -1,0 +1,36 @@
+use core;
+use frust_linalg;
+
+fn pass_if(cond: bool) -> i64 = {
+    if cond == true { 1 } else { 0 }
+}
+
+fn main() -> i64 = {
+    let ones: AudioBlock256f = audio_block256f_fill(1.0);
+    let twos: AudioBlock256f = audio_block256f_fill(2.0);
+    let gained: AudioBlock256f = audio_block256f_gain(ones, 3.0);
+    let mixed: AudioBlock256f = audio_block256f_mix(gained, twos);
+    let add_scaled: AudioBlock256f = audio_block256f_add_scaled(ones, twos, 4.0);
+    let offset: AudioBlock256f = audio_block256f_offset(twos, -3.0);
+    let clamped: AudioBlock256f = audio_block256f_clamp(offset, -0.5, 0.5);
+
+    let dot: f32 = audio_block256f_dot(ones, twos);
+    let sum_sq: f32 = audio_block256f_sum_squares(twos);
+    let mean: f32 = audio_block256f_mean(twos);
+
+    let mut peak_test: AudioBlock256f = audio_block256f_zero();
+    peak_test.samples[0] = -7.0;
+    peak_test.samples[255] = 5.0;
+    let peak: f32 = audio_block256f_peak_abs(peak_test);
+
+    pass_if(gained.samples[0] == 3.0) +
+    pass_if(gained.samples[255] == 3.0) +
+    pass_if(mixed.samples[10] == 5.0) +
+    pass_if(dot == 512.0) +
+    pass_if(sum_sq == 1024.0) +
+    pass_if(peak == 7.0) +
+    pass_if(add_scaled.samples[4] == 9.0) +
+    pass_if(offset.samples[7] == -1.0) +
+    pass_if(clamped.samples[7] == -0.5) +
+    pass_if(mean == 2.0)
+}

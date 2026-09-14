@@ -1,0 +1,15 @@
+pub fn kinetic_energy_f32(mass: f32, speed: f32) -> f32 = {
+    0.5 * mass * speed * speed
+}
+
+pub fn particle3f_kinetic_energy(p: Particle3f) -> f32 = {
+    0.5 * p.mass * vec3f_length_sq(p.velocity)
+}
+
+pub fn total_energy_f32(kinetic: f32, potential: f32) -> f32 = {
+    kinetic + potential
+}
+
+pub fn absolute_error_f32(actual: f32, expected: f32) -> f32 = {
+    abs_f32(actual - expected)
+}

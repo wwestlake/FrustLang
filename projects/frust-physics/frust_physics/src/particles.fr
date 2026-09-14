@@ -1,0 +1,63 @@
+struct Particle3f {
+    position: Vec3f,
+    velocity: Vec3f,
+    force: Vec3f,
+    mass: f32,
+    inverse_mass: f32
+}
+
+pub fn particle3f(position: Vec3f, velocity: Vec3f, mass: f32) -> Particle3f = {
+    Particle3f {
+        position: position,
+        velocity: velocity,
+        force: vec3f_zero(),
+        mass: mass,
+        inverse_mass: 1.0 / mass
+    }
+}
+
+pub fn particle3f_apply_force(p: Particle3f, force: Vec3f) -> Particle3f = {
+    Particle3f {
+        position: p.position,
+        velocity: p.velocity,
+        force: vec3f_add(p.force, force),
+        mass: p.mass,
+        inverse_mass: p.inverse_mass
+    }
+}
+
+pub fn particle3f_clear_force(p: Particle3f) -> Particle3f = {
+    Particle3f {
+        position: p.position,
+        velocity: p.velocity,
+        force: vec3f_zero(),
+        mass: p.mass,
+        inverse_mass: p.inverse_mass
+    }
+}
+
+pub fn particle3f_acceleration(p: Particle3f) -> Vec3f = {
+    vec3f_scale(p.force, p.inverse_mass)
+}
+
+pub fn particle3f_integrate_constant_accel(p: Particle3f, acceleration: Vec3f, dt: f32) -> Particle3f = {
+    let ph: Phase3f = phase3f_velocity_verlet_constant_accel(phase3f(p.position, p.velocity), acceleration, dt);
+    Particle3f {
+        position: ph.position,
+        velocity: ph.velocity,
+        force: p.force,
+        mass: p.mass,
+        inverse_mass: p.inverse_mass
+    }
+}
+
+pub fn particle3f_center_of_mass2(a: Particle3f, b: Particle3f) -> Vec3f = {
+    vec3f_scale(
+        vec3f_add(vec3f_scale(a.position, a.mass), vec3f_scale(b.position, b.mass)),
+        1.0 / (a.mass + b.mass)
+    )
+}
+
+pub fn particle3f_total_momentum2(a: Particle3f, b: Particle3f) -> Vec3f = {
+    vec3f_add(vec3f_scale(a.velocity, a.mass), vec3f_scale(b.velocity, b.mass))
+}

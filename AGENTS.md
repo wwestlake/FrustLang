@@ -35,6 +35,10 @@ the signal to stop and just build the Windows version.
 - Never configure Frust with vcpkg's CMake toolchain file and never run `vcpkg install` from this repo as part of a normal Frust build. The Windows preset consumes the already-built LLVM install at `D:/000 Creation Suite/apps/CreationEngine/vcpkg_installed/x64-windows`; `CMakeLists.txt` must fail if LLVM is not found inside that existing install tree.
 - Other subprojects (`09_frust_plugin_host`, `10_node_compiler`, `02_juce_language_host`) pull in Frust core via `add_subdirectory` using a relative path up to `01_language_paradigms/02_functional` - the `projects/` layout must stay intact for these to resolve.
 
+## Project naming
+
+- New project folders under `projects/` use kebab-case with `-` separators, not spaces or numeric prefixes. Example: `frust-linalg`, not `13_frust_linalg` or `Frust Linalg`.
+
 ## Standard workflow (every change, no exceptions)
 
 1. Make the change.

@@ -1,0 +1,40 @@
+pub fn state1f_euler(s: State1f, derivative: f32, dt: f32) -> State1f = {
+    state1f(s.value + derivative * dt)
+}
+
+pub fn state1f_rk2_from_slopes(s: State1f, k1: f32, k2: f32, dt: f32) -> State1f = {
+    state1f(s.value + k2 * dt)
+}
+
+pub fn state1f_rk4_from_slopes(s: State1f, k1: f32, k2: f32, k3: f32, k4: f32, dt: f32) -> State1f = {
+    state1f(s.value + (k1 + 2.0 * k2 + 2.0 * k3 + k4) * dt / 6.0)
+}
+
+pub fn phase1f_symplectic_euler(p: Phase1f, acceleration: f32, dt: f32) -> Phase1f = {
+    let v: f32 = p.velocity + acceleration * dt;
+    phase1f(p.position + v * dt, v)
+}
+
+pub fn phase1f_velocity_verlet_constant_accel(p: Phase1f, acceleration: f32, dt: f32) -> Phase1f = {
+    let x: f32 = p.position + p.velocity * dt + 0.5 * acceleration * dt * dt;
+    let v: f32 = p.velocity + acceleration * dt;
+    phase1f(x, v)
+}
+
+pub fn phase1f_oscillator_symplectic(p: Phase1f, spring_k: f32, mass: f32, dt: f32) -> Phase1f = {
+    phase1f_symplectic_euler(p, -(spring_k / mass) * p.position, dt)
+}
+
+pub fn phase3f_symplectic_euler(p: Phase3f, acceleration: Vec3f, dt: f32) -> Phase3f = {
+    let v: Vec3f = vec3f_add(p.velocity, vec3f_scale(acceleration, dt));
+    phase3f(vec3f_add(p.position, vec3f_scale(v, dt)), v)
+}
+
+pub fn phase3f_velocity_verlet_constant_accel(p: Phase3f, acceleration: Vec3f, dt: f32) -> Phase3f = {
+    let x: Vec3f = vec3f_add(
+        vec3f_add(p.position, vec3f_scale(p.velocity, dt)),
+        vec3f_scale(acceleration, 0.5 * dt * dt)
+    );
+    let v: Vec3f = vec3f_add(p.velocity, vec3f_scale(acceleration, dt));
+    phase3f(x, v)
+}

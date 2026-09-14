@@ -68,9 +68,12 @@ public:
     // Codegens every function/method decl with a body. Returns false if any
     // failed (a message was already printed to stderr).
     bool compileProgram(const Program& prog) {
+        hadCodegenError = false;
         indexTypeAliases(prog);
         indexStructs(prog); // must precede signature declaration below - param/return types can name a struct
+        if (hadCodegenError) return false;
         indexEnums(prog); // same reason, plus synthesizes variant constructor decls into enumVariantConstructorDecls (below)
+        if (hadCodegenError) return false;
         indexGenericImplTemplates(prog); // LANGUAGE_GAPS.md's generic-impl-methods work - see that function's own comment
 
         // Every ordinary decl PLUS the synthesized enum-variant-constructor
@@ -136,6 +139,7 @@ public:
                 for (auto* m : decl->implDecl->methods) declareFunctionSignature(*m);
             }
         }
+        if (hadCodegenError) return false;
 
         // Vtables: needs every method's real llvm::Function to exist as a
         // DECLARATION (Pass 1, above) - a vtable slot just references that
@@ -212,6 +216,7 @@ private:
 
     std::unordered_map<std::string, llvm::Value*> namedValues;
     std::unordered_map<std::string, const TypeExpr*> typeAliases;
+    bool hadCodegenError = false;
     bool blockTerminated = false; // set once `return` emits a terminator; later stmts in that block are skipped.
 
     // Struct support. LLVM struct types are created *named*
@@ -968,6 +973,14 @@ private:
     // return types can name a struct, and resolveType needs structTypes
     // populated to resolve them.
     void indexStructs(const Program& prog) {
+        // First pass: register every concrete struct name as an opaque LLVM
+        // struct before resolving ANY field type. This matters for normal
+        // forward references and for Frate cross-pod imports where the
+        // importing pod's own source files are compiled before imported pod
+        // source files. Without this, a field like `position: Vec3f` could
+        // be resolved before imported `struct Vec3f` had been seen, falling
+        // through to the old unknown-type i64 fallback and later tripping an
+        // LLVM bad-signature assert.
         for (auto* decl : prog.decls) {
             if (decl->kind != DeclKind::Struct) continue;
             const StructDecl& sd = *decl->structDecl;
@@ -983,15 +996,32 @@ private:
                 continue;
             }
 
+            if (!structTypes.count(sd.name)) {
+                structTypes[sd.name] = llvm::StructType::create(context, sd.name);
+            }
+        }
+
+        // Second pass: now that every concrete struct name is registered,
+        // resolve field layouts. LLVM named structs can be created opaque
+        // and have their bodies filled once.
+        for (auto* decl : prog.decls) {
+            if (decl->kind != DeclKind::Struct) continue;
+            const StructDecl& sd = *decl->structDecl;
+            if (!sd.genericParams.empty()) continue;
+
             std::vector<llvm::Type*> fieldTypes;
             auto& fieldIndex = structFieldIndex[sd.name];
             auto& fieldTypeMap = structFieldTypes[sd.name];
+            fieldIndex.clear();
+            fieldTypeMap.clear();
             for (size_t i = 0; i < sd.fields.size(); ++i) {
                 fieldTypes.push_back(resolveType(sd.fields[i].type));
                 fieldIndex[sd.fields[i].name] = static_cast<int>(i);
                 fieldTypeMap[sd.fields[i].name] = sd.fields[i].type;
             }
-            structTypes[sd.name] = llvm::StructType::create(context, fieldTypes, sd.name);
+            if (auto* structTy = structTypes[sd.name]; structTy && structTy->isOpaque()) {
+                structTy->setBody(fieldTypes);
+            }
         }
     }
 
@@ -1509,6 +1539,15 @@ private:
             if (expr->pathSegments.empty()) return std::nullopt;
             return expr->pathSegments.front();
         }
+        if (expr->kind == ExprKind::Member) {
+            auto baseType = inferStructTypeName(expr->lhs);
+            if (!baseType) return std::nullopt;
+            auto structIt = structFieldTypes.find(*baseType);
+            if (structIt == structFieldTypes.end()) return std::nullopt;
+            auto fieldIt = structIt->second.find(expr->text);
+            if (fieldIt == structIt->second.end()) return std::nullopt;
+            return resolveStructTypeName(fieldIt->second);
+        }
         if (expr->kind == ExprKind::SmartPtrNew && expr->smartPtrKind != SmartPtrKind::Weak) {
             // `own Foo { ... }` / `raw Foo { ... }` - same struct identity
             // as the literal it wraps, just heap-allocated instead of
@@ -1870,7 +1909,8 @@ private:
         // buildVtable/compileMethodCall's interface-dispatch branch).
         if (interfaceDecls.count(n)) return fatPointerType();
 
-        std::cerr << "frust: codegen does not support type '" << n << "' yet - defaulting to i64\n";
+        std::cerr << "frust: codegen error: unknown type '" << n << "'\n";
+        hadCodegenError = true;
         return llvm::Type::getInt64Ty(context);
     }
 
@@ -4132,8 +4172,11 @@ private:
                 unsigned rw = elseV->getType()->getIntegerBitWidth();
                 mergeType = lw > rw ? thenV->getType() : elseV->getType();
             }
+            builder.SetInsertPoint(thenBB->getTerminator());
             thenV = coerceToType(thenV, mergeType);
+            builder.SetInsertPoint(elseBB->getTerminator());
             elseV = coerceToType(elseV, mergeType);
+            builder.SetInsertPoint(mergeBB);
         }
         
         llvm::PHINode* phi = builder.CreatePHI(mergeType, 2, "iftmp");

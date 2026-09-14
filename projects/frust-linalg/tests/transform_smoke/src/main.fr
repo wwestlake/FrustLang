@@ -1,0 +1,29 @@
+use core;
+use frust_linalg;
+
+fn pass_if(cond: bool) -> i64 = {
+    if cond == true { 1 } else { 0 }
+}
+
+fn main() -> i64 = {
+    let q: Quatf = quatf_z_180();
+    let q90: Quatf = quatf_from_axis_angle(vec3f(0.0, 0.0, 1.0), pi() * 0.5);
+    let rotated: Vec3f = quatf_rotate_vec3(q, vec3f(1.0, 2.0, 0.0));
+    let rotated90: Vec3f = quatf_rotate_vec3(q90, vec3f(1.0, 0.0, 0.0));
+    let qq: Quatf = quatf_mul(q, quatf_conjugate(q));
+
+    let t: Transform3f = transform3f(vec3f(10.0, 20.0, 30.0), q, vec3f(2.0, 3.0, 4.0));
+    let p: Vec3f = transform3f_apply_point(t, vec3f(1.0, 2.0, 3.0));
+    let d: Vec3f = transform3f_apply_direction(t, vec3f(1.0, 2.0, 3.0));
+    let m: Mat4f = transform3f_to_mat4f(t);
+    let mp: Vec3f = mat4f_transform_point(m, vec3f(1.0, 2.0, 3.0));
+
+    pass_if(rotated.x == -1.0) +
+    pass_if(rotated.y == -2.0) +
+    pass_if(near_zero_f32(rotated90.x, 0.000001)) +
+    pass_if(approx_eq_f32(rotated90.y, 1.0, 0.000001)) +
+    pass_if(qq.w == 1.0) +
+    pass_if(p.x == 8.0) + pass_if(p.y == 14.0) + pass_if(p.z == 42.0) +
+    pass_if(d.x == -2.0) + pass_if(d.y == -6.0) + pass_if(d.z == 12.0) +
+    pass_if(mp.x == 8.0) + pass_if(mp.y == 14.0) + pass_if(mp.z == 42.0)
+}

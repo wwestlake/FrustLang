@@ -1,0 +1,43 @@
+struct LinearSolve2fResult {
+    x: f32,
+    y: f32,
+    determinant: f32,
+    converged: bool
+}
+
+struct RootSolveResult {
+    value: f32,
+    residual: f32,
+    iterations: i64,
+    converged: bool
+}
+
+pub fn linear_solve2f(a00: f32, a01: f32, a10: f32, a11: f32, b0: f32, b1: f32) -> LinearSolve2fResult = {
+    let det: f32 = a00 * a11 - a01 * a10;
+    if (near_zero_f32(det, default_physics_epsilon_f32())) {
+        LinearSolve2fResult { x: 0.0, y: 0.0, determinant: det, converged: false }
+    } else {
+        LinearSolve2fResult {
+            x: (b0 * a11 - a01 * b1) / det,
+            y: (a00 * b1 - b0 * a10) / det,
+            determinant: det,
+            converged: true
+        }
+    }
+}
+
+pub fn newton_sqrt_f32(value: f32, guess: f32, iterations: i64) -> RootSolveResult = {
+    let mut x: f32 = guess;
+    let mut i: i64 = 0;
+    while (i < iterations) {
+        x = 0.5 * (x + value / x);
+        i = i + 1;
+    };
+    let residual: f32 = x * x - value;
+    RootSolveResult {
+        value: x,
+        residual: residual,
+        iterations: iterations,
+        converged: approx_eq_f32(residual, 0.0, 0.0001)
+    }
+}

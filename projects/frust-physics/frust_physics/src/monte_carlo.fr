@@ -1,0 +1,15 @@
+struct MonteCarloResult {
+    estimate: f32,
+    samples: i64
+}
+
+pub fn metropolis_accept_f32(delta_energy: f32, beta: f32, unit_random: f32) -> bool = {
+    if (delta_energy <= 0.0) { true } else { unit_random < exp(-beta * delta_energy) }
+}
+
+pub fn monte_carlo_mean4_f32(a: f32, b: f32, c: f32, d: f32) -> MonteCarloResult = {
+    MonteCarloResult {
+        estimate: (a + b + c + d) * 0.25,
+        samples: 4
+    }
+}

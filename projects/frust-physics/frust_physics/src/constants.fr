@@ -1,0 +1,15 @@
+pub fn standard_gravity_f32() -> f32 = {
+    9.80665
+}
+
+pub fn gravitational_constant_f32() -> f32 = {
+    0.000000000066743
+}
+
+pub fn default_physics_epsilon_f32() -> f32 = {
+    0.000001
+}
+
+pub fn beta_from_temperature_f32(temperature: f32) -> f32 = {
+    1.0 / temperature
+}

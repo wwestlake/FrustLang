@@ -1,0 +1,29 @@
+pub fn gaussian_pdf_f32(x: f32, mean: f32, sigma: f32) -> f32 = {
+    let z: f32 = (x - mean) / sigma;
+    exp(-0.5 * z * z) / (sigma * sqrt(2.0 * pi()))
+}
+
+pub fn z_score_f32(value: f32, mean: f32, sigma: f32) -> f32 = {
+    (value - mean) / sigma
+}
+
+pub fn chi_square_1d_f32(observed: f32, expected: f32, sigma: f32) -> f32 = {
+    let z: f32 = z_score_f32(observed, expected, sigma);
+    z * z
+}
+
+pub fn inside_symmetric_window_f32(value: f32, center: f32, half_width: f32) -> bool = {
+    abs_f32(value - center) <= half_width
+}
+
+pub fn mass_window_score_f32(candidate_mass: f32, target_mass: f32, sigma: f32) -> f32 = {
+    abs_f32(z_score_f32(candidate_mass, target_mass, sigma))
+}
+
+pub fn signal_background_ratio_f32(signal: f32, background: f32) -> f32 = {
+    signal / background
+}
+
+pub fn asimov_significance_f32(signal: f32, background: f32) -> f32 = {
+    sqrt(2.0 * ((signal + background) * log(1.0 + signal / background) - signal))
+}

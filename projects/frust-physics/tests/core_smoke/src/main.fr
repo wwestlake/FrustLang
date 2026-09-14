@@ -1,0 +1,37 @@
+use core;
+use frust_linalg;
+use frust_physics;
+
+fn pass_if(cond: bool) -> i64 = {
+    if cond == true { 1 } else { 0 }
+}
+
+fn main() -> i64 = {
+    let euler: State1f = state1f_euler(state1f(2.0), 3.0, 4.0);
+    let rk4: State1f = state1f_rk4_from_slopes(state1f(1.0), 1.0, 2.0, 2.0, 3.0, 6.0);
+    let sym: Phase1f = phase1f_symplectic_euler(phase1f(0.0, 10.0), -2.0, 3.0);
+    let verlet: Phase1f = phase1f_velocity_verlet_constant_accel(phase1f(0.0, 10.0), -2.0, 3.0);
+    let ph3: Phase3f = phase3f_velocity_verlet_constant_accel(
+        phase3f(vec3f_zero(), vec3f(10.0, 0.0, 0.0)),
+        vec3f(0.0, 2.0, 0.0),
+        3.0
+    );
+    let p0: Particle3f = particle3f(vec3f_zero(), vec3f(3.0, 4.0, 0.0), 2.0);
+    let p1: Particle3f = particle3f_apply_force(p0, vec3f(4.0, 0.0, 0.0));
+    let accel: Vec3f = particle3f_acceleration(p1);
+    let force: Vec3f = spring3f_force(vec3f_zero(), vec3f(3.0, 0.0, 0.0), 1.0, 5.0);
+    let ke: f32 = particle3f_kinetic_energy(p0);
+    let solve: LinearSolve2fResult = linear_solve2f(2.0, 1.0, 1.0, -1.0, 5.0, 1.0);
+    let root: RootSolveResult = newton_sqrt_f32(9.0, 3.0, 2);
+
+    pass_if(euler.value == 14.0) +
+    pass_if(rk4.value == 13.0) +
+    pass_if(sym.position == 12.0) + pass_if(sym.velocity == 4.0) +
+    pass_if(verlet.position == 21.0) + pass_if(verlet.velocity == 4.0) +
+    pass_if(ph3.position.x == 30.0) + pass_if(ph3.position.y == 9.0) + pass_if(ph3.velocity.y == 6.0) +
+    pass_if(accel.x == 2.0) +
+    pass_if(force.x == 10.0) +
+    pass_if(ke == 25.0) +
+    pass_if(solve.converged == true) + pass_if(solve.x == 2.0) + pass_if(solve.y == 1.0) +
+    pass_if(root.converged == true) + pass_if(root.value == 3.0)
+}
