@@ -1,0 +1,9 @@
+pub fn simplex_2d(x: f32, y: f32) -> f32 = {
+    // Stub
+    x + y
+}
+
+pub fn simplex_3d(x: f32, y: f32, z: f32) -> f32 = {
+    // Stub
+    x + y + z
+}

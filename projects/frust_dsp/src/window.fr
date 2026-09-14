@@ -1,0 +1,9 @@
+pub fn window_hann(phase: f32) -> f32 = {
+    // Stub for 0.5 * (1.0 - cos(2 * PI * phase))
+    0.5 * phase
+}
+
+pub fn window_hamming(phase: f32) -> f32 = {
+    // Stub for 0.54 - 0.46 * cos(2 * PI * phase)
+    0.54 * phase
+}

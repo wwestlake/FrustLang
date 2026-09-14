@@ -1,0 +1,15 @@
+{
+  "name": "frust_dsp",
+  "version": "0.1.0",
+  "type": "lib",
+  "description": "Signal processing primitives for Frust.",
+  "exports": [
+    "Complex", "complex", "complex_add", "complex_sub", "complex_mul", "complex_scale",
+    "window_hann", "window_hamming",
+    "BiquadCoeffs", "BiquadState", "biquad_process",
+    "fft_radix2"
+  ],
+  "dependencies": [
+    { "name": "core", "version": "1.0.1" }
+  ]
+}

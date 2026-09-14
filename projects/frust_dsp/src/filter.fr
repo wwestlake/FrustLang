@@ -1,0 +1,24 @@
+struct BiquadCoeffs {
+    b0: f32, b1: f32, b2: f32,
+    a1: f32, a2: f32
+}
+
+struct BiquadState {
+    z1: f32,
+    z2: f32
+}
+
+struct BiquadResult {
+    output: f32,
+    state: BiquadState
+}
+
+pub fn biquad_process(state: BiquadState, coeffs: BiquadCoeffs, input: f32) -> BiquadResult = {
+    let result_out: f32 = input * coeffs.b0 + state.z1;
+    let new_z1: f32 = input * coeffs.b1 - result_out * coeffs.a1 + state.z2;
+    let new_z2: f32 = input * coeffs.b2 - result_out * coeffs.a2;
+    BiquadResult {
+        output: result_out,
+        state: BiquadState { z1: new_z1, z2: new_z2 }
+    }
+}

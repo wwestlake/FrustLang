@@ -1,0 +1,27 @@
+struct Complex {
+    real: f32,
+    imag: f32
+}
+
+pub fn complex(r: f32, i: f32) -> Complex = {
+    Complex { real: r, imag: i }
+}
+
+pub fn complex_add(a: Complex, b: Complex) -> Complex = {
+    complex(a.real + b.real, a.imag + b.imag)
+}
+
+pub fn complex_sub(a: Complex, b: Complex) -> Complex = {
+    complex(a.real - b.real, a.imag - b.imag)
+}
+
+pub fn complex_mul(a: Complex, b: Complex) -> Complex = {
+    complex(
+        a.real * b.real - a.imag * b.imag,
+        a.real * b.imag + a.imag * b.real
+    )
+}
+
+pub fn complex_scale(c: Complex, s: f32) -> Complex = {
+    complex(c.real * s, c.imag * s)
+}
