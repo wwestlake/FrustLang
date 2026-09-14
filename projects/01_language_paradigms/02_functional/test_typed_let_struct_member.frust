@@ -1,0 +1,14 @@
+struct InnerBox {
+    x: f32,
+    y: f32
+}
+
+struct OuterBox {
+    inner: InnerBox
+}
+
+fn main() -> f32 = {
+    let outer: OuterBox = OuterBox { inner: InnerBox { x: 3.0, y: 4.0 } };
+    let inner: InnerBox = outer.inner;
+    inner.x + inner.y
+}

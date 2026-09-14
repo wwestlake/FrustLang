@@ -2399,6 +2399,12 @@ private:
                     namedValueRawPointeeType[expr->text] = expr->typeAnnotation->name;
                 }
 
+                if (expr->typeAnnotation) {
+                    if (auto annotatedStructName = resolveStructTypeName(expr->typeAnnotation)) {
+                        namedValueStructType[expr->text] = *annotatedStructName;
+                    }
+                }
+
                 if (expr->typeAnnotation && expr->typeAnnotation->name == "Array") {
                     if (!recordArrayBinding(expr->text, expr->typeAnnotation)) return nullptr;
                 }
