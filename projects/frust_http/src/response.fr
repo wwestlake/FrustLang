@@ -1,0 +1,4 @@
+struct HttpResponse {
+    status_code: i64,
+    content_length: i64
+}

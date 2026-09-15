@@ -1,0 +1,7 @@
+use self::request;
+use self::response;
+
+pub fn http_get(uri_ptr: i64) -> HttpResponse = {
+    // stub
+    HttpResponse { status_code: 404, content_length: 0 }
+}

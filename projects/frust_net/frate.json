@@ -1,0 +1,14 @@
+{
+  "name": "frust_net",
+  "version": "0.1.0",
+  "type": "lib",
+  "description": "Core sockets and IP networking for Frust.",
+  "exports": [
+    "Ipv4Addr", "ipv4_new",
+    "TcpStream", "tcp_connect",
+    "UdpSocket", "udp_bind"
+  ],
+  "dependencies": [
+    { "name": "core", "version": "1.0.1" }
+  ]
+}

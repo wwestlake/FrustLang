@@ -1,0 +1,14 @@
+{
+  "name": "frust_osc",
+  "version": "0.1.0",
+  "type": "lib",
+  "description": "Open Sound Control (OSC) protocol over UDP.",
+  "exports": [
+    "OscMessage", "osc_message_new",
+    "OscBundle", "osc_bundle_new"
+  ],
+  "dependencies": [
+    { "name": "core", "version": "1.0.1" },
+    { "name": "frust_net", "version": "0.1.0" }
+  ]
+}
