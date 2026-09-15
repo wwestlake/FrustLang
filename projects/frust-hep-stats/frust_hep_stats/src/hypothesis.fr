@@ -1,0 +1,45 @@
+pub fn mu_hat_counting(observed: f64, model: CountingModel) -> f64 = {
+    hep_max_f64(0.0, (observed - model.background) / model.signal)
+}
+
+pub fn q0_counting(observed: f64, model: CountingModel) -> f64 = {
+    if (observed <= model.background) {
+        0.0
+    } else {
+        2.0 * (observed * log(observed / model.background) - (observed - model.background))
+    }
+}
+
+pub fn z0_counting(observed: f64, model: CountingModel) -> f64 = {
+    sqrt(q0_counting(observed, model))
+}
+
+pub fn q_mu_counting(observed: f64, mu: f64, model: CountingModel) -> f64 = {
+    let expected_mu: f64 = mu * model.signal + model.background;
+    let mu_hat: f64 = mu_hat_counting(observed, model);
+    let expected_hat: f64 = mu_hat * model.signal + model.background;
+    if (mu_hat > mu) {
+        0.0
+    } else {
+        2.0 * (
+            extended_counting_log_likelihood_no_const(observed, mu_hat, model) -
+            extended_counting_log_likelihood_no_const(observed, mu, model)
+        ) + poisson_deviance(observed, expected_hat) * 0.0 + expected_mu * 0.0
+    }
+}
+
+pub fn one_sided_tail_approx_from_z(z: f64) -> f64 = {
+    if (z <= 0.0) {
+        0.5
+    } else {
+        exp(-0.5 * z * z) / (2.5066282746310002 * z)
+    }
+}
+
+pub fn discovery_threshold_5sigma() -> f64 = {
+    5.0
+}
+
+pub fn is_discovery_5sigma(z: f64) -> bool = {
+    z >= discovery_threshold_5sigma()
+}

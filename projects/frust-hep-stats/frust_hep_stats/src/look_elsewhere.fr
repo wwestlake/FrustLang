@@ -1,0 +1,17 @@
+pub fn trials_factor_p_global(local_p: f64, trials: f64) -> f64 = {
+    hep_clamp_f64(local_p * trials, 0.0, 1.0)
+}
+
+pub fn independent_bins_trials(histogram_bins: f64, window_bins: f64) -> f64 = {
+    if (window_bins <= 0.0) {
+        1.0
+    } else {
+        let estimated: f64 = histogram_bins / window_bins;
+        if (estimated < 1.0) { 1.0 } else { estimated }
+    }
+}
+
+pub fn gross_vitells_bound(local_p: f64, mean_upcrossings: f64, z: f64, reference_c: f64) -> f64 = {
+    let excursion: f64 = mean_upcrossings * exp(-0.5 * (z * z - reference_c));
+    hep_clamp_f64(local_p + excursion, 0.0, 1.0)
+}

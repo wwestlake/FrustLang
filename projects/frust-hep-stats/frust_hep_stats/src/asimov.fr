@@ -1,0 +1,29 @@
+struct AsimovCounting {
+    background_only: f64,
+    signal_plus_background: f64,
+    median_discovery_z: f64
+}
+
+pub fn asimov_discovery_z(signal: f64, background: f64) -> f64 = {
+    if (signal <= 0.0) {
+        0.0
+    } else {
+        if (background <= 0.0) {
+            sqrt(2.0 * signal)
+        } else {
+            sqrt(2.0 * ((signal + background) * log(1.0 + signal / background) - signal))
+        }
+    }
+}
+
+pub fn asimov_counting(signal: f64, background: f64) -> AsimovCounting = {
+    AsimovCounting {
+        background_only: background,
+        signal_plus_background: signal + background,
+        median_discovery_z: asimov_discovery_z(signal, background)
+    }
+}
+
+pub fn asimov_upper_q_mu(mu: f64, signal: f64, background: f64) -> f64 = {
+    poisson_deviance(background, mu * signal + background)
+}

@@ -1,0 +1,24 @@
+struct ClsResult {
+    cl_sb: f64,
+    cl_b: f64,
+    cl_s: f64,
+    excluded_95: bool
+}
+
+pub fn cls_ratio(cl_sb: f64, cl_b: f64) -> f64 = {
+    if (cl_b <= 0.0) { 1.0 } else { cl_sb / cl_b }
+}
+
+pub fn cls_excluded_95(cl_s: f64) -> bool = {
+    cl_s <= 0.05
+}
+
+pub fn cls_result(cl_sb: f64, cl_b: f64) -> ClsResult = {
+    let cl_s: f64 = cls_ratio(cl_sb, cl_b);
+    ClsResult {
+        cl_sb: cl_sb,
+        cl_b: cl_b,
+        cl_s: cl_s,
+        excluded_95: cls_excluded_95(cl_s)
+    }
+}
