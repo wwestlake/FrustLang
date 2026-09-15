@@ -76,6 +76,9 @@ juce_add_gui_app(LagDaemonResearchIDE
 set_target_properties(LagDaemonResearchIDE PROPERTIES OUTPUT_NAME "frust_ide")
 
 target_sources(LagDaemonResearchIDE PRIVATE
+    Source/sqlite/sqlite3.c
+    Source/RAGQuery.h
+    Source/RAGQuery.cpp
     Source/Main.cpp
     Source/WorkbenchComponent.h
     Source/WorkbenchComponent.cpp
@@ -119,6 +122,7 @@ target_compile_definitions(LagDaemonResearchIDE PRIVATE
     # (bin/Debug/, nowhere near the source tree) - a compile-time
     # string constant pointing at this CMakeLists.txt's own directory.
     FRUST_IDE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    FRUST_REPO_ROOT_DIR="${REPO_ROOT_DIR}"
 )
 
 target_link_libraries(LagDaemonResearchIDE PRIVATE

@@ -1,4 +1,5 @@
 #include "AiChatPanel.h"
+#include "RAGQuery.h"
 
 #include <thread>
 
@@ -114,6 +115,12 @@ void AiChatPanel::sendMessage()
 
     juce::Component::SafePointer<AiChatPanel> safeThis(this);
     auto historySnapshot = history; // sendChat runs off-thread; copy so it doesn't race the message thread
+    auto ragContext = rag::getContextForQuery(userText);
+    if (ragContext.isNotEmpty() && !historySnapshot.empty())
+    {
+        historySnapshot.back().content =
+            (userText + "\n\n---\nRetrieved context for this request:\n" + ragContext).toStdString();
+    }
     auto* providerPtr = provider.release(); // ownership moves into the thread below
 
     std::thread([safeThis, historySnapshot, providerPtr] {
@@ -146,15 +153,30 @@ void AiChatPanel::sendMessage()
 
 juce::String AiChatPanel::loadFrustSystemPrompt()
 {
-    juce::File specFile("D:/000 Tech Research/projects/01_language_paradigms/02_functional/FRUST_LANG_SPEC.md");
+    auto repoRoot = juce::File(FRUST_REPO_ROOT_DIR);
+    auto agentContextFile = repoRoot
+        .getChildFile("projects")
+        .getChildFile("frust-ide-agent")
+        .getChildFile("FRUST_AI_CONTEXT.md");
+    auto specFile = repoRoot
+        .getChildFile("projects")
+        .getChildFile("01_language_paradigms")
+        .getChildFile("02_functional")
+        .getChildFile("FRUST_LANG_SPEC.md");
 
-    juce::String spec = specFile.existsAsFile()
-        ? specFile.loadFileAsString()
-        : juce::String("(FRUST_LANG_SPEC.md not found - answer from general programming-language knowledge instead.)");
+    juce::String agentContext = agentContextFile.existsAsFile()
+        ? agentContextFile.loadFileAsString()
+        : juce::String("(FRUST_AI_CONTEXT.md not found.)");
+
+    juce::String specLocation = specFile.existsAsFile()
+        ? specFile.getFullPathName()
+        : juce::String("(FRUST_LANG_SPEC.md not found in this repo.)");
 
     return "You are an assistant embedded in the LagDaemon IDE, helping the user write code in Frust, "
            "a language they are actively designing and implementing (lexer/parser/codegen already exist; "
-           "not every language feature is wired to codegen yet). Use the specification below as the "
-           "source of truth for Frust's syntax and semantics - don't assume it works like Rust, C++, or "
-           "any other language where they differ.\n\n---\n\n" + spec;
+           "not every language feature is wired to codegen yet). Use the compact context brief below and "
+           "the LiteSemRAG context attached to individual user requests as the source of truth for Frust. "
+           "Do not assume Frust works like Rust, C++, or any other language where they differ. If the "
+           "retrieved context is not enough, say exactly what needs to be checked in the grammar, compiler, "
+           "or library sources.\n\nAuthoritative spec path: " + specLocation + "\n\n---\n\n" + agentContext;
 }

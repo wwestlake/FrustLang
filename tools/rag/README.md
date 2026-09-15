@@ -8,14 +8,20 @@ Rather than flooding an LLM context window with plain text, we parse the Frust l
 ## Scripts
 ### `litesemrag_builder.py`
 Crawls the `wiki/reference` directory and `projects/` source code.
-- **Nodes**: Extracted as `CHAPTER`, `POD`, `STRUCT`, and `FUNCTION`.
-- **Edges**: `DEFINED_IN`, `EXPLAINS`.
+- **Nodes**: Extracted as `AGENT_BRIEF`, `SPEC`, `GRAMMAR`, `CHAPTER`, `POD`, `STRUCT`, and `FUNCTION`.
+- **Edges**: `DEFINED_IN`, `IMPLEMENTS`.
+- By default, pod ingestion only includes `frate.json` manifests already tracked by Git. Set `FRUST_RAG_INCLUDE_UNTRACKED=1` when experimenting locally with untracked pod folders.
 
 **Usage:**
 ```bash
 python litesemrag_builder.py
 ```
 This will output `frust_knowledge.db` in this directory.
+
+The IDE links SQLite directly and reads `tools/rag/frust_knowledge.db` from the
+repo root compiled into the Debug/Release build. `AiChatPanel` keeps the
+conversation history clean and attaches only the per-request LiteSemRAG context
+to the outgoing provider call.
 
 ## Schema
 - `nodes (id, type, name, content, source_file)`
