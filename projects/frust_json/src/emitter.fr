@@ -1,0 +1,6 @@
+use self::ast;
+
+pub fn json_emit(ast_node: JsonType) -> i64 = {
+    // stub returning a length or status
+    0
+}

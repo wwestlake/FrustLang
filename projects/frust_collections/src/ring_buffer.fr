@@ -1,0 +1,18 @@
+// Stub for a generic-like or fixed-size ring buffer
+struct RingBuffer {
+    write_idx: i64,
+    read_idx: i64,
+    capacity_mask: i64
+}
+
+pub fn ring_buffer_new(capacity_mask: i64) -> RingBuffer = {
+    RingBuffer { write_idx: 0, read_idx: 0, capacity_mask: capacity_mask }
+}
+
+pub fn ring_buffer_write(rb: raw* RingBuffer, value: f32) = {
+    // stub
+}
+
+pub fn ring_buffer_read(rb: raw* RingBuffer) -> f32 = {
+    0.0
+}

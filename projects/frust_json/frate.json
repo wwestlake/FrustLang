@@ -1,0 +1,12 @@
+{
+  "name": "frust_json",
+  "version": "0.1.0",
+  "type": "lib",
+  "description": "JSON serialization for Frust.",
+  "exports": [
+    "JsonType", "json_parse", "json_emit"
+  ],
+  "dependencies": [
+    { "name": "core", "version": "1.0.1" }
+  ]
+}

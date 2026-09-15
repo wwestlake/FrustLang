@@ -1,0 +1,10 @@
+struct RiffHeader {
+    channels: i64,
+    sample_rate: i64,
+    bit_depth: i64
+}
+
+pub fn riff_header_parse(data: raw* i64) -> RiffHeader = {
+    // stub parsing logic
+    RiffHeader { channels: 2, sample_rate: 44100, bit_depth: 16 }
+}

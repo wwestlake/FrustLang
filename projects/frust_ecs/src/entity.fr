@@ -1,0 +1,9 @@
+// Stub for Entity ID logic
+struct EntityId {
+    id: i64,
+    generation: i64
+}
+
+pub fn entity_new(id: i64) -> EntityId = {
+    EntityId { id: id, generation: 0 }
+}

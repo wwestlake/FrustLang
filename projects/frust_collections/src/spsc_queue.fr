@@ -1,0 +1,18 @@
+// Stub for Single-Producer Single-Consumer Lock-Free Queue
+struct SpscQueue {
+    head: i64,
+    tail: i64,
+    capacity: i64
+}
+
+pub fn spsc_queue_new(capacity: i64) -> SpscQueue = {
+    SpscQueue { head: 0, tail: 0, capacity: capacity }
+}
+
+pub fn spsc_queue_push(q: raw* SpscQueue, item: i64) -> bool = {
+    false // true if successful, false if full
+}
+
+pub fn spsc_queue_pop(q: raw* SpscQueue) -> i64 = {
+    0 // stub for returning item or option
+}

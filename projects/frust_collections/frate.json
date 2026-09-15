@@ -1,0 +1,14 @@
+{
+  "name": "frust_collections",
+  "version": "0.1.0",
+  "type": "lib",
+  "description": "Data structures and concurrency for Frust.",
+  "exports": [
+    "RingBuffer", "ring_buffer_new", "ring_buffer_write", "ring_buffer_read",
+    "SpscQueue", "spsc_queue_new", "spsc_queue_push", "spsc_queue_pop",
+    "HashMap", "hash_map_new"
+  ],
+  "dependencies": [
+    { "name": "core", "version": "1.0.1" }
+  ]
+}

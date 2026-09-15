@@ -1,0 +1,6 @@
+use self::ast;
+
+pub fn json_parse(data: raw* i64) -> JsonType = {
+    // stub parsing
+    JsonType::Null
+}

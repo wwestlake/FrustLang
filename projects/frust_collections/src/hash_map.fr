@@ -1,0 +1,8 @@
+struct HashMap {
+    size: i64,
+    capacity: i64
+}
+
+pub fn hash_map_new(capacity: i64) -> HashMap = {
+    HashMap { size: 0, capacity: capacity }
+}

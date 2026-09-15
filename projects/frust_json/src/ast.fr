@@ -1,0 +1,9 @@
+// We use a basic enum representation for the JSON AST
+enum JsonType {
+    Object,
+    Array,
+    String,
+    Number,
+    Bool,
+    Null
+}
