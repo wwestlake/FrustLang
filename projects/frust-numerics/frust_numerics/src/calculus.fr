@@ -1,0 +1,43 @@
+pub fn trapezoid_area_f32(y0: f32, y1: f32, dx: f32) -> f32 = {
+    0.5 * (y0 + y1) * dx
+}
+
+pub fn simpson_area_f32(y0: f32, y1: f32, y2: f32, dx: f32) -> f32 = {
+    (dx / 3.0) * (y0 + 4.0 * y1 + y2)
+}
+
+pub fn integrate_samples4_trapezoid_f32(y0: f32, y1: f32, y2: f32, y3: f32, dx: f32) -> f32 = {
+    trapezoid_area_f32(y0, y1, dx) + trapezoid_area_f32(y1, y2, dx) + trapezoid_area_f32(y2, y3, dx)
+}
+
+pub fn forward_diff_f32(y0: f32, y1: f32, dx: f32) -> f32 = {
+    (y1 - y0) / dx
+}
+
+pub fn backward_diff_f32(y0: f32, y1: f32, dx: f32) -> f32 = {
+    (y1 - y0) / dx
+}
+
+pub fn central_diff_f32(y_prev: f32, y_next: f32, dx: f32) -> f32 = {
+    (y_next - y_prev) / (2.0 * dx)
+}
+
+pub fn second_central_diff_f32(y_prev: f32, y_mid: f32, y_next: f32, dx: f32) -> f32 = {
+    (y_next - 2.0 * y_mid + y_prev) / (dx * dx)
+}
+
+pub fn euler_step_f32(value: f32, derivative: f32, dt: f32) -> f32 = {
+    value + derivative * dt
+}
+
+pub fn midpoint_step_f32(value: f32, slope_midpoint: f32, dt: f32) -> f32 = {
+    value + slope_midpoint * dt
+}
+
+pub fn newton_step_f32(x: f32, f_x: f32, derivative_x: f32) -> f32 = {
+    x - f_x / derivative_x
+}
+
+pub fn bisection_midpoint_f32(lo: f32, hi: f32) -> f32 = {
+    0.5 * (lo + hi)
+}

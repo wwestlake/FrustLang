@@ -1,0 +1,48 @@
+struct MeanVariance4f {
+    mean: f32,
+    population_variance: f32,
+    sample_variance: f32
+}
+
+pub fn mean2_f32(a: f32, b: f32) -> f32 = {
+    (a + b) / 2.0
+}
+
+pub fn mean3_f32(a: f32, b: f32, c: f32) -> f32 = {
+    (a + b + c) / 3.0
+}
+
+pub fn mean4_f32(a: f32, b: f32, c: f32, d: f32) -> f32 = {
+    (a + b + c + d) / 4.0
+}
+
+pub fn variance_population4_f32(a: f32, b: f32, c: f32, d: f32) -> f32 = {
+    let m: f32 = mean4_f32(a, b, c, d);
+    ((a - m) * (a - m) + (b - m) * (b - m) + (c - m) * (c - m) + (d - m) * (d - m)) / 4.0
+}
+
+pub fn variance_sample4_f32(a: f32, b: f32, c: f32, d: f32) -> f32 = {
+    let m: f32 = mean4_f32(a, b, c, d);
+    ((a - m) * (a - m) + (b - m) * (b - m) + (c - m) * (c - m) + (d - m) * (d - m)) / 3.0
+}
+
+pub fn mean_variance4_f32(a: f32, b: f32, c: f32, d: f32) -> MeanVariance4f = {
+    MeanVariance4f {
+        mean: mean4_f32(a, b, c, d),
+        population_variance: variance_population4_f32(a, b, c, d),
+        sample_variance: variance_sample4_f32(a, b, c, d)
+    }
+}
+
+pub fn covariance4_f32(a0: f32, a1: f32, a2: f32, a3: f32, b0: f32, b1: f32, b2: f32, b3: f32) -> f32 = {
+    let ma: f32 = mean4_f32(a0, a1, a2, a3);
+    let mb: f32 = mean4_f32(b0, b1, b2, b3);
+    ((a0 - ma) * (b0 - mb) + (a1 - ma) * (b1 - mb) + (a2 - ma) * (b2 - mb) + (a3 - ma) * (b3 - mb)) / 4.0
+}
+
+pub fn correlation4_f32(a0: f32, a1: f32, a2: f32, a3: f32, b0: f32, b1: f32, b2: f32, b3: f32) -> f32 = {
+    let cov: f32 = covariance4_f32(a0, a1, a2, a3, b0, b1, b2, b3);
+    let va: f32 = variance_population4_f32(a0, a1, a2, a3);
+    let vb: f32 = variance_population4_f32(b0, b1, b2, b3);
+    cov / sqrt(va * vb)
+}

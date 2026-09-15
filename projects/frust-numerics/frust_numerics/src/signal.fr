@@ -1,0 +1,28 @@
+struct Signal4fStats {
+    mean: f32,
+    rms: f32,
+    peak_abs: f32
+}
+
+pub fn rms4_f32(a: f32, b: f32, c: f32, d: f32) -> f32 = {
+    sqrt((a * a + b * b + c * c + d * d) / 4.0)
+}
+
+pub fn peak_abs4_f32(a: f32, b: f32, c: f32, d: f32) -> f32 = {
+    numerics_max_f32(
+        numerics_max_f32(numerics_abs_f32(a), numerics_abs_f32(b)),
+        numerics_max_f32(numerics_abs_f32(c), numerics_abs_f32(d))
+    )
+}
+
+pub fn normalize_peak4_f32(value: f32, peak_abs: f32) -> f32 = {
+    if (peak_abs == 0.0) { 0.0 } else { value / peak_abs }
+}
+
+pub fn signal4f_stats(a: f32, b: f32, c: f32, d: f32) -> Signal4fStats = {
+    Signal4fStats {
+        mean: mean4_f32(a, b, c, d),
+        rms: rms4_f32(a, b, c, d),
+        peak_abs: peak_abs4_f32(a, b, c, d)
+    }
+}
