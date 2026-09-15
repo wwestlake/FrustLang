@@ -39,6 +39,13 @@ the signal to stop and just build the Windows version.
 
 - New project folders under `projects/` use kebab-case with `-` separators, not spaces or numeric prefixes. Example: `frust-linalg`, not `13_frust_linalg` or `Frust Linalg`.
 
+## Frate registry policy
+
+- All formal library pods belong in the Frate registry, including pods that also ship with Frust itself. Bundled pods are the default local copy; the registry is still the version/update channel when a project wants or needs a newer compatible pod version.
+- Formal pods currently include the shipped standard pods (`core`, `meta`, `plugin`) and reusable library pods such as `frust_collections`, `frust_dsp`, `frust_ecs`, `frust_geo`, `frust_graph`, `frust_http`, `frust_json`, `frust_linalg`, `frust_net`, `frust_noise`, `frust_numerics`, `frust_osc`, `frust_physics`, `frust_wave`, and `frust_websocket`.
+- Workspace manifests, smoke-test pods, examples, and local experiments are not formal library pods and should not be published to the registry unless the user explicitly promotes them.
+- `frate publish` uses the IDE OAuth session token saved by the LagDaemon Research IDE. If publishing fails with "Not signed in", have the user sign in through the IDE Account menu, then retry while the session token is still current.
+
 ## Standard workflow (every change, no exceptions)
 
 1. Make the change.
