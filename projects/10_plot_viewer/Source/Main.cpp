@@ -382,7 +382,7 @@ public:
     }
     
     bool keyPressed(const juce::KeyPress& key) override {
-        if (key == juce::KeyPress::rightKey || key == juce::KeyPress::upKey) {
+        if (key == juce::KeyPress::rightKey || key == juce::KeyPress::upKey || key == juce::KeyPress::spaceKey) {
             g_active_effect = (g_active_effect + 1) % NUM_EFFECTS;
             return true;
         } else if (key == juce::KeyPress::leftKey || key == juce::KeyPress::downKey) {
@@ -390,6 +390,15 @@ public:
             return true;
         }
         return false;
+    }
+    
+    void mouseDown(const juce::MouseEvent& e) override {
+        grabKeyboardFocus();
+        if (e.mods.isRightButtonDown()) {
+            g_active_effect = (g_active_effect - 1 + NUM_EFFECTS) % NUM_EFFECTS;
+        } else {
+            g_active_effect = (g_active_effect + 1) % NUM_EFFECTS;
+        }
     }
     
     void paint(juce::Graphics& g) override {
@@ -410,7 +419,7 @@ public:
         
         g.setColour(juce::Colours::white);
         g.setFont(20.0f);
-        g.drawText(juce::String(EFFECT_NAMES[g_active_effect]) + " (Use Left/Right Arrows to switch)", 10, 10, 800, 30, juce::Justification::topLeft, true);
+        g.drawText(juce::String(EFFECT_NAMES[g_active_effect]) + " (Click window or use Left/Right Arrows to switch)", 10, 10, 1000, 30, juce::Justification::topLeft, true);
     }
     
     void run() override {
