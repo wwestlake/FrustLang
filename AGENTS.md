@@ -78,8 +78,3 @@ the signal to stop and just build the Windows version.
 ## Toolchain
 
 - LLVM 18.1.6 via vcpkg, WinFlexBison, and JUCE are all machine-level installs referenced by absolute path in `CMakePresets.json` - not part of this repo, don't try to vendor them in.
-
-## Math and Architecture Separation
-
-- **The MATH always needs to be general.** Math/logic should never be laced into any specific technology, framework, or UI engine.
-- **The technology calls the math, not the other way around.** Keep computational logic completely agnostic and separated from the presentation or framework layer.

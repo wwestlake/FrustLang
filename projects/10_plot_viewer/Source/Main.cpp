@@ -175,25 +175,25 @@ static void run_clifford_attractor(float* buf, int w, int h) {
 // ============================================================
 extern "C" void render_graph(int32_t* pixels, int64_t width, int64_t height, int64_t frame_count);
 
-extern "C" void generate_hills(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_clouds(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_planet(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_caves(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_ocean_floor(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_wood(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_marble(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_cracks(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_stained_glass(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_rust(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_plasma(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_tunnel(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_mandelbrot(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_julia(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_stars(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_heatmap(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_truchet(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_tile(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_album(float*,int64_t,int64_t,int64_t,int64_t);
+extern "C" void generate_hills(float*,int64_t,int64_t);
+extern "C" void generate_clouds(float*,int64_t,int64_t);
+extern "C" void generate_planet(float*,int64_t,int64_t);
+extern "C" void generate_caves(float*,int64_t,int64_t);
+extern "C" void generate_ocean_floor(float*,int64_t,int64_t);
+extern "C" void generate_wood(float*,int64_t,int64_t);
+extern "C" void generate_marble(float*,int64_t,int64_t);
+extern "C" void generate_cracks(float*,int64_t,int64_t);
+extern "C" void generate_stained_glass(float*,int64_t,int64_t);
+extern "C" void generate_rust(float*,int64_t,int64_t);
+extern "C" void generate_plasma(float*,int64_t,int64_t);
+extern "C" void generate_tunnel(float*,int64_t,int64_t);
+extern "C" void generate_mandelbrot(float*,int64_t,int64_t);
+extern "C" void generate_julia(float*,int64_t,int64_t);
+extern "C" void generate_stars(float*,int64_t,int64_t);
+extern "C" void generate_heatmap(float*,int64_t,int64_t);
+extern "C" void generate_truchet(float*,int64_t,int64_t);
+extern "C" void generate_tile(float*,int64_t,int64_t);
+extern "C" void generate_album(float*,int64_t,int64_t);
 
 
 static std::vector<float*> g_allocations;
@@ -430,60 +430,53 @@ public:
     
     void run() override {
         int64_t frame_count = 0;
-        int m_last_effect = -1;
-        int64_t m_current_y = 0;
-        
         while (!threadShouldExit()) {
             
             int active = g_active_effect;
             
-            if (active != m_last_effect) {
-                m_last_effect = active;
-                m_current_y = 0;
-                // Clear the float buffer
-                memset(m_img_buffer, 0, 1200 * 800 * 4 * sizeof(float));
-            }
-            
             if (active == 0) {
                 render_graph(m_raw_buffers[m_backIdx].data(), 1200LL, 800LL, frame_count);
             } else {
-                int64_t lines_per_frame = 20; // adjust to control speed of "materializing"
-                if (m_current_y < 800) {
-                    int64_t end_y = m_current_y + lines_per_frame;
-                    if (end_y > 800) end_y = 800;
-                    
-                    // Call the appropriate procedural generator for just this vertical chunk
-                    switch(active) {
-                        case 1: generate_hills(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 2: generate_clouds(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 3: generate_planet(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 4: generate_caves(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 5: generate_ocean_floor(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 6: generate_wood(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 7: generate_marble(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 8: generate_cracks(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 9: generate_stained_glass(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 10: generate_rust(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 11: generate_plasma(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 12: generate_tunnel(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 13: generate_mandelbrot(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 14: generate_julia(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 15: generate_stars(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 16: generate_heatmap(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 17: generate_truchet(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 18: generate_tile(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 19: generate_album(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                    }
-                    
-                    m_current_y = end_y;
+                // Call the appropriate procedural generator
+                switch(active) {
+                    case 1: generate_hills(m_img_buffer, 1200LL, 800LL); break;
+                    case 2: generate_clouds(m_img_buffer, 1200LL, 800LL); break;
+                    case 3: generate_planet(m_img_buffer, 1200LL, 800LL); break;
+                    case 4: generate_caves(m_img_buffer, 1200LL, 800LL); break;
+                    case 5: generate_ocean_floor(m_img_buffer, 1200LL, 800LL); break;
+                    case 6: generate_wood(m_img_buffer, 1200LL, 800LL); break;
+                    case 7: generate_marble(m_img_buffer, 1200LL, 800LL); break;
+                    case 8: generate_cracks(m_img_buffer, 1200LL, 800LL); break;
+                    case 9: generate_stained_glass(m_img_buffer, 1200LL, 800LL); break;
+                    case 10: generate_rust(m_img_buffer, 1200LL, 800LL); break;
+                    case 11: generate_plasma(m_img_buffer, 1200LL, 800LL); break;
+                    case 12: generate_tunnel(m_img_buffer, 1200LL, 800LL); break;
+                    case 13: generate_mandelbrot(m_img_buffer, 1200LL, 800LL); break;
+                    case 14: generate_julia(m_img_buffer, 1200LL, 800LL); break;
+                    case 15: generate_stars(m_img_buffer, 1200LL, 800LL); break;
+                    case 16: generate_heatmap(m_img_buffer, 1200LL, 800LL); break;
+                    case 17: generate_truchet(m_img_buffer, 1200LL, 800LL); break;
+                    case 18: generate_tile(m_img_buffer, 1200LL, 800LL); break;
+                    case 19: generate_album(m_img_buffer, 1200LL, 800LL); break;
                 }
                 
-                // Convert entire float* to int32_t* (ARGB) for display
+                // Convert float* to int32_t* (ARGB)
                 int32_t* dest = m_raw_buffers[m_backIdx].data();
                 for (int i=0; i<1200*800; i++) {
                     float r = m_img_buffer[i*4];
                     float g = m_img_buffer[i*4+1];
                     float b = m_img_buffer[i*4+2];
+                    
+                    // Fallback visual test: if black or NaN, draw a checkerboard
+                    if (std::isnan(r) || std::isnan(g) || std::isnan(b) || (r == 0.f && g == 0.f && b == 0.f)) {
+                        int x = i % 1200;
+                        int y = i / 1200;
+                        if ((x / 50 + y / 50) % 2 == 0) {
+                            r = 0.5f; b = 0.5f; g = 0.0f;
+                        } else {
+                            r = 0.0f; b = 0.0f; g = 0.0f;
+                        }
+                    }
                     
                     int32_t ir = (int32_t)(r * 255.0f) & 0xFF;
                     int32_t ig = (int32_t)(g * 255.0f) & 0xFF;
