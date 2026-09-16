@@ -1,0 +1,690 @@
+// =============================================================================
+// frust_image_demo — Procedural Image Generation Suite
+// All effects in one compilation unit to guarantee cross-function visibility.
+// =============================================================================
+
+// ---- Host function declarations ----
+extern fn host_sin(v: f32) -> f32;
+extern fn host_cos(v: f32) -> f32;
+extern fn host_abs_f32(v: f32) -> f32;
+extern fn host_abs_i64(v: i64) -> i64;
+extern fn host_sqrt(v: f32) -> f32;
+extern fn host_floor_f32(v: f32) -> f32;
+extern fn host_pow(base: f32, exp: f32) -> f32;
+extern fn host_atan2(y: f32, x: f32) -> f32;
+extern fn host_fmod(a: f32, b: f32) -> f32;
+extern fn host_min_f32(a: f32, b: f32) -> f32;
+extern fn host_max_f32(a: f32, b: f32) -> f32;
+extern fn host_clamp_f32(v: f32, lo: f32, hi: f32) -> f32;
+extern fn host_log(v: f32) -> f32;
+extern fn host_exp(v: f32) -> f32;
+extern fn host_f32_to_i64(v: f32) -> i64;
+extern fn host_i64_to_f32(v: i64) -> f32;
+extern fn host_alloc_f32_array(len: i64) -> raw* f32;
+extern fn host_write_f32_array(arr: raw* f32, idx: i64, val: f32);
+extern fn host_read_f32_array(arr: raw* f32, idx: i64) -> f32;
+extern fn host_simplex2(x: f32, y: f32) -> f32;
+extern fn host_worley2(x: f32, y: f32) -> f32;
+extern fn host_worley_hash(x: f32, y: f32) -> f32;
+extern fn host_img_set_pixel(buf: raw* f32, w: i64, x: i64, y: i64, r: f32, g: f32, b: f32, a: f32);
+extern fn host_generate_reaction_diffusion(buf: raw* f32, w: i64, h: i64);
+extern fn host_generate_flow_field(buf: raw* f32, w: i64, h: i64);
+extern fn host_generate_attractor(buf: raw* f32, w: i64, h: i64);
+
+// =============================================================================
+// MATH HELPERS
+// =============================================================================
+
+pub fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 = {
+    let t: f32 = host_clamp_f32((x - e0) / (e1 - e0), 0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+pub fn lerp(a: f32, b: f32, t: f32) -> f32 = {
+    a + (b - a) * t
+}
+
+// 4-octave fBm, returns [0,1]
+pub fn fbm4(x: f32, y: f32) -> f32 = {
+    let n1: f32 = host_simplex2(x,       y)       * 0.5000;
+    let n2: f32 = host_simplex2(x * 2.0, y * 2.0) * 0.2500;
+    let n3: f32 = host_simplex2(x * 4.0, y * 4.0) * 0.1250;
+    let n4: f32 = host_simplex2(x * 8.0, y * 8.0) * 0.0625;
+    host_clamp_f32((n1 + n2 + n3 + n4 + 1.0) * 0.5, 0.0, 1.0)
+}
+
+// 6-octave fBm, returns [0,1]
+pub fn fbm6(x: f32, y: f32) -> f32 = {
+    let n1: f32 = host_simplex2(x,        y)        * 0.5000;
+    let n2: f32 = host_simplex2(x * 2.0,  y * 2.0)  * 0.2500;
+    let n3: f32 = host_simplex2(x * 4.0,  y * 4.0)  * 0.1250;
+    let n4: f32 = host_simplex2(x * 8.0,  y * 8.0)  * 0.0625;
+    let n5: f32 = host_simplex2(x * 16.0, y * 16.0) * 0.0313;
+    let n6: f32 = host_simplex2(x * 32.0, y * 32.0) * 0.0156;
+    host_clamp_f32((n1 + n2 + n3 + n4 + n5 + n6 + 1.0) * 0.5, 0.0, 1.0)
+}
+
+// Ridged fBm (1 - |simplex|), returns [0,1]
+pub fn ridged4(x: f32, y: f32) -> f32 = {
+    let r1: f32 = (1.0 - host_abs_f32(host_simplex2(x,       y)))       * 0.5000;
+    let r2: f32 = (1.0 - host_abs_f32(host_simplex2(x * 2.0, y * 2.0))) * 0.2500;
+    let r3: f32 = (1.0 - host_abs_f32(host_simplex2(x * 4.0, y * 4.0))) * 0.1250;
+    let r4: f32 = (1.0 - host_abs_f32(host_simplex2(x * 8.0, y * 8.0))) * 0.0625;
+    host_clamp_f32((r1 + r2 + r3 + r4) / 0.9375, 0.0, 1.0)
+}
+
+// =============================================================================
+// TERRAIN EFFECTS
+// =============================================================================
+
+pub fn hills_r(h: f32) -> f32 = {
+    if (h < 0.35) { h * 0.3 } else {
+        if (h < 0.40) { 0.85 } else {
+            if (h < 0.65) { 0.15 + (h - 0.40) * 0.4 } else {
+                if (h < 0.80) { 0.43 + (h - 0.65) * 1.6 } else {
+                    0.85 + (h - 0.80) * 0.75
+                }
+            }
+        }
+    }
+}
+
+pub fn hills_g(h: f32) -> f32 = {
+    if (h < 0.35) { 0.15 + h * 0.7 } else {
+        if (h < 0.40) { 0.75 } else {
+            if (h < 0.65) { 0.38 + (h - 0.40) * 0.5 } else {
+                if (h < 0.80) { 0.43 + (h - 0.65) * 1.1 } else {
+                    0.88 + (h - 0.80) * 0.60
+                }
+            }
+        }
+    }
+}
+
+pub fn hills_b(h: f32) -> f32 = {
+    if (h < 0.35) { 0.40 + h * 1.5 } else {
+        if (h < 0.40) { 0.50 } else {
+            if (h < 0.65) { 0.10 } else {
+                if (h < 0.80) { 0.20 + (h - 0.65) * 1.4 } else {
+                    0.90 + (h - 0.80) * 0.5
+                }
+            }
+        }
+    }
+}
+
+pub fn generate_hills(buf: raw* f32, w: i64, h: i64) = {
+    let mut py: i64 = 0;
+    while (py < h) {
+        let mut px: i64 = 0;
+        while (px < w) {
+            let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w);
+            let v: f32 = host_i64_to_f32(py) / host_i64_to_f32(h);
+            let height: f32 = fbm6(u * 3.0, v * 3.0);
+            let r: f32 = hills_r(height);
+            let g: f32 = hills_g(height);
+            let b: f32 = hills_b(height);
+            host_img_set_pixel(buf, w, px, py, r, g, b, 1.0);
+            px = px + 1;
+        };
+        py = py + 1;
+    };
+}
+
+pub fn generate_hills_raw(buf: raw* f32, w: i64, h: i64) = {
+    let mut py: i64 = 0;
+    while (py < h) {
+        let mut px: i64 = 0;
+        while (px < w) {
+            let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w);
+            let v: f32 = host_i64_to_f32(py) / host_i64_to_f32(h);
+            let height: f32 = fbm6(u * 3.0, v * 3.0);
+            host_img_set_pixel(buf, w, px, py, height, height, height, 1.0);
+            px = px + 1;
+        };
+        py = py + 1;
+    };
+}
+
+pub fn generate_clouds(buf: raw* f32, w: i64, h: i64) = {
+    let mut py: i64 = 0;
+    while (py < h) {
+        let mut px: i64 = 0;
+        while (px < w) {
+            let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w);
+            let v: f32 = host_i64_to_f32(py) / host_i64_to_f32(h);
+            let density: f32 = fbm6(u * 3.5, v * 3.5);
+            let cloud: f32 = smoothstep(0.42, 0.70, density);
+            host_img_set_pixel(buf, w, px, py, 1.0, 1.0, 1.0, cloud);
+            px = px + 1;
+        };
+        py = py + 1;
+    };
+}
+
+pub fn planet_r(h: f32, polar: i64, cloud: i64) -> f32 = {
+    if (cloud == 1) { 0.92 } else {
+        if (polar == 1) { 0.95 } else {
+            if (h < 0.42) { 0.05 + h * 0.25 } else {
+                if (h < 0.58) { 0.22 + (h - 0.42) * 1.5 } else {
+                    if (h < 0.75) { 0.46 + (h - 0.58) * 2.2 } else {
+                        0.80 + (h - 0.75) * 0.8
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn planet_g(h: f32, polar: i64, cloud: i64) -> f32 = {
+    if (cloud == 1) { 0.92 } else {
+        if (polar == 1) { 0.97 } else {
+            if (h < 0.42) { 0.15 + h * 0.6 } else {
+                if (h < 0.58) { 0.40 + (h - 0.42) * 1.0 } else {
+                    if (h < 0.75) { 0.46 + (h - 0.58) * 1.4 } else {
+                        0.70 + (h - 0.75) * 1.2
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn planet_b(h: f32, polar: i64, cloud: i64) -> f32 = {
+    if (cloud == 1) { 0.92 } else {
+        if (polar == 1) { 1.0 } else {
+            if (h < 0.42) { 0.50 + h * 1.0 } else {
+                if (h < 0.58) { 0.12 } else {
+                    if (h < 0.75) { 0.20 + (h - 0.58) * 1.5 } else {
+                        0.90 + (h - 0.75) * 0.4
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn generate_planet(buf: raw* f32, w: i64, h: i64) = {
+    let half_w: f32 = host_i64_to_f32(w) * 0.5;
+    let half_h: f32 = host_i64_to_f32(h) * 0.5;
+    let mut py: i64 = 0;
+    while (py < h) {
+        let mut px: i64 = 0;
+        while (px < w) {
+            let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w);
+            let v: f32 = host_i64_to_f32(py) / host_i64_to_f32(h);
+            let cx: f32 = u - 0.5;
+            let cy: f32 = v - 0.5;
+            let dist: f32 = host_sqrt(cx * cx + cy * cy);
+            if (dist < 0.46) {
+                let height: f32 = fbm6(u * 4.5 + 1.3, v * 4.5 + 0.7);
+                let lat: f32 = host_abs_f32(v - 0.5) / 0.46;
+                let polar: i64 = if (lat > 0.78) { 1 } else { 0 };
+                let cloud_n: f32 = fbm4(u * 9.0 + 5.0, v * 9.0 + 3.0);
+                let cloud: i64 = if (cloud_n > 0.67) { 1 } else { 0 };
+                let pr: f32 = planet_r(height, polar, cloud);
+                let pg: f32 = planet_g(height, polar, cloud);
+                let pb: f32 = planet_b(height, polar, cloud);
+                let light: f32 = host_clamp_f32(0.5 + cx * 0.5 - cy * 0.3, 0.25, 1.0);
+                host_img_set_pixel(buf, w, px, py, pr * light, pg * light, pb * light, 1.0);
+            } else {
+                let star: f32 = host_worley2(host_i64_to_f32(px) / 6.0, host_i64_to_f32(py) / 6.0);
+                let sb: f32 = host_clamp_f32(1.0 - star * 22.0, 0.0, 1.0);
+                host_img_set_pixel(buf, w, px, py, sb, sb, sb, 1.0);
+            };
+            px = px + 1;
+        };
+        py = py + 1;
+    };
+}
+
+pub fn generate_caves(buf: raw* f32, w: i64, h: i64) = {
+    let mut py: i64 = 0;
+    while (py < h) {
+        let mut px: i64 = 0;
+        while (px < w) {
+            let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w);
+            let v: f32 = host_i64_to_f32(py) / host_i64_to_f32(h);
+            let ridged: f32 = ridged4(u * 4.0, v * 4.0);
+            let is_cave: i64 = if (ridged > 0.65) { 1 } else { 0 };
+            if (is_cave == 1) {
+                let glow: f32 = (ridged - 0.65) / 0.35;
+                host_img_set_pixel(buf, w, px, py, glow * 0.1, glow * 0.05, glow * 0.02, 1.0);
+            } else {
+                let rock: f32 = fbm4(u * 10.0, v * 10.0);
+                let r: f32 = 0.30 + rock * 0.20;
+                let g: f32 = 0.25 + rock * 0.15;
+                let b: f32 = 0.20 + rock * 0.10;
+                host_img_set_pixel(buf, w, px, py, r, g, b, 1.0);
+            };
+            px = px + 1;
+        };
+        py = py + 1;
+    };
+}
+
+pub fn generate_ocean_floor(buf: raw* f32, w: i64, h: i64) = {
+    let mut py: i64 = 0;
+    while (py < h) {
+        let mut px: i64 = 0;
+        while (px < w) {
+            let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w);
+            let v: f32 = host_i64_to_f32(py) / host_i64_to_f32(h);
+            let depth: f32 = fbm6(u * 2.5, v * 2.5);
+            let detail: f32 = fbm4(u * 12.0, v * 12.0) * 0.08;
+            let h_val: f32 = host_clamp_f32(depth + detail, 0.0, 1.0);
+            let r: f32 = h_val * 0.12;
+            let g: f32 = 0.06 + h_val * 0.22;
+            let b: f32 = 0.25 + h_val * 0.55;
+            host_img_set_pixel(buf, w, px, py, r, g, b, 1.0);
+            px = px + 1;
+        };
+        py = py + 1;
+    };
+}
+
+// =============================================================================
+// MATERIAL EFFECTS
+// =============================================================================
+
+pub fn generate_wood(buf: raw* f32, w: i64, h: i64) = {
+    let mut py: i64 = 0;
+    while (py < h) {
+        let mut px: i64 = 0;
+        while (px < w) {
+            let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w);
+            let v: f32 = host_i64_to_f32(py) / host_i64_to_f32(h);
+            let grain: f32 = fbm4(u * 1.5, v * 8.0);
+            let dist: f32 = host_sqrt(u * u + v * v) * 12.0 + grain * 3.0;
+            let rings: f32 = host_abs_f32(host_sin(dist * 3.14159));
+            let t: f32 = rings * rings;
+            let r: f32 = 0.45 + t * 0.40;
+            let g: f32 = 0.22 + t * 0.22;
+            let b: f32 = 0.05 + t * 0.08;
+            host_img_set_pixel(buf, w, px, py, r, g, b, 1.0);
+            px = px + 1;
+        };
+        py = py + 1;
+    };
+}
+
+pub fn generate_marble(buf: raw* f32, w: i64, h: i64) = {
+    let mut py: i64 = 0;
+    while (py < h) {
+        let mut px: i64 = 0;
+        while (px < w) {
+            let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w);
+            let v: f32 = host_i64_to_f32(py) / host_i64_to_f32(h);
+            let distortion: f32 = fbm4(u * 3.0, v * 3.0) * 4.0;
+            let marble: f32 = host_sin((u * 8.0 + distortion) * 3.14159) * 0.5 + 0.5;
+            let vein: f32 = marble * marble * marble;
+            let r: f32 = 0.78 + vein * 0.18;
+            let g: f32 = 0.76 + vein * 0.18;
+            let b: f32 = 0.78 + vein * 0.18;
+            host_img_set_pixel(buf, w, px, py, r, g, b, 1.0);
+            px = px + 1;
+        };
+        py = py + 1;
+    };
+}
+
+pub fn generate_cracks(buf: raw* f32, w: i64, h: i64) = {
+    let mut py: i64 = 0;
+    while (py < h) {
+        let mut px: i64 = 0;
+        while (px < w) {
+            let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w);
+            let v: f32 = host_i64_to_f32(py) / host_i64_to_f32(h);
+            let w_dist: f32 = host_worley2(u * 6.0, v * 6.0);
+            let texture: f32 = fbm4(u * 15.0, v * 15.0) * 0.15;
+            let crack_dark: f32 = smoothstep(0.0, 0.08, w_dist);
+            let cell_light: f32 = 0.55 + w_dist * 0.25 + texture;
+            let brightness: f32 = lerp(0.0, cell_light, crack_dark);
+            let r: f32 = host_clamp_f32(brightness * 0.72 + 0.08, 0.0, 1.0);
+            let g: f32 = host_clamp_f32(brightness * 0.55 + 0.04, 0.0, 1.0);
+            let b: f32 = host_clamp_f32(brightness * 0.25, 0.0, 1.0);
+            host_img_set_pixel(buf, w, px, py, r, g, b, 1.0);
+            px = px + 1;
+        };
+        py = py + 1;
+    };
+}
+
+pub fn generate_stained_glass(buf: raw* f32, w: i64, h: i64) = {
+    let mut py: i64 = 0;
+    while (py < h) {
+        let mut px: i64 = 0;
+        while (px < w) {
+            let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w);
+            let v: f32 = host_i64_to_f32(py) / host_i64_to_f32(h);
+            let w_dist: f32 = host_worley2(u * 7.0, v * 7.0);
+            let cell_hash: f32 = host_worley_hash(u * 7.0, v * 7.0);
+            let is_border: i64 = if (w_dist < 0.06) { 1 } else { 0 };
+            let r: f32 = if (is_border == 1) { 0.05 } else {
+                host_clamp_f32(host_abs_f32(host_sin(cell_hash * 23.7 + 0.0)), 0.2, 1.0)
+            };
+            let g: f32 = if (is_border == 1) { 0.05 } else {
+                host_clamp_f32(host_abs_f32(host_sin(cell_hash * 17.3 + 2.094)), 0.2, 1.0)
+            };
+            let b: f32 = if (is_border == 1) { 0.05 } else {
+                host_clamp_f32(host_abs_f32(host_sin(cell_hash * 31.1 + 4.189)), 0.2, 1.0)
+            };
+            let brightness: f32 = if (is_border == 1) { 1.0 } else {
+                0.55 + w_dist * 0.45
+            };
+            host_img_set_pixel(buf, w, px, py, r * brightness, g * brightness, b * brightness, 1.0);
+            px = px + 1;
+        };
+        py = py + 1;
+    };
+}
+
+pub fn generate_rust(buf: raw* f32, w: i64, h: i64) = {
+    let mut py: i64 = 0;
+    while (py < h) {
+        let mut px: i64 = 0;
+        while (px < w) {
+            let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w);
+            let v: f32 = host_i64_to_f32(py) / host_i64_to_f32(h);
+            let base: f32 = fbm6(u * 4.0 + 0.5, v * 4.0 + 0.3);
+            let detail: f32 = fbm4(u * 14.0 + 1.0, v * 14.0 + 2.0);
+            let corrosion: f32 = fbm4(u * 6.0 + 3.0, v * 6.0 + 1.5);
+            let t: f32 = base * 0.6 + detail * 0.25 + corrosion * 0.15;
+            let r: f32 = host_clamp_f32(0.45 + t * 0.45, 0.0, 1.0);
+            let g: f32 = host_clamp_f32(0.12 + t * 0.22 - corrosion * 0.08, 0.0, 1.0);
+            let b: f32 = host_clamp_f32(0.01 + t * 0.05, 0.0, 1.0);
+            host_img_set_pixel(buf, w, px, py, r, g, b, 1.0);
+            px = px + 1;
+        };
+        py = py + 1;
+    };
+}
+
+// =============================================================================
+// MATH / DEMOSCENE EFFECTS
+// =============================================================================
+
+pub fn generate_plasma(buf: raw* f32, w: i64, h: i64) = {
+    let pi: f32 = 3.14159;
+    let tau: f32 = 6.28318;
+    let mut py: i64 = 0;
+    while (py < h) {
+        let mut px: i64 = 0;
+        while (px < w) {
+            let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w) * tau;
+            let v: f32 = host_i64_to_f32(py) / host_i64_to_f32(h) * tau;
+            let v1: f32 = host_sin(u * 1.3);
+            let v2: f32 = host_cos(v * 1.7);
+            let v3: f32 = host_sin((u + v) * 0.8);
+            let v4: f32 = host_sin(host_sqrt(u * u + v * v) * 0.9);
+            let val: f32 = (v1 + v2 + v3 + v4) * 0.25;
+            let r: f32 = host_sin(val * pi + 0.0) * 0.5 + 0.5;
+            let g: f32 = host_sin(val * pi + 2.094) * 0.5 + 0.5;
+            let b: f32 = host_sin(val * pi + 4.189) * 0.5 + 0.5;
+            host_img_set_pixel(buf, w, px, py, r, g, b, 1.0);
+            px = px + 1;
+        };
+        py = py + 1;
+    };
+}
+
+pub fn generate_tunnel(buf: raw* f32, w: i64, h: i64) = {
+    let tau: f32 = 6.28318;
+    let half_w: f32 = host_i64_to_f32(w) * 0.5;
+    let half_h: f32 = host_i64_to_f32(h) * 0.5;
+    let mut py: i64 = 0;
+    while (py < h) {
+        let mut px: i64 = 0;
+        while (px < w) {
+            let cx: f32 = (host_i64_to_f32(px) - half_w) / half_w;
+            let cy: f32 = (host_i64_to_f32(py) - half_h) / half_h;
+            let dist_c: f32 = host_sqrt(cx * cx + cy * cy);
+            let safe_dist: f32 = if (dist_c < 0.001) { 0.001 } else { dist_c };
+            let tunnel_u: f32 = 0.4 / safe_dist;
+            let angle: f32 = host_atan2(cy, cx) / tau;
+            let fi: f32 = host_floor_f32(host_fmod(tunnel_u * 6.0, 2.0));
+            let fj: f32 = host_floor_f32(host_fmod(angle * 12.0 + 100.0, 2.0));
+            let checker: i64 = if ((fi + fj - host_floor_f32((fi + fj) * 0.5) * 2.0) < 1.0) { 1 } else { 0 };
+            let brightness: f32 = host_clamp_f32(1.0 - safe_dist * 0.6, 0.0, 1.0);
+            let base: f32 = if (checker == 1) { 0.85 } else { 0.15 };
+            let c: f32 = base * brightness;
+            let r: f32 = c * (0.6 + 0.4 * host_abs_f32(host_sin(angle * 9.42)));
+            let g: f32 = c * (0.6 + 0.4 * host_abs_f32(host_cos(angle * 6.28)));
+            let b: f32 = c * 0.85;
+            host_img_set_pixel(buf, w, px, py, r, g, b, 1.0);
+            px = px + 1;
+        };
+        py = py + 1;
+    };
+}
+
+pub fn generate_mandelbrot(buf: raw* f32, w: i64, h: i64) = {
+    let max_iter: i64 = 300;
+    let mut py: i64 = 0;
+    while (py < h) {
+        let mut px: i64 = 0;
+        while (px < w) {
+            let cr: f32 = host_i64_to_f32(px) / host_i64_to_f32(w) * 3.5 - 2.5;
+            let ci: f32 = host_i64_to_f32(py) / host_i64_to_f32(h) * 2.0 - 1.0;
+            let mut zr: f32 = 0.0;
+            let mut zi: f32 = 0.0;
+            let mut iter: i64 = 0;
+            let mut escape: i64 = max_iter;
+            while (iter < max_iter) {
+                let zr2: f32 = zr * zr;
+                let zi2: f32 = zi * zi;
+                if ((zr2 + zi2) > 4.0) {
+                    escape = iter;
+                    iter = max_iter;
+                } else {
+                    let new_zr: f32 = zr2 - zi2 + cr;
+                    zi = 2.0 * zr * zi + ci;
+                    zr = new_zr;
+                    iter = iter + 1;
+                };
+            };
+            let in_set: i64 = if (escape == max_iter) { 1 } else { 0 };
+            let t: f32 = host_i64_to_f32(escape) / host_i64_to_f32(max_iter);
+            let r: f32 = if (in_set == 1) { 0.0 } else { 0.5 + 0.5 * host_sin(t * 18.85 + 0.0) };
+            let g: f32 = if (in_set == 1) { 0.0 } else { 0.5 + 0.5 * host_sin(t * 18.85 + 2.094) };
+            let b: f32 = if (in_set == 1) { 0.0 } else { 0.5 + 0.5 * host_sin(t * 18.85 + 4.189) };
+            host_img_set_pixel(buf, w, px, py, r, g, b, 1.0);
+            px = px + 1;
+        };
+        py = py + 1;
+    };
+}
+
+pub fn generate_julia(buf: raw* f32, w: i64, h: i64) = {
+    let max_iter: i64 = 300;
+    let c_r: f32 = -0.7269;
+    let c_i: f32 = 0.1889;
+    let mut py: i64 = 0;
+    while (py < h) {
+        let mut px: i64 = 0;
+        while (px < w) {
+            let mut zr: f32 = host_i64_to_f32(px) / host_i64_to_f32(w) * 3.2 - 1.6;
+            let mut zi: f32 = host_i64_to_f32(py) / host_i64_to_f32(h) * 2.4 - 1.2;
+            let mut iter: i64 = 0;
+            let mut escape: i64 = max_iter;
+            while (iter < max_iter) {
+                let zr2: f32 = zr * zr;
+                let zi2: f32 = zi * zi;
+                if ((zr2 + zi2) > 4.0) {
+                    escape = iter;
+                    iter = max_iter;
+                } else {
+                    let new_zr: f32 = zr2 - zi2 + c_r;
+                    zi = 2.0 * zr * zi + c_i;
+                    zr = new_zr;
+                    iter = iter + 1;
+                };
+            };
+            let in_set: i64 = if (escape == max_iter) { 1 } else { 0 };
+            let t: f32 = host_i64_to_f32(escape) / host_i64_to_f32(max_iter);
+            let r: f32 = if (in_set == 1) { 0.0 } else { 0.5 + 0.5 * host_sin(t * 25.13 + 1.0) };
+            let g: f32 = if (in_set == 1) { 0.0 } else { 0.5 + 0.5 * host_sin(t * 25.13 + 3.094) };
+            let b: f32 = if (in_set == 1) { 0.02 } else { 0.5 + 0.5 * host_sin(t * 25.13 + 5.189) };
+            host_img_set_pixel(buf, w, px, py, r, g, b, 1.0);
+            px = px + 1;
+        };
+        py = py + 1;
+    };
+}
+
+// =============================================================================
+// SCIENCE / DATA EFFECTS
+// =============================================================================
+
+pub fn generate_stars(buf: raw* f32, w: i64, h: i64) = {
+    let mut py: i64 = 0;
+    while (py < h) {
+        let mut px: i64 = 0;
+        while (px < w) {
+            let sx: f32 = host_i64_to_f32(px) / 5.0;
+            let sy: f32 = host_i64_to_f32(py) / 5.0;
+            let star_dist: f32 = host_worley2(sx, sy);
+            let star_brightness: f32 = host_clamp_f32(1.0 - star_dist * 25.0, 0.0, 1.0);
+            let star_color: f32 = host_worley_hash(sx, sy);
+            let r: f32 = star_brightness * (0.8 + star_color * 0.2);
+            let g: f32 = star_brightness * (0.8 + host_sin(star_color * 12.0) * 0.1 + 0.1);
+            let b: f32 = star_brightness * (0.85 + host_cos(star_color * 9.0) * 0.15);
+            host_img_set_pixel(buf, w, px, py, r, g, b, 1.0);
+            px = px + 1;
+        };
+        py = py + 1;
+    };
+}
+
+pub fn viridis_r(t: f32) -> f32 = {
+    host_clamp_f32(0.267 + t * (0.0 - 0.267) + t * t * (1.748 - 0.0) + t * t * t * (0.0 - 1.748 * 0.5), 0.0, 1.0)
+}
+
+pub fn viridis_g(t: f32) -> f32 = {
+    host_clamp_f32(0.004 + t * 1.098 - t * t * 0.562, 0.0, 1.0)
+}
+
+pub fn viridis_b(t: f32) -> f32 = {
+    if (t < 0.5) { 0.329 + t * 0.7 } else { 0.679 - (t - 0.5) * 1.358 }
+}
+
+pub fn generate_heatmap(buf: raw* f32, w: i64, h: i64) = {
+    let mut py: i64 = 0;
+    while (py < h) {
+        let mut px: i64 = 0;
+        while (px < w) {
+            let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w);
+            let v: f32 = host_i64_to_f32(py) / host_i64_to_f32(h);
+            let t: f32 = fbm4(u * 2.5 + 0.3, v * 2.5 + 0.7);
+            let r: f32 = viridis_r(t);
+            let g: f32 = viridis_g(t);
+            let b: f32 = viridis_b(t);
+            host_img_set_pixel(buf, w, px, py, r, g, b, 1.0);
+            px = px + 1;
+        };
+        py = py + 1;
+    };
+}
+
+// =============================================================================
+// ART EFFECTS
+// =============================================================================
+
+pub fn generate_truchet(buf: raw* f32, w: i64, h: i64) = {
+    let tile: i64 = 32;
+    let thickness: f32 = 0.07;
+    let mut py: i64 = 0;
+    while (py < h) {
+        let mut px: i64 = 0;
+        while (px < w) {
+            let tx: i64 = px / tile;
+            let ty: i64 = py / tile;
+            let cell_hash: f32 = host_worley_hash(host_i64_to_f32(tx) * 1.7 + 0.1, host_i64_to_f32(ty) * 2.3 + 0.2);
+            let flip: i64 = if (cell_hash < 0.5) { 0 } else { 1 };
+            let lx: f32 = host_i64_to_f32(px - tx * tile) / host_i64_to_f32(tile);
+            let ly: f32 = host_i64_to_f32(py - ty * tile) / host_i64_to_f32(tile);
+            let d00: f32 = host_sqrt(lx * lx + ly * ly);
+            let d11: f32 = host_sqrt((lx - 1.0) * (lx - 1.0) + (ly - 1.0) * (ly - 1.0));
+            let d10: f32 = host_sqrt((lx - 1.0) * (lx - 1.0) + ly * ly);
+            let d01: f32 = host_sqrt(lx * lx + (ly - 1.0) * (ly - 1.0));
+            let on_arc: i64 = if (flip == 0) {
+                let a1: i64 = if (d00 > 0.5 - thickness) { if (d00 < 0.5 + thickness) { 1 } else { 0 } } else { 0 };
+                let a2: i64 = if (d11 > 0.5 - thickness) { if (d11 < 0.5 + thickness) { 1 } else { 0 } } else { 0 };
+                if ((a1 + a2) > 0) { 1 } else { 0 }
+            } else {
+                let a3: i64 = if (d10 > 0.5 - thickness) { if (d10 < 0.5 + thickness) { 1 } else { 0 } } else { 0 };
+                let a4: i64 = if (d01 > 0.5 - thickness) { if (d01 < 0.5 + thickness) { 1 } else { 0 } } else { 0 };
+                if ((a3 + a4) > 0) { 1 } else { 0 }
+            };
+            let r: f32 = if (on_arc == 1) { 0.95 } else { 0.08 };
+            let g: f32 = if (on_arc == 1) { 0.92 } else { 0.08 };
+            let b: f32 = if (on_arc == 1) { 0.88 } else { 0.08 };
+            host_img_set_pixel(buf, w, px, py, r, g, b, 1.0);
+            px = px + 1;
+        };
+        py = py + 1;
+    };
+}
+
+pub fn generate_tile(buf: raw* f32, w: i64, h: i64) = {
+    let mut py: i64 = 0;
+    while (py < h) {
+        let mut px: i64 = 0;
+        while (px < w) {
+            let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w);
+            let v: f32 = host_i64_to_f32(py) / host_i64_to_f32(h);
+            let um: f32 = if (u < 0.5) { u * 2.0 } else { 2.0 - u * 2.0 };
+            let vm: f32 = if (v < 0.5) { v * 2.0 } else { 2.0 - v * 2.0 };
+            let n: f32 = fbm6(um * 3.5, vm * 3.5);
+            let r: f32 = 0.25 + n * 0.55;
+            let g: f32 = 0.30 + n * 0.45;
+            let b: f32 = 0.35 + n * 0.40;
+            host_img_set_pixel(buf, w, px, py, r, g, b, 1.0);
+            px = px + 1;
+        };
+        py = py + 1;
+    };
+}
+
+pub fn generate_album(buf: raw* f32, w: i64, h: i64) = {
+    let tau: f32 = 6.28318;
+    let mut py: i64 = 0;
+    while (py < h) {
+        let mut px: i64 = 0;
+        while (px < w) {
+            let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w);
+            let v: f32 = host_i64_to_f32(py) / host_i64_to_f32(h);
+            let cx: f32 = u - 0.5;
+            let cy: f32 = v - 0.5;
+            let dist: f32 = host_sqrt(cx * cx + cy * cy);
+            let angle: f32 = host_atan2(cy, cx);
+            let bg: f32 = fbm6(u * 2.2, v * 2.2);
+            let rings: f32 = host_sin(dist * 22.0 + bg * 4.0) * 0.5 + 0.5;
+            let swirl: f32 = host_sin(angle * 5.0 + dist * 8.0 + bg * 3.0) * 0.5 + 0.5;
+            let combined: f32 = bg * 0.45 + rings * 0.30 + swirl * 0.25;
+            let vignette: f32 = host_clamp_f32(1.0 - dist * 1.4, 0.0, 1.0);
+            let r: f32 = host_clamp_f32(combined * 0.35 + 0.05, 0.0, 1.0) * vignette;
+            let g: f32 = host_clamp_f32(combined * 0.75 + 0.10, 0.0, 1.0) * vignette;
+            let b: f32 = host_clamp_f32(combined * 0.65 + 0.25, 0.0, 1.0) * vignette;
+            host_img_set_pixel(buf, w, px, py, r, g, b, 1.0);
+            px = px + 1;
+        };
+        py = py + 1;
+    };
+}
+
+// =============================================================================
+// SIMULATION EFFECTS (delegate to C++ host)
+// =============================================================================
+
+pub fn generate_reaction_diffusion(buf: raw* f32, w: i64, h: i64) = {
+    host_generate_reaction_diffusion(buf, w, h);
+}
+
+pub fn generate_flow_field(buf: raw* f32, w: i64, h: i64) = {
+    host_generate_flow_field(buf, w, h);
+}
+
+pub fn generate_attractor(buf: raw* f32, w: i64, h: i64) = {
+    host_generate_attractor(buf, w, h);
+}
