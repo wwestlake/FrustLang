@@ -34,6 +34,15 @@ static void noise_init() {
     for (int i = 0; i < 512; i++) { p512[i] = PERM[i&255]; p12[i] = p512[i] % 12; }
 }
 
+extern "C" void host_set_noise_perm_val(int64_t idx, int64_t val) {
+    if (idx >= 0 && idx < 256) {
+        p512[idx] = (int)val;
+        p512[idx + 256] = (int)val;
+        p12[idx] = (int)val % 12;
+        p12[idx + 256] = (int)val % 12;
+    }
+}
+
 static const float G2[12][2] = {
     {1,1},{-1,1},{1,-1},{-1,-1},{1,0},{-1,0},{1,0},{-1,0},{0,1},{0,-1},{0,1},{0,-1}
 };
@@ -173,6 +182,7 @@ static void run_clifford_attractor(float* buf, int w, int h) {
 // ============================================================
 // EXTERNAL BINDINGS
 // ============================================================
+extern "C" void seed_procedural_noise(int64_t seed);
 extern "C" void render_graph(int32_t* pixels, int64_t width, int64_t height, int64_t frame_count);
 
 extern "C" void generate_hills(float*,int64_t,int64_t,int64_t);
@@ -359,7 +369,7 @@ class PlotComponent : public juce::Component, public juce::Thread, public juce::
 public:
     PlotComponent() : juce::Thread("FrustRenderThread") {
         setWantsKeyboardFocus(true);
-        noise_init();
+        seed_procedural_noise((int64_t)time(NULL));
         
         for (int i = 0; i < 3; ++i) {
             m_raw_buffers[i].resize(1200 * 800, 0xFF000000); 

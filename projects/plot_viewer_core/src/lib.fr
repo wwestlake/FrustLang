@@ -1,3 +1,9 @@
+use core::random::xoshiro256_init;
+use core::random::Xoshiro256;
+    use core::mem::malloc;
+    use core::mem::free;
+    use core::buffer::buf_set;
+    use core::buffer::buf_get;
 extern fn host_f32_to_i64(val: f32) -> i64;
 extern fn host_i64_to_f32(val: i64) -> f32;
 
@@ -1052,4 +1058,43 @@ pub fn generate_flow_field(buf: raw* f32, w: i64, h: i64, packed_y: i64) = {
 
 pub fn generate_attractor(buf: raw* f32, w: i64, h: i64, packed_y: i64) = {
     host_generate_attractor(buf, w, h);
+}
+
+
+extern fn host_set_noise_perm_val(idx: i64, val: i64);
+
+
+// Seeds the C++ Simplex noise permutation table using our Frust RNG.
+pub fn seed_procedural_noise(seed: i64) = {
+    let mut rng: Xoshiro256 = xoshiro256_init(seed);
+    
+    // Frust doesn't have local array variables yet, so we use a raw memory buffer
+    
+    // Allocate 256 i64s
+    let mut perm: raw* i64 = malloc(256 * 8) as raw* i64;
+    
+    let mut i: i64 = 0;
+    while (i < 256) {
+        buf_set(perm, i, i);
+        i = i + 1;
+    };
+    
+    // Fisher-Yates shuffle
+    i = 255;
+    while (i > 0) {
+        let j: i64 = rng.next_range(0, i + 1);
+        let tmp: i64 = buf_get(perm, i);
+        buf_set(perm, i, buf_get(perm, j));
+        buf_set(perm, j, tmp);
+        i = i - 1;
+    };
+    
+    // Send to C++
+    i = 0;
+    while (i < 256) {
+        host_set_noise_perm_val(i, buf_get(perm, i));
+        i = i + 1;
+    };
+    
+    free(perm as raw* i8);
 }
