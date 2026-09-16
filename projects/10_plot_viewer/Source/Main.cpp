@@ -369,7 +369,8 @@ public:
         openGLContext.attachTo(*this);
         openGLContext.setContinuousRepainting(true);
         
-        startTimer(3000); // Automatically cycle every 3 seconds
+        // Timer disabled to allow manual control via arrows/clicks
+        // startTimer(3000); 
         startThread();
     }
     
