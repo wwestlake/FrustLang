@@ -1,0 +1,27 @@
+use core;
+use frust_hep_stats;
+use frust_histogram;
+
+fn pass_if(cond: bool) -> i64 = {
+    if cond == true { 1 } else { 0 }
+}
+
+fn main() -> i64 = {
+    let signal: Hist4f = hist4_fill_weight(hist4_uniform(100.0, 140.0), 126.0, 5.0);
+    let background: Hist4f = hist4_fill_weight(hist4_uniform(100.0, 140.0), 126.0, 20.0);
+    let model: CountingModel = hist4_signal_background_model(signal, background, 2);
+    let z: f64 = asimov_discovery_z(model.signal, model.background);
+
+    let m0: Hist2x2f = hist2x2_zero(-2.5, 2.5, -3.14159, 3.14159);
+    let m1: Hist2x2f = hist2x2_fill(m0, -1.0, -1.0);
+    let m2: Hist2x2f = hist2x2_fill_weight(m1, 1.0, 1.0, 2.0);
+    let m3: Hist2x2f = hist2x2_fill(m2, 9.0, 0.0);
+
+    pass_if(hep_approx_eq_f64(model.signal, 5.0, 0.000001)) +
+    pass_if(hep_approx_eq_f64(model.background, 20.0, 0.000001)) +
+    pass_if(hep_approx_eq_f64(z, 1.0757219, 0.00001)) +
+    pass_if(hep_approx_eq_f64(hist2x2_count(m3, 0, 0), 1.0, 0.000001)) +
+    pass_if(hep_approx_eq_f64(hist2x2_count(m3, 1, 1), 2.0, 0.000001)) +
+    pass_if(hep_approx_eq_f64(hist2x2_total(m3), 3.0, 0.000001)) +
+    pass_if(hep_approx_eq_f64(m3.overflow, 1.0, 0.000001))
+}

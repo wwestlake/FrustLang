@@ -1,0 +1,35 @@
+use core;
+use frust_hep_stats;
+use frust_histogram;
+
+fn pass_if(cond: bool) -> i64 = {
+    if cond == true { 1 } else { 0 }
+}
+
+fn main() -> i64 = {
+    let h0: Hist4f = hist4_uniform(0.0, 4.0);
+    let h1: Hist4f = hist4_fill(h0, 0.25);
+    let h2: Hist4f = hist4_fill(h1, 1.25);
+    let h3: Hist4f = hist4_fill_weight(h2, 1.50, 2.0);
+    let h4: Hist4f = hist4_fill(h3, 3.50);
+    let h5: Hist4f = hist4_fill(h4, -1.0);
+    let h: Hist4f = hist4_fill(h5, 4.0);
+
+    let expected0: Hist4f = hist4_fill(hist4_uniform(0.0, 4.0), 0.25);
+    let expected1: Hist4f = hist4_fill(hist4_fill(expected0, 1.25), 3.50);
+
+    pass_if(hist4_bin_index(h, -0.1) == -1) +
+    pass_if(hist4_bin_index(h, 4.0) == 4) +
+    pass_if(hep_approx_eq_f64(hist4_count(h, 0), 1.0, 0.000001)) +
+    pass_if(hep_approx_eq_f64(hist4_count(h, 1), 3.0, 0.000001)) +
+    pass_if(hep_approx_eq_f64(hist4_count(h, 3), 1.0, 0.000001)) +
+    pass_if(hep_approx_eq_f64(hist4_total(h), 5.0, 0.000001)) +
+    pass_if(hep_approx_eq_f64(h.underflow, 1.0, 0.000001)) +
+    pass_if(hep_approx_eq_f64(h.overflow, 1.0, 0.000001)) +
+    pass_if(hep_approx_eq_f64(hist4_bin_center(h, 2), 2.5, 0.000001)) +
+    pass_if(hep_approx_eq_f64(hist4_density(h, 1), 0.6, 0.000001)) +
+    pass_if(hep_approx_eq_f64(hist4_poisson_error(h, 1), 1.7320508, 0.00001)) +
+    pass_if(hep_approx_eq_f64(hist4_residual(h, expected1, 1), 2.0, 0.000001)) +
+    pass_if(hep_approx_eq_f64(hist4_pull(h, expected1, 1), 2.0, 0.000001)) +
+    pass_if(hep_approx_eq_f64(hist4_chi_square_term(h, expected1, 1), 4.0, 0.000001))
+}

@@ -1,0 +1,15 @@
+{
+  "name": "frust_histogram_workspace",
+  "version": "0.1.0",
+  "type": "bin",
+  "description": "Research workspace for histogram and binned-analysis helpers.",
+  "exports": [],
+  "dependencies": [],
+  "workspace": {
+    "members": [
+      "frust_histogram",
+      "tests/histogram_smoke",
+      "tests/hep_bridge_smoke"
+    ]
+  }
+}

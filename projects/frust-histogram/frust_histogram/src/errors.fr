@@ -1,0 +1,22 @@
+pub fn hist4_poisson_error(hist: Hist4f, index: i64) -> f64 = {
+    sqrt(hist4_count(hist, index))
+}
+
+pub fn hist4_residual(observed: Hist4f, expected: Hist4f, index: i64) -> f64 = {
+    hist4_count(observed, index) - hist4_count(expected, index)
+}
+
+pub fn hist4_pull(observed: Hist4f, expected: Hist4f, index: i64) -> f64 = {
+    let exp_count: f64 = hist4_count(expected, index);
+    if (exp_count <= 0.0) {
+        0.0
+    } else {
+        hist4_residual(observed, expected, index) / sqrt(exp_count)
+    }
+}
+
+pub fn hist4_chi_square_term(observed: Hist4f, expected: Hist4f, index: i64) -> f64 = {
+    let exp_count: f64 = hist4_count(expected, index);
+    let residual: f64 = hist4_residual(observed, expected, index);
+    if (exp_count <= 0.0) { 0.0 } else { residual * residual / exp_count }
+}
