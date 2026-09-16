@@ -385,14 +385,18 @@ public:
     
     void timerCallback() override {
         g_active_effect = (g_active_effect.load() + 1) % NUM_EFFECTS;
+        repaint();
     }
     
     bool keyPressed(const juce::KeyPress& key) override {
-        if (key == juce::KeyPress::rightKey || key == juce::KeyPress::upKey || key == juce::KeyPress::spaceKey) {
+        if (key.isKeyCode(juce::KeyPress::rightKey)) {
             g_active_effect = (g_active_effect + 1) % NUM_EFFECTS;
+            repaint();
             return true;
-        } else if (key == juce::KeyPress::leftKey || key == juce::KeyPress::downKey) {
+        }
+        if (key.isKeyCode(juce::KeyPress::leftKey)) {
             g_active_effect = (g_active_effect - 1 + NUM_EFFECTS) % NUM_EFFECTS;
+            repaint();
             return true;
         }
         return false;
@@ -405,6 +409,7 @@ public:
         } else {
             g_active_effect = (g_active_effect + 1) % NUM_EFFECTS;
         }
+        repaint();
     }
     
     void paint(juce::Graphics& g) override {
@@ -495,20 +500,21 @@ public:
                 }
             }
             
-            frame_count++;
-            
             m_readyIdx.store(m_backIdx, std::memory_order_release);
-            
             int next_back = 0;
             int front = m_frontIdx.load(std::memory_order_acquire);
             int ready = m_readyIdx.load(std::memory_order_acquire);
-            
             while (next_back == front || next_back == ready) {
                 next_back = (next_back + 1) % 3;
             }
             m_backIdx = next_back;
             
-            // Slow down procedural effects slightly to save CPU if not rendering graph
+            // Trigger GUI update!
+            juce::MessageManager::callAsync([this]() {
+                repaint();
+            });
+            
+            frame_count++;
             if (active > 0) juce::Thread::sleep(50);
             else juce::Thread::sleep(1);
         }
