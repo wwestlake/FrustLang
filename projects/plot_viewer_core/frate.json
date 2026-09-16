@@ -1,6 +1,6 @@
 {
   "name": "plot_viewer_core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "lib",
   "description": "Combined plot and image demo.",
   "exports": [
