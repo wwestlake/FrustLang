@@ -343,7 +343,7 @@ extern "C" void host_draw_number(int32_t* pixels, int64_t w, int64_t h, int64_t 
 // ============================================================
 // GLOBAL STATE
 // ============================================================
-static int g_active_effect = 0; // 0 = plot viewer, 1-20 = graphics
+static std::atomic<int> g_active_effect{0}; // 0 = plot viewer, 1-20 = graphics
 static const int NUM_EFFECTS = 20;
 static const char* EFFECT_NAMES[] = {
     "Graph (PlotViewer)", "Hills", "Clouds", "Planet", "Caves", "Ocean Floor",
@@ -354,7 +354,7 @@ static const char* EFFECT_NAMES[] = {
 // ============================================================
 // COMPONENTS
 // ============================================================
-class PlotComponent : public juce::Component, public juce::Thread
+class PlotComponent : public juce::Component, public juce::Thread, public juce::Timer
 {
 public:
     PlotComponent() : juce::Thread("FrustRenderThread") {
@@ -369,16 +369,22 @@ public:
         openGLContext.attachTo(*this);
         openGLContext.setContinuousRepainting(true);
         
+        startTimer(3000); // Automatically cycle every 3 seconds
         startThread();
     }
     
     ~PlotComponent() override {
+        stopTimer();
         stopThread(2000);
         openGLContext.detach();
         host_close_stream();
         for (auto* arr : g_allocations) { delete[] arr; }
         g_allocations.clear();
         delete[] m_img_buffer;
+    }
+    
+    void timerCallback() override {
+        g_active_effect = (g_active_effect.load() + 1) % NUM_EFFECTS;
     }
     
     bool keyPressed(const juce::KeyPress& key) override {
