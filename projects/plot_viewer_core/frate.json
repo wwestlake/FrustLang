@@ -1,0 +1,19 @@
+{
+  "name": "plot_viewer_core",
+  "version": "0.1.0",
+  "type": "lib",
+  "description": "Combined plot and image demo.",
+  "exports": [
+    "render_graph", "render_muon_histogram",
+    "generate_hills", "generate_hills_raw", "generate_clouds", "generate_planet",
+    "generate_caves", "generate_ocean_floor",
+    "generate_wood", "generate_marble", "generate_cracks", "generate_stained_glass", "generate_rust",
+    "generate_plasma", "generate_tunnel", "generate_mandelbrot", "generate_julia",
+    "generate_stars", "generate_heatmap",
+    "generate_truchet", "generate_tile", "generate_album",
+    "generate_reaction_diffusion", "generate_flow_field", "generate_attractor"
+  ],
+  "dependencies": [
+    { "name": "core", "version": "1.0.1" }
+  ]
+}
