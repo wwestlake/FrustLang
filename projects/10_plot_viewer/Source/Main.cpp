@@ -435,29 +435,29 @@ public:
             int active = g_active_effect;
             
             if (active == 0) {
-                render_graph(m_raw_buffers[m_backIdx].data(), 1200, 800, frame_count);
+                render_graph(m_raw_buffers[m_backIdx].data(), 1200LL, 800LL, frame_count);
             } else {
                 // Call the appropriate procedural generator
                 switch(active) {
-                    case 1: generate_hills(m_img_buffer, 1200, 800); break;
-                    case 2: generate_clouds(m_img_buffer, 1200, 800); break;
-                    case 3: generate_planet(m_img_buffer, 1200, 800); break;
-                    case 4: generate_caves(m_img_buffer, 1200, 800); break;
-                    case 5: generate_ocean_floor(m_img_buffer, 1200, 800); break;
-                    case 6: generate_wood(m_img_buffer, 1200, 800); break;
-                    case 7: generate_marble(m_img_buffer, 1200, 800); break;
-                    case 8: generate_cracks(m_img_buffer, 1200, 800); break;
-                    case 9: generate_stained_glass(m_img_buffer, 1200, 800); break;
-                    case 10: generate_rust(m_img_buffer, 1200, 800); break;
-                    case 11: generate_plasma(m_img_buffer, 1200, 800); break;
-                    case 12: generate_tunnel(m_img_buffer, 1200, 800); break;
-                    case 13: generate_mandelbrot(m_img_buffer, 1200, 800); break;
-                    case 14: generate_julia(m_img_buffer, 1200, 800); break;
-                    case 15: generate_stars(m_img_buffer, 1200, 800); break;
-                    case 16: generate_heatmap(m_img_buffer, 1200, 800); break;
-                    case 17: generate_truchet(m_img_buffer, 1200, 800); break;
-                    case 18: generate_tile(m_img_buffer, 1200, 800); break;
-                    case 19: generate_album(m_img_buffer, 1200, 800); break;
+                    case 1: generate_hills(m_img_buffer, 1200LL, 800LL); break;
+                    case 2: generate_clouds(m_img_buffer, 1200LL, 800LL); break;
+                    case 3: generate_planet(m_img_buffer, 1200LL, 800LL); break;
+                    case 4: generate_caves(m_img_buffer, 1200LL, 800LL); break;
+                    case 5: generate_ocean_floor(m_img_buffer, 1200LL, 800LL); break;
+                    case 6: generate_wood(m_img_buffer, 1200LL, 800LL); break;
+                    case 7: generate_marble(m_img_buffer, 1200LL, 800LL); break;
+                    case 8: generate_cracks(m_img_buffer, 1200LL, 800LL); break;
+                    case 9: generate_stained_glass(m_img_buffer, 1200LL, 800LL); break;
+                    case 10: generate_rust(m_img_buffer, 1200LL, 800LL); break;
+                    case 11: generate_plasma(m_img_buffer, 1200LL, 800LL); break;
+                    case 12: generate_tunnel(m_img_buffer, 1200LL, 800LL); break;
+                    case 13: generate_mandelbrot(m_img_buffer, 1200LL, 800LL); break;
+                    case 14: generate_julia(m_img_buffer, 1200LL, 800LL); break;
+                    case 15: generate_stars(m_img_buffer, 1200LL, 800LL); break;
+                    case 16: generate_heatmap(m_img_buffer, 1200LL, 800LL); break;
+                    case 17: generate_truchet(m_img_buffer, 1200LL, 800LL); break;
+                    case 18: generate_tile(m_img_buffer, 1200LL, 800LL); break;
+                    case 19: generate_album(m_img_buffer, 1200LL, 800LL); break;
                 }
                 
                 // Convert float* to int32_t* (ARGB)
@@ -467,11 +467,23 @@ public:
                     float g = m_img_buffer[i*4+1];
                     float b = m_img_buffer[i*4+2];
                     
+                    // Fallback visual test: if black or NaN, draw a checkerboard
+                    if (std::isnan(r) || std::isnan(g) || std::isnan(b) || (r == 0.f && g == 0.f && b == 0.f)) {
+                        int x = i % 1200;
+                        int y = i / 1200;
+                        if ((x / 50 + y / 50) % 2 == 0) {
+                            r = 0.5f; b = 0.5f; g = 0.0f;
+                        } else {
+                            r = 0.0f; b = 0.0f; g = 0.0f;
+                        }
+                    }
+                    
                     int32_t ir = (int32_t)(r * 255.0f) & 0xFF;
                     int32_t ig = (int32_t)(g * 255.0f) & 0xFF;
                     int32_t ib = (int32_t)(b * 255.0f) & 0xFF;
                     
-                    dest[i] = (0xFF << 24) | (ir << 16) | (ig << 8) | ib;
+                    uint32_t c = 0xFF000000 | (ir << 16) | (ig << 8) | ib;
+                    dest[i] = (int32_t)c;
                 }
             }
             
