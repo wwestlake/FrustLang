@@ -78,3 +78,9 @@ the signal to stop and just build the Windows version.
 ## Toolchain
 
 - LLVM 18.1.6 via vcpkg, WinFlexBison, and JUCE are all machine-level installs referenced by absolute path in `CMakePresets.json` - not part of this repo, don't try to vendor them in.
+
+## Math Packs and Algorithmic Libraries
+
+- **Algorithmic math packs must be general.** When building complex math libraries, simulations, or procedural algorithms (like the Frust effects), design them to be general, reusable, and framework-agnostic. 
+- **The technology calls the math.** The host technology or UI framework should call these general math packs, not the other way around. Do not tightly couple the core algorithms to the UI layer.
+- **Scope restriction:** This rule specifically applies to heavy, reusable *math packs*. It does NOT mean all math must be abstracted. UI components and specific technologies are perfectly free to compute their own trivial math, layout measurements, and localized logic.
