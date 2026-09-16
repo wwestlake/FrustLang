@@ -438,9 +438,9 @@ pub fn hills_b(h: f32) -> f32 = {
     }
 }
 
-pub fn generate_hills(buf: raw* f32, w: i64, h: i64) = {
-    let mut py: i64 = 0;
-    while (py < h) {
+pub fn generate_hills(buf: raw* f32, w: i64, h: i64, start_y: i64, end_y: i64) = {
+    let mut py: i64 = start_y;
+    while (py < end_y) {
         let mut px: i64 = 0;
         while (px < w) {
             let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w);
@@ -456,9 +456,9 @@ pub fn generate_hills(buf: raw* f32, w: i64, h: i64) = {
     };
 }
 
-pub fn generate_hills_raw(buf: raw* f32, w: i64, h: i64) = {
-    let mut py: i64 = 0;
-    while (py < h) {
+pub fn generate_hills_raw(buf: raw* f32, w: i64, h: i64, start_y: i64, end_y: i64) = {
+    let mut py: i64 = start_y;
+    while (py < end_y) {
         let mut px: i64 = 0;
         while (px < w) {
             let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w);
@@ -471,9 +471,9 @@ pub fn generate_hills_raw(buf: raw* f32, w: i64, h: i64) = {
     };
 }
 
-pub fn generate_clouds(buf: raw* f32, w: i64, h: i64) = {
-    let mut py: i64 = 0;
-    while (py < h) {
+pub fn generate_clouds(buf: raw* f32, w: i64, h: i64, start_y: i64, end_y: i64) = {
+    let mut py: i64 = start_y;
+    while (py < end_y) {
         let mut px: i64 = 0;
         while (px < w) {
             let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w);
@@ -529,11 +529,11 @@ pub fn planet_b(h: f32, polar: i64, cloud: i64) -> f32 = {
     }
 }
 
-pub fn generate_planet(buf: raw* f32, w: i64, h: i64) = {
+pub fn generate_planet(buf: raw* f32, w: i64, h: i64, start_y: i64, end_y: i64) = {
     let half_w: f32 = host_i64_to_f32(w) * 0.5;
     let half_h: f32 = host_i64_to_f32(h) * 0.5;
-    let mut py: i64 = 0;
-    while (py < h) {
+    let mut py: i64 = start_y;
+    while (py < end_y) {
         let mut px: i64 = 0;
         while (px < w) {
             let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w);
@@ -563,9 +563,9 @@ pub fn generate_planet(buf: raw* f32, w: i64, h: i64) = {
     };
 }
 
-pub fn generate_caves(buf: raw* f32, w: i64, h: i64) = {
-    let mut py: i64 = 0;
-    while (py < h) {
+pub fn generate_caves(buf: raw* f32, w: i64, h: i64, start_y: i64, end_y: i64) = {
+    let mut py: i64 = start_y;
+    while (py < end_y) {
         let mut px: i64 = 0;
         while (px < w) {
             let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w);
@@ -588,9 +588,9 @@ pub fn generate_caves(buf: raw* f32, w: i64, h: i64) = {
     };
 }
 
-pub fn generate_ocean_floor(buf: raw* f32, w: i64, h: i64) = {
-    let mut py: i64 = 0;
-    while (py < h) {
+pub fn generate_ocean_floor(buf: raw* f32, w: i64, h: i64, start_y: i64, end_y: i64) = {
+    let mut py: i64 = start_y;
+    while (py < end_y) {
         let mut px: i64 = 0;
         while (px < w) {
             let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w);
@@ -612,9 +612,9 @@ pub fn generate_ocean_floor(buf: raw* f32, w: i64, h: i64) = {
 // MATERIAL EFFECTS
 // =============================================================================
 
-pub fn generate_wood(buf: raw* f32, w: i64, h: i64) = {
-    let mut py: i64 = 0;
-    while (py < h) {
+pub fn generate_wood(buf: raw* f32, w: i64, h: i64, start_y: i64, end_y: i64) = {
+    let mut py: i64 = start_y;
+    while (py < end_y) {
         let mut px: i64 = 0;
         while (px < w) {
             let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w);
@@ -633,9 +633,9 @@ pub fn generate_wood(buf: raw* f32, w: i64, h: i64) = {
     };
 }
 
-pub fn generate_marble(buf: raw* f32, w: i64, h: i64) = {
-    let mut py: i64 = 0;
-    while (py < h) {
+pub fn generate_marble(buf: raw* f32, w: i64, h: i64, start_y: i64, end_y: i64) = {
+    let mut py: i64 = start_y;
+    while (py < end_y) {
         let mut px: i64 = 0;
         while (px < w) {
             let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w);
@@ -653,9 +653,9 @@ pub fn generate_marble(buf: raw* f32, w: i64, h: i64) = {
     };
 }
 
-pub fn generate_cracks(buf: raw* f32, w: i64, h: i64) = {
-    let mut py: i64 = 0;
-    while (py < h) {
+pub fn generate_cracks(buf: raw* f32, w: i64, h: i64, start_y: i64, end_y: i64) = {
+    let mut py: i64 = start_y;
+    while (py < end_y) {
         let mut px: i64 = 0;
         while (px < w) {
             let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w);
@@ -675,9 +675,9 @@ pub fn generate_cracks(buf: raw* f32, w: i64, h: i64) = {
     };
 }
 
-pub fn generate_stained_glass(buf: raw* f32, w: i64, h: i64) = {
-    let mut py: i64 = 0;
-    while (py < h) {
+pub fn generate_stained_glass(buf: raw* f32, w: i64, h: i64, start_y: i64, end_y: i64) = {
+    let mut py: i64 = start_y;
+    while (py < end_y) {
         let mut px: i64 = 0;
         while (px < w) {
             let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w);
@@ -704,9 +704,9 @@ pub fn generate_stained_glass(buf: raw* f32, w: i64, h: i64) = {
     };
 }
 
-pub fn generate_rust(buf: raw* f32, w: i64, h: i64) = {
-    let mut py: i64 = 0;
-    while (py < h) {
+pub fn generate_rust(buf: raw* f32, w: i64, h: i64, start_y: i64, end_y: i64) = {
+    let mut py: i64 = start_y;
+    while (py < end_y) {
         let mut px: i64 = 0;
         while (px < w) {
             let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w);
@@ -729,11 +729,11 @@ pub fn generate_rust(buf: raw* f32, w: i64, h: i64) = {
 // MATH / DEMOSCENE EFFECTS
 // =============================================================================
 
-pub fn generate_plasma(buf: raw* f32, w: i64, h: i64) = {
+pub fn generate_plasma(buf: raw* f32, w: i64, h: i64, start_y: i64, end_y: i64) = {
     let pi: f32 = 3.14159;
     let tau: f32 = 6.28318;
-    let mut py: i64 = 0;
-    while (py < h) {
+    let mut py: i64 = start_y;
+    while (py < end_y) {
         let mut px: i64 = 0;
         while (px < w) {
             let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w) * tau;
@@ -753,12 +753,12 @@ pub fn generate_plasma(buf: raw* f32, w: i64, h: i64) = {
     };
 }
 
-pub fn generate_tunnel(buf: raw* f32, w: i64, h: i64) = {
+pub fn generate_tunnel(buf: raw* f32, w: i64, h: i64, start_y: i64, end_y: i64) = {
     let tau: f32 = 6.28318;
     let half_w: f32 = host_i64_to_f32(w) * 0.5;
     let half_h: f32 = host_i64_to_f32(h) * 0.5;
-    let mut py: i64 = 0;
-    while (py < h) {
+    let mut py: i64 = start_y;
+    while (py < end_y) {
         let mut px: i64 = 0;
         while (px < w) {
             let cx: f32 = (host_i64_to_f32(px) - half_w) / half_w;
@@ -783,10 +783,10 @@ pub fn generate_tunnel(buf: raw* f32, w: i64, h: i64) = {
     };
 }
 
-pub fn generate_mandelbrot(buf: raw* f32, w: i64, h: i64) = {
+pub fn generate_mandelbrot(buf: raw* f32, w: i64, h: i64, start_y: i64, end_y: i64) = {
     let max_iter: i64 = 300;
-    let mut py: i64 = 0;
-    while (py < h) {
+    let mut py: i64 = start_y;
+    while (py < end_y) {
         let mut px: i64 = 0;
         while (px < w) {
             let cr: f32 = host_i64_to_f32(px) / host_i64_to_f32(w) * 3.5 - 2.5;
@@ -820,12 +820,12 @@ pub fn generate_mandelbrot(buf: raw* f32, w: i64, h: i64) = {
     };
 }
 
-pub fn generate_julia(buf: raw* f32, w: i64, h: i64) = {
+pub fn generate_julia(buf: raw* f32, w: i64, h: i64, start_y: i64, end_y: i64) = {
     let max_iter: i64 = 300;
     let c_r: f32 = -0.7269;
     let c_i: f32 = 0.1889;
-    let mut py: i64 = 0;
-    while (py < h) {
+    let mut py: i64 = start_y;
+    while (py < end_y) {
         let mut px: i64 = 0;
         while (px < w) {
             let mut zr: f32 = host_i64_to_f32(px) / host_i64_to_f32(w) * 3.2 - 1.6;
@@ -861,9 +861,9 @@ pub fn generate_julia(buf: raw* f32, w: i64, h: i64) = {
 // SCIENCE / DATA EFFECTS
 // =============================================================================
 
-pub fn generate_stars(buf: raw* f32, w: i64, h: i64) = {
-    let mut py: i64 = 0;
-    while (py < h) {
+pub fn generate_stars(buf: raw* f32, w: i64, h: i64, start_y: i64, end_y: i64) = {
+    let mut py: i64 = start_y;
+    while (py < end_y) {
         let mut px: i64 = 0;
         while (px < w) {
             let sx: f32 = host_i64_to_f32(px) / 5.0;
@@ -893,9 +893,9 @@ pub fn viridis_b(t: f32) -> f32 = {
     if (t < 0.5) { 0.329 + t * 0.7 } else { 0.679 - (t - 0.5) * 1.358 }
 }
 
-pub fn generate_heatmap(buf: raw* f32, w: i64, h: i64) = {
-    let mut py: i64 = 0;
-    while (py < h) {
+pub fn generate_heatmap(buf: raw* f32, w: i64, h: i64, start_y: i64, end_y: i64) = {
+    let mut py: i64 = start_y;
+    while (py < end_y) {
         let mut px: i64 = 0;
         while (px < w) {
             let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w);
@@ -915,11 +915,11 @@ pub fn generate_heatmap(buf: raw* f32, w: i64, h: i64) = {
 // ART EFFECTS
 // =============================================================================
 
-pub fn generate_truchet(buf: raw* f32, w: i64, h: i64) = {
+pub fn generate_truchet(buf: raw* f32, w: i64, h: i64, start_y: i64, end_y: i64) = {
     let tile: i64 = 32;
     let thickness: f32 = 0.07;
-    let mut py: i64 = 0;
-    while (py < h) {
+    let mut py: i64 = start_y;
+    while (py < end_y) {
         let mut px: i64 = 0;
         while (px < w) {
             let tx: i64 = px / tile;
@@ -951,9 +951,9 @@ pub fn generate_truchet(buf: raw* f32, w: i64, h: i64) = {
     };
 }
 
-pub fn generate_tile(buf: raw* f32, w: i64, h: i64) = {
-    let mut py: i64 = 0;
-    while (py < h) {
+pub fn generate_tile(buf: raw* f32, w: i64, h: i64, start_y: i64, end_y: i64) = {
+    let mut py: i64 = start_y;
+    while (py < end_y) {
         let mut px: i64 = 0;
         while (px < w) {
             let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w);
@@ -971,10 +971,10 @@ pub fn generate_tile(buf: raw* f32, w: i64, h: i64) = {
     };
 }
 
-pub fn generate_album(buf: raw* f32, w: i64, h: i64) = {
+pub fn generate_album(buf: raw* f32, w: i64, h: i64, start_y: i64, end_y: i64) = {
     let tau: f32 = 6.28318;
-    let mut py: i64 = 0;
-    while (py < h) {
+    let mut py: i64 = start_y;
+    while (py < end_y) {
         let mut px: i64 = 0;
         while (px < w) {
             let u: f32 = host_i64_to_f32(px) / host_i64_to_f32(w);
@@ -1002,14 +1002,14 @@ pub fn generate_album(buf: raw* f32, w: i64, h: i64) = {
 // SIMULATION EFFECTS (delegate to C++ host)
 // =============================================================================
 
-pub fn generate_reaction_diffusion(buf: raw* f32, w: i64, h: i64) = {
+pub fn generate_reaction_diffusion(buf: raw* f32, w: i64, h: i64, start_y: i64, end_y: i64) = {
     host_generate_reaction_diffusion(buf, w, h);
 }
 
-pub fn generate_flow_field(buf: raw* f32, w: i64, h: i64) = {
+pub fn generate_flow_field(buf: raw* f32, w: i64, h: i64, start_y: i64, end_y: i64) = {
     host_generate_flow_field(buf, w, h);
 }
 
-pub fn generate_attractor(buf: raw* f32, w: i64, h: i64) = {
+pub fn generate_attractor(buf: raw* f32, w: i64, h: i64, start_y: i64, end_y: i64) = {
     host_generate_attractor(buf, w, h);
 }
