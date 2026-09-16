@@ -343,7 +343,7 @@ extern "C" void host_draw_number(int32_t* pixels, int64_t w, int64_t h, int64_t 
 // ============================================================
 // GLOBAL STATE
 // ============================================================
-static std::atomic<int> g_active_effect{0}; // 0 = plot viewer, 1-20 = graphics
+static std::atomic<int> g_active_effect{1}; // start at 1 (Hills) to prove it's updating
 static const int NUM_EFFECTS = 20;
 static const char* EFFECT_NAMES[] = {
     "Graph (PlotViewer)", "Hills", "Clouds", "Planet", "Caves", "Ocean Floor",
