@@ -175,25 +175,25 @@ static void run_clifford_attractor(float* buf, int w, int h) {
 // ============================================================
 extern "C" void render_graph(int32_t* pixels, int64_t width, int64_t height, int64_t frame_count);
 
-extern "C" void generate_hills(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_clouds(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_planet(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_caves(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_ocean_floor(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_wood(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_marble(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_cracks(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_stained_glass(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_rust(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_plasma(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_tunnel(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_mandelbrot(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_julia(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_stars(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_heatmap(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_truchet(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_tile(float*,int64_t,int64_t,int64_t,int64_t);
-extern "C" void generate_album(float*,int64_t,int64_t,int64_t,int64_t);
+extern "C" void generate_hills(float*,int64_t,int64_t,int64_t);
+extern "C" void generate_clouds(float*,int64_t,int64_t,int64_t);
+extern "C" void generate_planet(float*,int64_t,int64_t,int64_t);
+extern "C" void generate_caves(float*,int64_t,int64_t,int64_t);
+extern "C" void generate_ocean_floor(float*,int64_t,int64_t,int64_t);
+extern "C" void generate_wood(float*,int64_t,int64_t,int64_t);
+extern "C" void generate_marble(float*,int64_t,int64_t,int64_t);
+extern "C" void generate_cracks(float*,int64_t,int64_t,int64_t);
+extern "C" void generate_stained_glass(float*,int64_t,int64_t,int64_t);
+extern "C" void generate_rust(float*,int64_t,int64_t,int64_t);
+extern "C" void generate_plasma(float*,int64_t,int64_t,int64_t);
+extern "C" void generate_tunnel(float*,int64_t,int64_t,int64_t);
+extern "C" void generate_mandelbrot(float*,int64_t,int64_t,int64_t);
+extern "C" void generate_julia(float*,int64_t,int64_t,int64_t);
+extern "C" void generate_stars(float*,int64_t,int64_t,int64_t);
+extern "C" void generate_heatmap(float*,int64_t,int64_t,int64_t);
+extern "C" void generate_truchet(float*,int64_t,int64_t,int64_t);
+extern "C" void generate_tile(float*,int64_t,int64_t,int64_t);
+extern "C" void generate_album(float*,int64_t,int64_t,int64_t);
 
 
 static std::vector<float*> g_allocations;
@@ -231,7 +231,7 @@ extern "C" {
 
     void host_img_set_pixel(float* buf, int64_t w, int64_t x, int64_t y,
                             float r, float g, float b, float a) {
-        if(x<0||y<0||x>=w) return;
+        if(x<0||y<0||x>=w||y>=800) return;
         int64_t base=(y*w+x)*4;
         buf[base]=r; buf[base+1]=g; buf[base+2]=b; buf[base+3]=a;
     }
@@ -452,27 +452,28 @@ public:
                     int64_t end_y = m_current_y + lines_per_frame;
                     if (end_y > 800) end_y = 800;
                     
+                    int64_t packed_y = end_y * 10000 + m_current_y;
                     // Call the appropriate procedural generator for just this vertical chunk
                     switch(active) {
-                        case 1: generate_hills(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 2: generate_clouds(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 3: generate_planet(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 4: generate_caves(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 5: generate_ocean_floor(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 6: generate_wood(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 7: generate_marble(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 8: generate_cracks(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 9: generate_stained_glass(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 10: generate_rust(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 11: generate_plasma(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 12: generate_tunnel(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 13: generate_mandelbrot(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 14: generate_julia(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 15: generate_stars(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 16: generate_heatmap(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 17: generate_truchet(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 18: generate_tile(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
-                        case 19: generate_album(m_img_buffer, 1200LL, 800LL, m_current_y, end_y); break;
+                        case 1: generate_hills(m_img_buffer, 1200LL, 800LL, packed_y); break;
+                        case 2: generate_clouds(m_img_buffer, 1200LL, 800LL, packed_y); break;
+                        case 3: generate_planet(m_img_buffer, 1200LL, 800LL, packed_y); break;
+                        case 4: generate_caves(m_img_buffer, 1200LL, 800LL, packed_y); break;
+                        case 5: generate_ocean_floor(m_img_buffer, 1200LL, 800LL, packed_y); break;
+                        case 6: generate_wood(m_img_buffer, 1200LL, 800LL, packed_y); break;
+                        case 7: generate_marble(m_img_buffer, 1200LL, 800LL, packed_y); break;
+                        case 8: generate_cracks(m_img_buffer, 1200LL, 800LL, packed_y); break;
+                        case 9: generate_stained_glass(m_img_buffer, 1200LL, 800LL, packed_y); break;
+                        case 10: generate_rust(m_img_buffer, 1200LL, 800LL, packed_y); break;
+                        case 11: generate_plasma(m_img_buffer, 1200LL, 800LL, packed_y); break;
+                        case 12: generate_tunnel(m_img_buffer, 1200LL, 800LL, packed_y); break;
+                        case 13: generate_mandelbrot(m_img_buffer, 1200LL, 800LL, packed_y); break;
+                        case 14: generate_julia(m_img_buffer, 1200LL, 800LL, packed_y); break;
+                        case 15: generate_stars(m_img_buffer, 1200LL, 800LL, packed_y); break;
+                        case 16: generate_heatmap(m_img_buffer, 1200LL, 800LL, packed_y); break;
+                        case 17: generate_truchet(m_img_buffer, 1200LL, 800LL, packed_y); break;
+                        case 18: generate_tile(m_img_buffer, 1200LL, 800LL, packed_y); break;
+                        case 19: generate_album(m_img_buffer, 1200LL, 800LL, packed_y); break;
                     }
                     
                     m_current_y = end_y;
