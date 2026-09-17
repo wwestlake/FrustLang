@@ -1598,26 +1598,15 @@ private:
                 return result;
             }
         }
-        if (expr->kind == ExprKind::Call && expr->lhs && expr->lhs->kind == ExprKind::Identifier) {
-            // A plain free-function call whose declared return type names
-            // a struct - e.g. `let inst: Foo = make_foo();` (a
-            // constructor-style function). Was previously nullopt
-            // unconditionally ("struct-returning Call... deliberately out
-            // of scope"), which meant a constructor's result could never
-            // be used anywhere inferStructTypeName gates (interface
-            // coercion, method calls on the result) even though the
-            // pointer itself is perfectly valid - functionDeclsByName
-            // (added for interface-typed call-argument coercion) already
-            // has exactly the info needed to answer this now. Scoped to
-            // free functions only, not method-call results - not needed
-            // yet, and a Path-based static-method call shape doesn't
-            // exist in this language currently anyway.
-            auto it = functionDeclsByName.find(expr->lhs->text);
-            // A weak-returning function (LANGUAGE_GAPS.md #7) is
-            // deliberately EXCLUDED here - see inferStructTypeName's own
-            // SmartPtrNew case above for why treating a weak value as an
-            // ordinary struct type would be unsafe; inferWeakTypeName
-            // (below) is where a weak-typed return is actually handled.
+        if (expr->kind == ExprKind::Call && expr->lhs && (expr->lhs->kind == ExprKind::Identifier || expr->lhs->kind == ExprKind::Path)) {
+            std::string targetName;
+            if (expr->lhs->kind == ExprKind::Identifier) {
+                targetName = expr->lhs->text;
+            } else {
+                targetName = expr->lhs->pathSegments.front();
+                for (size_t i = 1; i < expr->lhs->pathSegments.size(); ++i) targetName += "::" + expr->lhs->pathSegments[i];
+            }
+            auto it = functionDeclsByName.find(targetName);
             if (it != functionDeclsByName.end()
                 && !(it->second->returnType && it->second->returnType->ptrKind == SmartPtrKind::Weak)) {
                 return resolveStructTypeName(it->second->returnType);
@@ -1650,8 +1639,15 @@ private:
             // already be a live shared-typed struct value.
             return inferStructTypeName(expr->lhs);
         }
-        if (expr->kind == ExprKind::Call && expr->lhs && expr->lhs->kind == ExprKind::Identifier) {
-            auto it = functionDeclsByName.find(expr->lhs->text);
+        if (expr->kind == ExprKind::Call && expr->lhs && (expr->lhs->kind == ExprKind::Identifier || expr->lhs->kind == ExprKind::Path)) {
+            std::string targetName;
+            if (expr->lhs->kind == ExprKind::Identifier) {
+                targetName = expr->lhs->text;
+            } else {
+                targetName = expr->lhs->pathSegments.front();
+                for (size_t i = 1; i < expr->lhs->pathSegments.size(); ++i) targetName += "::" + expr->lhs->pathSegments[i];
+            }
+            auto it = functionDeclsByName.find(targetName);
             if (it != functionDeclsByName.end() && it->second->returnType
                 && it->second->returnType->ptrKind == SmartPtrKind::Weak) {
                 return it->second->returnType->name;
@@ -5420,7 +5416,7 @@ public:
 
         llvm::FunctionType* ft = llvm::FunctionType::get(retType, paramTypes, false);
         llvm::Function* llvmFn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, llvmName, module);
-        // Was unconditional - marked every function as a presplit
+                // Was unconditional - marked every function as a presplit
         // coroutine to LLVM's coroutine-splitting pass regardless of
         // whether it actually contains a `perform` (isCoro, computed
         // above). An ordinary function that never suspends has no

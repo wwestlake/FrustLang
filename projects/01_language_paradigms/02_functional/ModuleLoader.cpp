@@ -176,14 +176,18 @@ bool ResolveImports(Program* prog, AstArena& arena, std::vector<std::string>& er
                 decl->functionDecl->name = prefix + decl->functionDecl->name;
                 decl->functionDecl->isExtern = true; // Skip LLVM codegen for dependency functions
             } else if (decl->kind == DeclKind::Struct && decl->structDecl) {
-                decl->structDecl->name = prefix + decl->structDecl->name;
             } else if (decl->kind == DeclKind::TypeAlias && decl->typeAliasDecl) {
                 decl->typeAliasDecl->name = prefix + decl->typeAliasDecl->name;
             } else if (decl->kind == DeclKind::Effect && decl->effectDecl) {
                 decl->effectDecl->name = prefix + decl->effectDecl->name;
             } else if (decl->kind == DeclKind::Component && decl->componentDecl) {
                 decl->componentDecl->name = prefix + decl->componentDecl->name;
+            } else if (decl->kind == DeclKind::Impl && decl->implDecl) {
+                for (auto* method : decl->implDecl->methods) {
+                    method->isExtern = true;
+                }
             }
+
             prog->decls.push_back(decl);
         }
     }

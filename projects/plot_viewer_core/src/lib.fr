@@ -1,5 +1,5 @@
 use core;
-use core::mem::free;
+
 extern fn host_f32_to_i64(val: f32) -> i64;
 extern fn host_i64_to_f32(val: i64) -> f32;
 
@@ -1073,7 +1073,7 @@ pub fn seed_procedural_noise(seed: i64) = {
     
     let mut i: i64 = 0;
     while (i < 256) {
-        core::core::set_i64(perm as String, i, i);
+        core::set_i64(perm as String, i, i);
         i = i + 1;
     };
     
@@ -1094,5 +1094,5 @@ pub fn seed_procedural_noise(seed: i64) = {
         i = i + 1;
     };
     
-    free(perm as raw* i8);
+    core::free(perm as raw* i8);
 }

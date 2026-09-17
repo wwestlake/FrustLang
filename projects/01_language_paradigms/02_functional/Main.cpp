@@ -487,7 +487,6 @@ bool CompileToObject(const std::vector<std::string>& paths, const std::string& o
             if (decl->kind == DeclKind::Function && decl->functionDecl && !decl->functionDecl->isExtern) {
                 decl->functionDecl->name = prefix + decl->functionDecl->name;
             } else if (decl->kind == DeclKind::Struct && decl->structDecl) {
-                decl->structDecl->name = prefix + decl->structDecl->name;
             } else if (decl->kind == DeclKind::TypeAlias && decl->typeAliasDecl) {
                 decl->typeAliasDecl->name = prefix + decl->typeAliasDecl->name;
             }
