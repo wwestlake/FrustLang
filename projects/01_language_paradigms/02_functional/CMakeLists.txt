@@ -234,7 +234,7 @@ target_compile_definitions(frust_compiler PRIVATE
 # executable's global symbols aren't in the dynamic symbol table by default
 # regardless of visibility attributes - ENABLE_EXPORTS adds -rdynamic there
 # (a no-op on Windows, where dllexport is already doing the job).
-set_target_properties(frust_compiler PROPERTIES ENABLE_EXPORTS ON)
+set_target_properties(frust_compiler PROPERTIES OUTPUT_NAME "frust_compiler_x" ENABLE_EXPORTS ON)
 
 target_include_directories(frust_compiler PRIVATE
     "${FRUST_GEN_DIR}"

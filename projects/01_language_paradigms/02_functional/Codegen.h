@@ -53,6 +53,8 @@ inline bool hasPerform(const Expr* expr) {
 
 class Codegen {
 public:
+    std::string currentNamespace;
+public:
     Codegen(llvm::LLVMContext& ctx, llvm::Module& mod)
         : context(ctx), module(mod), builder(ctx) {}
 
@@ -2260,6 +2262,10 @@ private:
                 for (size_t i = 1; i < expr->pathSegments.size(); ++i) fullName += "::" + expr->pathSegments[i];
                 auto it = namedValues.find(fullName);
                 if (it != namedValues.end()) return it->second;
+                if (!currentNamespace.empty()) {
+                    it = namedValues.find(currentNamespace + "::" + fullName);
+                    if (it != namedValues.end()) return it->second;
+                }
 
                 // A bare no-payload variant reference (`Piece::King`, no
                 // call syntax needed since there's nothing to pass) -

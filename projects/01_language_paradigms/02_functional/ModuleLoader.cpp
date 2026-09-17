@@ -82,9 +82,21 @@ bool ResolveImports(Program* prog, AstArena& arena, std::vector<std::string>& er
     // `import pod, "version";` escape hatch.
     std::vector<std::string> podsToImport;
     for (auto* decl : prog->decls) {
-        if (decl->kind == DeclKind::Use && decl->useDecl->isImport) {
-            if (!decl->useDecl->pathSegments.empty()) {
-                podsToImport.push_back(decl->useDecl->pathSegments.front());
+        if (decl->kind == DeclKind::Use) {
+            if (decl->useDecl->isImport) {
+                if (!decl->useDecl->pathSegments.empty()) {
+                    podsToImport.push_back(decl->useDecl->pathSegments.front());
+                }
+            } else if (!decl->useDecl->isSelfUse && decl->useDecl->pathSegments.size() == 1) {
+                std::string name = decl->useDecl->pathSegments.front();
+                if (name != "self") {
+                    for (const auto& dep : config.getDependencies()) {
+                        if (dep.name == name) {
+                            podsToImport.push_back(name);
+                            break;
+                        }
+                    }
+                }
             }
         }
     }

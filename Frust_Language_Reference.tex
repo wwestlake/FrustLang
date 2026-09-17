@@ -1,0 +1,631 @@
+\documentclass{book}
+\usepackage{listings}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{geometry}
+\geometry{a4paper, margin=1in}
+\usepackage{parskip}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    backgroundcolor=\color{black!5},
+    frame=single,
+    breaklines=true,
+    keywordstyle=\color{blue}\bfseries,
+    commentstyle=\color{green!50!black},
+    stringstyle=\color{red},
+    showstringspaces=false
+}
+
+\title{Frust Language Reference}
+\author{LagDaemon Research}
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+
+\chapter{AGENTS.md}
+
+Rules for any AI agent (Claude, Codex, Gemini, etc.) working in this repo.
+
+This repo was migrated out of a larger personal R&D monorepo
+(\texttt{lagdaemon-tech-research}) on 2026-08-24 once Frust outgrew being one
+experiment among many - full commit history preserved via
+\texttt{git filter-repo}. Everything below carries forward from that repo's
+own hard-won \texttt{AGENTS.md}, adjusted for this repo now being Frust-only.
+
+\section{Platform target - read this first}
+
+\textbf{Windows only. No Linux/Unix/cross-platform consideration, ever, for
+any part of this project — the language, the compiler, the IDE, the
+standard library — unless the user explicitly asks for it in that
+specific moment.} Do not pause, defer, or scope a feature down
+because "it wouldn't be portable" or "there's no platform-conditional
+compilation mechanism yet." Do not add \texttt{#ifdef}/\texttt{#cfg}-style
+portability branches, do not write code with an eye toward a future
+Linux port, do not note "Windows-only for now" as a caveat implying
+it should change later. Build it for Windows and ship it.
+
+The user has stated this directly, repeatedly, across sessions in the
+old repo ("I have said this umpteen times... it does not need to be
+compatible with unix, stop that, its not a consideration for you now"
+\begin{itemize}
+\item 2026-08-22). Treat it as settled, not open for reconsideration. If
+\end{itemize}
+you notice yourself about to hedge on cross-platform grounds, that is
+the signal to stop and just build the Windows version.
+
+\section{Build}
+
+\begin{itemize}
+\item \textbf{Debug builds, not Release.} Build/run with \texttt{--config Debug}, not \texttt{Release}, unless explicitly told otherwise for a specific test.
+\item \textbf{Single-core builds only.} Never pass \texttt{/m} or \texttt{/maxcpucount} to MSBuild (or equivalent parallel-build flags to other build tools) on this machine — this is the user's own machine and they need it usable while a build runs. Plain \texttt{MSBuild.exe solution.sln /t:target /p:Configuration=Debug}, no parallelism flag, every time.
+\item Frust core configures via a CMake preset (\texttt{windows-vcpkg}) that supplies the LLVM install root plus WinFlexBison/JUCE paths for this machine - \texttt{cmake --preset windows-vcpkg} from \texttt{projects/01_language_paradigms/02_functional}, not a bare \texttt{cmake ..}.
+\item Never configure Frust with vcpkg's CMake toolchain file and never run \texttt{vcpkg install} from this repo as part of a normal Frust build. The Windows preset consumes the already-built LLVM install at \texttt{D:/000 Creation Suite/apps/CreationEngine/vcpkg_installed/x64-windows}; \texttt{CMakeLists.txt} must fail if LLVM is not found inside that existing install tree.
+\item Other subprojects (\texttt{09_frust_plugin_host}, \texttt{10_node_compiler}, \texttt{02_juce_language_host}) pull in Frust core via \texttt{add_subdirectory} using a relative path up to \texttt{01_language_paradigms/02_functional} - the \texttt{projects/} layout must stay intact for these to resolve.
+\end{itemize}
+
+\section{Project naming}
+
+\begin{itemize}
+\item New project folders under \texttt{projects/} use kebab-case with \texttt{-} separators, not spaces or numeric prefixes. Example: \texttt{frust-linalg}, not \texttt{13_frust_linalg} or \texttt{Frust Linalg}.
+\end{itemize}
+
+\section{Standard workflow (every change, no exceptions)}
+
+1. Make the change.
+2. Build it (Debug config) and actually run/verify it — don't claim done on compile-success alone. For a language/codegen change, write a real test with a hand-predicted expected result BEFORE running it, then run and confirm the match.
+3. Run the full regression sweep (\texttt{09_frust_plugin_host}'s example suite, \texttt{02_juce_language_host} rebuild) when the change touches core codegen/grammar paths - not just the one new test.
+4. \texttt{git status} / \texttt{git diff} — check what's actually changed before staging.
+5. Commit, with a real message explaining why, not just what.
+6. Push to \texttt{origin} — the user has standing authorization to push routinely ("push early, push often"); still use judgment on force-push/branch-deletion style destructive ops, those always need explicit sign-off.
+7. If it's a submodule (\texttt{projects/06_frust_library}, its own repo at \texttt{wwestlake/frust-library}), commit+push inside the submodule first, THEN commit+push the parent repo's pointer bump. Two separate pushes, always in that order.
+8. If you told the user a rule/process applies going forward, write it into this file, not just into your own private memory. This file is what's authoritative and visible in the repo — private memory is a supplement, never a substitute.
+9. Keep \texttt{LANGUAGE_GAPS.md} (\texttt{projects/01_language_paradigms/02_functional/}) current the moment an item's status changes - this document existing isn't enough on its own, the standing failure mode it was built to fix is real progress happening underneath it while the doc goes stale.
+10. Wiki/tutorial/doc examples are a real use-case test of the compiler, not just prose: run every example through \texttt{frust_compiler.exe} (hand-predicted output vs. actual) before it goes in a page. If an example reveals a real bug - not just an already-documented gap - stop the doc work immediately, log it in \texttt{LANGUAGE_GAPS.md}'s "CRITICAL BUGS" section if it's silent/incorrect-output-class (jumps the queue ahead of normal numbered gaps), fix it, verify the fix, then resume using the corrected pattern. Don't quietly route around a found bug with a "safer" example instead.
+
+\section{Git discipline}
+
+\begin{itemize}
+\item \textbf{Commit AND push proactively, both, every time.} After every verified build/change: commit right then, push to \texttt{origin}/\texttt{main} right after. Don't wait to be asked for either one.
+\item \textbf{This repo has no deployment - it's just a git repo.} \texttt{main} is the working branch; pushing straight to it carries no CI/CD or production risk. Treat pushing to \texttt{main} as routine, not something to hesitate over.
+\item Never force-push, never \texttt{--no-verify}, never skip hooks without being told to.
+\item Never summarize a set of tracked work (a gap list, a checklist) as "done"/"closed"/"complete" if even one item in it is genuinely PARTIAL - the summary sentence must reflect the worst status in the set, not the majority. Say "N of M done, rest open" plainly.
+\end{itemize}
+
+\section{Communication}
+
+\begin{itemize}
+\item \textbf{Don't silently downgrade a possibly-transient failure into "it's gone" before an expensive fallback.} Say the assumption out loud first, especially before long rebuilds.
+\item \textbf{State the target machine/file directly instead of asking the user to disambiguate} when context already makes it obvious.
+\item \textbf{Don't ask the user to make implementation-level technical decisions} — make the call and proceed. Only surface real goals/priorities as questions.
+\item \textbf{Discuss real language/tooling design choices before implementing them} — don't just build and present as done. Reserve this for genuine architectural calls (a new type-system feature, a new codegen representation), not mechanical fixes.
+\item \textbf{Critical handoff info (passwords, IPs, key facts) gets its own short, clearly labeled block} — never buried in a paragraph.
+\item \textbf{Never trigger UAC/sudo/admin elevation beyond already-agreed scope without discussing first}, every time, no exceptions.
+\end{itemize}
+
+\section{Toolchain}
+
+\begin{itemize}
+\item LLVM 18.1.6 via vcpkg, WinFlexBison, and JUCE are all machine-level installs referenced by absolute path in \texttt{CMakePresets.json} - not part of this repo, don't try to vendor them in.
+\end{itemize}
+
+
+\chapter{Handoff to Codex — Claude session, 2026-08-24 through 2026-08-25}
+
+Date: 2026-08-25
+From: Claude, repo \texttt{wwestlake/FrustLang}, branch \texttt{master}
+
+This is a pre-emptive handoff: Claude is nearing a weekly token limit and may
+go offline mid-task. Per a hard-learned lesson from a previous session (a
+full day's work sat unpushed locally and had to be recovered by hand), the
+standing rule now is \textbf{push everything the moment it's real, don't wait for
+a natural stopping point.} Everything described below as "done" is genuinely
+committed and pushed to GitHub - verify with \texttt{git log}/\texttt{gh pr list} if in
+doubt, don't take this file's word for it blindly.
+
+\section{Open PRs / issues (nothing urgent, but worth knowing about)}
+
+\begin{itemize}
+\item \textbf{frust-library#1} (\texttt{fix/wire-missing-core-modules}) and \textbf{frust-library#2}
+\end{itemize}
+  (\texttt{feature/jit-eval-wrapper}, based on top of #1) - both open, both pushed,
+  both real fixes to the \texttt{06_frust_library} submodule (core pod wiring,
+  2 real pre-existing crash bugs, and a new \texttt{jit_eval_f32} wrapper). #2
+  includes #1's commits, so merging #2 alone (into frust-library's \texttt{main})
+  effectively closes both.
+\begin{itemize}
+\item \textbf{FrustLang#9} (issue, not PR) - a verification checklist for the big
+\end{itemize}
+  PR #8 that just merged (see below). Read this before assuming anything
+  in that PR's scope is fully proven.
+\begin{itemize}
+\item FrustLang PRs #1-#8 are all merged into \texttt{master} already - nothing else
+\end{itemize}
+  open on this repo as of this writing.
+
+\section{What just happened (PR #8, merged into master)}
+
+A large, connected chain of real fixes, all triggered by trying to write an
+honest GitHub wiki tutorial "First Program" lesson using real Frust (no raw
+\texttt{extern fn}) instead of hello-world boilerplate. Full detail is in PR #8's
+own description and its commit message - short version:
+
+1. \textbf{New \texttt{import <pod>, "<version>";} keyword} - real cross-pod source-level
+   imports (\texttt{frust.y}/\texttt{frust.l}/\texttt{AST.h}), distinct from the pre-existing
+   \texttt{use somepod;} (which parses but has always been a complete no-op).
+   \texttt{"current"} reads the version already declared in the importing pod's own
+   \texttt{frate.json}. Resolution logic lives in \texttt{frate}'s own file-collection code
+   (\texttt{collectImportedPodFiles}, \texttt{projects/05_frate/src/main.cpp}), mirroring
+   how \texttt{use self::X;} resolution already worked there.
+2. \textbf{Extracted \texttt{frust_runtime}} - \texttt{frust_print_str}/\texttt{format_*}/\texttt{buf_*}/
+   \texttt{ast_*}/\texttt{jit_eval_f32} used to be duplicated verbatim in both
+   \texttt{frust_compiler}'s and the IDE's \texttt{Main.cpp}. Now one real static library
+   (\texttt{projects/01_language_paradigms/02_functional/Runtime.cpp} + its
+   CMakeLists.txt target) both link.
+3. \textbf{Fixed \texttt{frate}'s AOT link step}, which never actually produced a
+   working standalone executable before this. Removed \texttt{/ENTRY:main} (was
+   bypassing CRT startup entirely - see PR #8's commit message for the full
+   "how other languages do this" reasoning), wired in \texttt{frust_runtime.lib}
+   and (conditionally) \texttt{frust_plugin_host.lib} + its full LLVM/Windows
+   dependency chain, switched to a linker response file (the raw argument
+   list blew past \texttt{cmd.exe}'s line-length limit).
+4. \textbf{\texttt{frate cache-dir} command} + configurable pod cache location
+   (\texttt{projects/05_frate/include/frate/FrateCache.h}/\texttt{.cpp}) - was hardcoded
+   to \texttt{%APPDATA%} (always writes to C:), now resolves env var → persisted
+   \texttt{frate_settings.json} next to the exe → default next to the exe.
+5. \textbf{\texttt{examples/tutorial-first-program/}} - the wiki's real "First Program"
+   lesson kept in-repo, wired into \texttt{.github/workflows/release.yml} as a real
+   release gate.
+
+\section{What's verified vs. not (see issue #9 for the live checklist)}
+
+\textbf{UPDATE, same session, after the full rebuild finished}: all three
+locally-checkable items below are now done, against the exact merged
+commit, not a scratch copy:
+\begin{itemize}
+\item ✅ Full \texttt{frust_plugin_host} regression suite - all 16 examples,
+\end{itemize}
+  \texttt{ALL_CHECKS_PASSED} on every one.
+\begin{itemize}
+\item ✅ Fresh IDE Debug build + launch smoke test - builds clean, launches,
+\end{itemize}
+  stays running.
+\begin{itemize}
+\item ✅ The literal committed \texttt{examples/tutorial-first-program/} - \texttt{frate run}
+\end{itemize}
+  against it (not a scratch copy) produces exactly the expected output
+  (\texttt{Entrance Hall} / \texttt{A cold stone hall...}), exit 0.
+
+\textbf{Still genuinely open} - the one item that needs a real GitHub Actions
+runner, can't be checked locally: a real CI run of
+\texttt{.github/workflows/release.yml}'s tutorial-gate step. That only fires on a
+\texttt{v*} tag push, which also publishes a real GitHub Release as a side effect
+\begin{itemize}
+\item not something to trigger casually just to test the step. Whoever pushes
+\end{itemize}
+the first real \texttt{v0.5.0} tag is the first real end-to-end test of it.
+
+Original verification note (kept for the record): a scratch copy of the
+tutorial example was checked first, before the full rebuild finished, and
+JIT mode (Hello World, live metaprogramming) was re-confirmed working
+right after the \texttt{frust_runtime} extraction, before this PR was pushed.
+
+\textbf{If you're picking this up because Claude ran out of tokens mid-verification:}
+check whether a Claude session already ran/reported on the above (look for
+recent commits, or a comment/note in issue #9) before redoing it from
+scratch. If nothing's there, start with the regression suite - it's the
+highest-value check (catches any real regression across the whole plugin
+host stack, not just the one new example).
+
+\section{Real gotchas for this repo (save yourself the rediscovery time)}
+
+\begin{itemize}
+\item \textbf{Single-core builds only.} Never pass \texttt{/m} or \texttt{/maxcpucount:N>1} to
+\end{itemize}
+  MSBuild on this machine - has caused real problems before. Always
+  \texttt{/maxcpucount:1}.
+\begin{itemize}
+\item \textbf{MSBuild.exe lives on D:, not the usual C: path}:
+\end{itemize}
+  \texttt{D:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe}.
+  Same for \texttt{vswhere.exe}: \texttt{C:\Program Files (x86)\Microsoft Visual
+  Studio\Installer\vswhere.exe} (that one IS on C:, just MSBuild itself isn't).
+\begin{itemize}
+\item \textbf{LLVM is NOT installed via a normal vcpkg install on this machine} - it's
+\end{itemize}
+  at \texttt{D:\000 Creation Suite\apps\CreationEngine\vcpkg_installed\x64-windows},
+  a real, trimmed (~11GB) build, also mirrored on S3
+  (\texttt{s3://creation-suite-build-cache/vcpkg-cache/llvm-vcpkg-x64-windows.tar})
+  for CI. Don't let anything trigger a fresh LLVM build from source - it's
+  slow and unnecessary, the trimmed build already covers everything needed.
+\begin{itemize}
+\item \textbf{Windows only, no Linux/Unix consideration anywhere in this project,
+\end{itemize}
+  ever}, unless explicitly asked in the moment - a standing, deliberate,
+  repeatedly-stated directive.
+\begin{itemize}
+\item \textbf{\texttt{AGENTS.md}} (repo root) has the full standing rules list - read it
+\end{itemize}
+  before doing anything nontrivial. Rule 10 in particular: any tutorial/doc
+  example is a real use-case test of the compiler - run it through
+  \texttt{frust_compiler.exe}/\texttt{frate} for real before publishing it, and if it
+  reveals a real bug, stop, fix the bug, then resume - don't quietly route
+  around it with a "safer" example.
+\begin{itemize}
+\item \textbf{\texttt{LANGUAGE_GAPS.md}} (\texttt{projects/01_language_paradigms/02_functional/})
+\end{itemize}
+  is the authoritative, actively-maintained record of what's actually done
+  vs. partial vs. open in the language itself - keep it current the moment
+  something's status changes, don't let it go stale.
+\begin{itemize}
+\item \textbf{\texttt{06_frust_library} is a git submodule}, its own separate repo
+\end{itemize}
+  (\texttt{wwestlake/frust-library}). Commit/push order matters: submodule first,
+  then the parent repo's pointer bump, always in that order, two separate
+  pushes.
+\begin{itemize}
+\item \textbf{PR-based workflow, not direct push} - branch, commit, push the branch,
+\end{itemize}
+  \texttt{gh pr create}. The user has owner-level bypass on branch protection and
+  may merge directly themselves sometimes; don't assume that's the default
+  for anyone else.
+\begin{itemize}
+\item \textbf{The GitHub wiki} (github.com/wwestlake/FrustLang/wiki) has a partial
+\end{itemize}
+  tutorial published (Getting Started, Building from Source) that's
+  mid-rewrite as a build-along "single-user dungeon crawl" project (design
+  captured in a Claude plan file, not in this repo) - the
+  \texttt{examples/tutorial-first-program/} pod is that rewrite's actual "First
+  Program" lesson, kept in sync with whatever the wiki page says. If you
+  touch the wiki, keep both in sync.
+
+\section{Where things are headed (not started, just named so it isn't a surprise)}
+
+\begin{itemize}
+\item The dungeon-crawl tutorial rewrite is far from finished - only "Getting
+\end{itemize}
+  Started"/"Building from Source"/"First Program" exist so far, of a
+  planned ~13-lesson arc (control flow, interfaces, generics, \texttt{shared}
+  ownership, save/load, an \texttt{extern}-FFI lesson calling a small planned C++
+  terminal-UI library named "Agent 86", the IDE, plugins-as-mods, and an
+  optional live-metaprogramming capstone).
+\begin{itemize}
+\item A \texttt{v0.5.0} GitHub Release hasn't actually been tagged/published yet - the
+\end{itemize}
+  CI pipeline (\texttt{.github/workflows/release.yml}) that would build and publish
+  it exists and is believed correct, but has never been triggered by a real
+  tag push.
+\begin{itemize}
+\item \textbf{\texttt{v0.5.0} tag pushed} (2026-08-25, same session as everything above) -
+\end{itemize}
+  the very first real run of the CI release pipeline, triggered live. Check
+  https://github.com/wwestlake/FrustLang/actions for the result if it isn't
+  already reflected in a comment on issue #9 or a later handoff note - this
+  session's token budget ran out before it could see the run through to
+  completion (a real 20-60+ minute Windows CI build, first time ever run).
+  The workflow itself doesn't depend on this session staying alive - it's
+  running entirely on GitHub's own infrastructure regardless.
+\begin{itemize}
+\item \textbf{New idea, spec being developed in a separate session (not this repo
+\end{itemize}
+  yet)}: a .NET host for Frust, so it could be embedded in a .NET app.
+  Assessed as genuinely feasible - \texttt{frust_plugin_host}'s API is already a
+  clean \texttt{extern "C"} C ABI, exactly what .NET's P/Invoke needs. The one real
+  gap: it's only ever been built as a static \texttt{.lib} so far, never a \texttt{.dll} -
+  P/Invoke needs a real dynamic library to load at runtime, so step one
+  would be adding a DLL build target (a modest CMake addition, not a
+  redesign, since the API surface is already right). Not started - whoever
+  picks this up should look for the actual spec first (being written
+  elsewhere) before designing anything.
+
+
+\chapter{FrustLang}
+
+Frust is a statically-typed, compiled language built on LLVM (JIT and
+AOT), designed around zero-overhead control: real generics
+(monomorphized, not type-erased), real algebraic data types with
+pattern matching, \texttt{shared} reference counting with automatic drop, real
+closures, real interface dispatch - all compiled, never interpreted.
+
+This repo is the whole Frust ecosystem: the compiler, the standard
+library, a plugin/host system for embedding Frust in other
+applications, a JUCE-based IDE, and supporting tooling (VS Code
+extension, language server, a graph-to-source node compiler). It was
+split out of a larger personal R&D monorepo once Frust outgrew being
+one experiment among many - full commit history was preserved across
+the move.
+
+\section{What's actually working}
+
+Tracked honestly in
+\texttt{LANGUAGE_GAPS.md} -
+every feature below moved from "designed" to "implemented" to
+"verified with a real hand-predicted test" before being called done,
+and the gaps document says exactly what's still open.
+
+\begin{itemize}
+\item \textbf{Real generics, monomorphized}: \texttt{struct Box<T>} and generic free
+\end{itemize}
+  functions (\texttt{fn identity<T>(x: T) -> T}, called via explicit
+  \texttt{identity::<i64>(5)} turbofish syntax) each get their own concrete
+  LLVM type/function per instantiation - no boxing, no vtables unless
+  you asked for one.
+\begin{itemize}
+\item \textbf{Real algebraic data types}: \texttt{enum} is a genuine discriminated
+\end{itemize}
+  union (F#/Rust-style, not a C-style tag-only enum) - variants carry
+  typed payloads, including nested enums/structs and generics
+  (\texttt{enum Choice<A,B> { Left(A), Right(B) }}). \texttt{match} does real
+  recursive pattern matching, reaching through several variant layers
+  in one arm, with required exhaustiveness (a compile error if a
+  variant - or a \texttt{_} wildcard - is missing).
+\begin{itemize}
+\item \textbf{\texttt{Result<T,E>} / \texttt{Option<T>}} (\texttt{enum Result<T,E> { Ok(T), Err(E) }})
+\end{itemize}
+  built as ordinary Frust code on top of \texttt{enum}, not a compiler
+  intrinsic - \texttt{match} enforces both cases are handled, no sentinel
+  field to misread.
+\begin{itemize}
+\item \textbf{Real interface dispatch} (\texttt{interface} / \texttt{impl X for Y}) via fat
+\end{itemize}
+  pointers, no hidden allocation.
+\begin{itemize}
+\item \textbf{\texttt{shared}} with real strong reference counting and automatic
+\end{itemize}
+  scope-exit drop - deliberately designed to fail toward *leaking*,
+  never toward a double-free, when ownership can't be proven
+  statically. \texttt{own}/\texttt{raw} pointers exist alongside it for explicit,
+  zero-overhead control.
+\begin{itemize}
+\item \textbf{Closures} as \texttt{{ code, env }} fat pointers, capture-by-value,
+\end{itemize}
+  fully compiled.
+\begin{itemize}
+\item \textbf{Live metaprogramming} - \texttt{quote}/\texttt{unquote}/\texttt{build_time} blocks
+\end{itemize}
+  that run and splice real AST at build time.
+\begin{itemize}
+\item Growable collections (\texttt{Vector<T>}), real pointer arithmetic/raw
+\end{itemize}
+  dereference, multi-file plugin support, and more.
+
+\section{Repo layout}
+
+\begin{lstlisting}
+projects/
+  01_language_paradigms/02_functional/   Frust core: grammar, AST, Codegen, the compiler
+  02_juce_language_host/                 JUCE-based IDE, built on frust_plugin_host
+  03_creation_dock/                      JUCE docking UI (IDE dependency)
+  04_ai_provider/                        AI-provider abstraction (IDE dependency)
+  05_frate/                              Frust's package manager
+  06_frust_library/                      Standard library (its own submodule/repo: frust-library)
+  07_vscode_frust/                       VS Code extension
+  08_frust_lsp/                          Language server
+  09_frust_plugin_host/                  Hot-reloadable plugin/host system - the extension
+                                          mechanism the IDE (and any other app) uses to run
+                                          JIT-compiled Frust plugins
+  10_node_compiler/                      Graph JSON -> real Frust source; the compiler half of
+                                          a planned Blueprint-style visual node layer
+                                          (see NODE_LANGUAGE_DESIGN.md)
+\end{lstlisting}
+
+Each subproject with its own README has more detail - see
+\texttt{09_frust_plugin_host/README.md}
+and
+\texttt{10_node_compiler/README.md}
+in particular.
+
+\section{Building}
+
+Windows only, by deliberate standing decision - no cross-platform
+consideration anywhere in this codebase.
+
+Frust core builds via a CMake preset that supplies the LLVM/WinFlexBison/JUCE
+paths for this machine's toolchain. On Windows this deliberately points at an
+already-installed \texttt{vcpkg_installed/x64-windows} tree and rejects the vcpkg
+CMake toolchain file, so configuring or building Frust cannot kick off a
+fresh LLVM build.
+
+\begin{lstlisting}
+cd projects/01_language_paradigms/02_functional
+cmake --preset windows-vcpkg
+cmake --build build --config Debug
+\end{lstlisting}
+
+Other subprojects (\texttt{09_frust_plugin_host}, \texttt{10_node_compiler},
+\texttt{02_juce_language_host}) each pull in Frust core via \texttt{add_subdirectory}
+using a relative path (\texttt{../01_language_paradigms/02_functional}) - the
+\texttt{projects/} layout above must stay intact for those relative paths to
+resolve.
+
+\texttt{06_frust_library} is a git submodule - clone with
+\texttt{git clone --recurse-submodules}, or run
+\texttt{git submodule update --init} after a plain clone.
+
+\section{Design philosophy}
+
+"Zero-overhead, aiming for the iron" - stated directly in
+\texttt{FRUST_LANG_SPEC.md}
+and treated as a real constraint, not a slogan: it's the reason
+generics are monomorphized rather than type-erased, and the reason
+\texttt{shared}'s reference counting has a hard scope limit (own's
+automatic-free was deliberately left unimplemented rather than risk a
+double-free in code that works today) instead of reaching for a
+general-purpose GC.
+
+
+\chapter{Frust — Reddit/Quora post tracker}
+
+Tracks what's been written and posted for Frust on r/FrustLang and Quora, so we're not
+duplicating topics or losing track of what's already out there. Add a new entry below
+every time a post is drafted or actually published.
+
+\section{Posted}
+
+\subsection{r/FrustLang — general Frust intro}
+\begin{itemize}
+\item \textbf{Status:} posted
+\item \textbf{Platform:} Reddit, r/FrustLang
+\item \textbf{Topic:} general introduction to Frust — what it is, what's actually working.
+\item \textbf{Note:} drafted and posted earlier in the session that did the repo migration; exact
+\end{itemize}
+  text wasn't saved to a file at the time, so it isn't reproduced here verbatim.
+
+\subsection{r/FrustLang — why \texttt{shared<T>} works the way it does}
+\begin{itemize}
+\item \textbf{Status:} posted
+\item \textbf{Platform:} Reddit, r/FrustLang
+\item \textbf{Topic:} design-philosophy piece on \texttt{shared<T>} reference counting — deterministic
+\end{itemize}
+  drop, no GC, why it was built this way. Written using "Frust does X" phrasing
+  throughout (not "my language"), per an explicit correction during drafting.
+\begin{itemize}
+\item \textbf{Note:} exact text wasn't saved to a file at the time, so it isn't reproduced here
+\end{itemize}
+  verbatim.
+
+\subsection{Quora (Creative Programming space) — "How does Frust handle pointers?"}
+\begin{itemize}
+\item \textbf{Status:} posted
+\item \textbf{Platform:} Quora, Creative Programming space (117.4K followers)
+\item \textbf{Topic:} answers "How does Frust handle pointers?" with both real Frust usage code
+\end{itemize}
+  and real internal \texttt{Codegen.h} implementation snippets (\texttt{sharedHeaderPtr},
+  \texttt{dropSharedLocal}, \texttt{retainSharedLocal}). Links to the FrustLang repo and
+  https://www.reddit.com/r/FrustLang/.
+\begin{itemize}
+\item \textbf{Note:} exact text wasn't saved to a file at the time, so it isn't reproduced here
+\end{itemize}
+  verbatim.
+
+\section{Drafted, not yet posted}
+
+\subsection{5-post series — main serious features (2026-08-24)}
+\begin{itemize}
+\item \textbf{Status:} drafted, not yet posted
+\item \textbf{Platform:} intended for r/FrustLang (5 separate short posts)
+\item \textbf{Topic:} one language feature per post, ~2 paragraphs + a short verified code
+\end{itemize}
+  example each. Syntax in every example was pulled directly from the grammar
+  (\texttt{frust.y}) and \texttt{Codegen.h}, not reconstructed from memory.
+
+---
+
+#### 1. Real interface dispatch — not duck typing, actual dynamic dispatch
+
+Frust has \texttt{interface}/\texttt{impl X for Y}, and it's not sugar — a function that takes an
+interface-typed parameter genuinely dispatches through a vtable at runtime, so the same
+call site can run different code depending on what concrete type got passed in. No
+inheritance hierarchy required, no "does this struct happen to have the right method
+names" duck typing — you declare conformance explicitly with \texttt{impl}, and the compiler
+enforces it.
+
+\begin{lstlisting}
+interface Automation {
+    fn tick(input: f32) -> f32;
+}
+
+impl Automation for Motor {
+    fn tick(input: f32) -> f32 = { input * 2.0 }
+}
+
+fn run_step(a: Automation, x: f32) -> f32 = { a.tick(x) }
+\end{lstlisting}
+
+---
+
+#### 2. \texttt{shared} — reference counting without a garbage collector
+
+Frust's memory model is explicit, not GC'd: \texttt{own} is single-ownership with automatic
+drop at scope end, and \texttt{shared} is deterministic reference counting — retain on
+copy, release on scope exit, deallocate the instant the count hits zero. No
+stop-the-world pause, no background collector thread, and no ambiguity about when a
+destructor runs. You always know exactly when cleanup happens by reading the code.
+
+\begin{lstlisting}
+fn main() -> i64 = {
+    let a: shared Counter = shared Counter { value: 0 };
+    let b = a;                 // retain - refcount 2
+    // both drop at end of scope, refcount hits 0, real free happens here
+    0
+}
+\end{lstlisting}
+
+(Corrected 2026-08-24: the type annotation is \texttt{shared Counter}, a bare
+prefix keyword before the plain type name — \texttt{shared<Counter>} isn't
+valid Frust syntax. Caught before this post went out; see
+\texttt{LANGUAGE_GAPS.md}'s "CRITICAL BUGS" section for the full story of how
+this was found.)
+
+---
+
+#### 3. Generics — real monomorphization, not type erasure
+
+\texttt{struct Box<T>} and \texttt{fn identity<T>(x: T) -> T} are genuine generics: each concrete
+instantiation gets its own compiled, specialized version (same strategy Rust and C++
+templates use), not a boxed/erased runtime representation. Turbofish syntax picks the
+concrete type explicitly at the call site when it can't be inferred from arguments
+alone.
+
+\begin{lstlisting}
+fn identity<T>(x: T) -> T = { x }
+
+fn main() -> i64 = {
+    let a = identity::<i64>(42);
+    let b = identity::<f32>(3.14);
+    0
+}
+\end{lstlisting}
+
+---
+
+#### 4. Live \texttt{quote}/\texttt{unquote}/\texttt{build_time} — metaprogramming that runs while your program is already running
+
+This is the one people don't expect: \texttt{build_time { }} blocks can \texttt{quote { }} real AST
+nodes (with \texttt{unquote(expr)} splicing live runtime values in as literals), hand that
+AST to the compiler's own JIT, and get back a freshly-compiled function pointer — all
+from inside a program that's already executing. It works because a running \texttt{.frust}
+program shares a process with the same compiler pipeline that built it, so "generate
+code from live data and compile it in on the spot" is just calling back into that
+pipeline, not a separate execution model bolted on.
+
+\begin{lstlisting}
+fn build_line_eval(m: f32, b: f32) -> ASTExpr = build_time {
+    quote {
+        (unquote(m) * x) + unquote(b)
+    }
+}
+
+extern fn frust_jit_eval_f32(ast: ASTExpr, x: f32) -> f32;
+
+fn main() -> i64 = {
+    let ast = build_line_eval(2.0, 1.0);   // y = 2x + 1, specialized just now
+    let y = frust_jit_eval_f32(ast, 5.0);  // JIT-compiles and runs it: 11.0
+    0
+}
+\end{lstlisting}
+
+---
+
+#### 5. Embeddable by design — Frust runs inside your app, not just next to it
+
+Frust compiles to native x86, but it also JITs and links in-process, which means it's
+built to be *embedded*: the JUCE-based IDE in this repo hosts Frust plugins directly
+in its own process, calling into JIT-compiled Frust functions like any other C
+function pointer. That makes Frust usable as a real scripting/extension layer for a
+host application — not a separate process you shell out to, not a subprocess you pipe
+JSON through, but code that runs in the same address space as your app.
+
+\begin{lstlisting}
+// host app (C++), loading and calling a Frust plugin in-process
+FrustPluginHandle plugin = frust_plugin_load("linter.frust");
+void* fn = frust_plugin_get_fn(plugin, "check_line");
+auto check = reinterpret_cast<int64_t(*)(const char*)>(fn);
+int64_t issues = check("// TODO: fix this");
+\end{lstlisting}
+
+
+
+\end{document}

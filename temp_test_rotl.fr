@@ -1,0 +1,12 @@
+pub fn rotl(x: i64, k: i64) -> i64 = {
+    let right_shift: i64 = 64 - k;
+    let mut mask: i64 = 1;
+    mask = (mask << k) - 1;
+    return (x << k) | ((x >> right_shift) & mask);
+}
+
+pub fn main() -> i64 = {
+    let x: i64 = -1; // all 1s
+    let y: i64 = rotl(x, 5);
+    return y;
+}

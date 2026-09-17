@@ -1,0 +1,23 @@
+extern fn host_set_pixel(pixels: raw* i32, idx: i64, color: i32);
+
+struct Framebuffer {
+    pixels: raw* i32,
+    width: i64,
+    height: i64
+}
+
+pub fn framebuffer_clear(fb: raw* Framebuffer, color: i32) = {
+    let mut y: i64 = 0;
+    let mut x: i64 = 0;
+    let mut idx: i64 = 0;
+    
+    while (y < fb.height) {
+        x = 0;
+        while (x < fb.width) {
+            idx = (y * fb.width) + x;
+            host_set_pixel(fb.pixels, idx, color);
+            x = x + 1;
+        };
+        y = y + 1;
+    }
+}

@@ -469,7 +469,7 @@ void RunFile(const std::vector<std::string>& paths) {
     });
 }
 
-bool CompileToObject(const std::vector<std::string>& paths, const std::string& outputPath) {
+bool CompileToObject(const std::vector<std::string>& paths, const std::string& outputPath, const std::string& currentNamespace) {
     AstArena arena;
     std::vector<std::string> parseErrors;
     Program* prog = ParseAndMergeFiles(paths, arena, parseErrors);
@@ -479,11 +479,26 @@ bool CompileToObject(const std::vector<std::string>& paths, const std::string& o
         for (const auto& err : parseErrors) std::cerr << err << "\n";
         return false;
     }
+    
+    if (!currentNamespace.empty()) {
+        std::string prefix = currentNamespace + "::";
+        for (auto* decl : prog->decls) {
+            // Only prefix non-extern declarations that were parsed in this compilation unit
+            if (decl->kind == DeclKind::Function && decl->functionDecl && !decl->functionDecl->isExtern) {
+                decl->functionDecl->name = prefix + decl->functionDecl->name;
+            } else if (decl->kind == DeclKind::Struct && decl->structDecl) {
+                decl->structDecl->name = prefix + decl->structDecl->name;
+            } else if (decl->kind == DeclKind::TypeAlias && decl->typeAliasDecl) {
+                decl->typeAliasDecl->name = prefix + decl->typeAliasDecl->name;
+            }
+        }
+    }
 
     auto context = std::make_unique<llvm::LLVMContext>();
     auto module = std::make_unique<llvm::Module>("FrustModule", *context);
 
     Codegen codegen(*context, *module);
+    codegen.currentNamespace = currentNamespace;
     if (!codegen.compileProgram(*prog)) {
         std::cerr << "\nfrust: codegen failed, not emitting object\n";
         return false;
@@ -588,8 +603,16 @@ int main(int argc, char** argv) {
     // more input files" shape, just without an output path.
     if (argc >= 4 && std::string(argv[1]) == "--emit-obj") {
         std::string outputFile = argv[2];
-        std::vector<std::string> inputFiles(argv + 3, argv + argc);
-        if (!frust::CompileToObject(inputFiles, outputFile)) return 1;
+        std::string currentNamespace = "";
+        int fileStart = 3;
+        
+        if (argc >= 6 && std::string(argv[3]) == "--namespace") {
+            currentNamespace = argv[4];
+            fileStart = 5;
+        }
+        
+        std::vector<std::string> inputFiles(argv + fileStart, argv + argc);
+        if (!frust::CompileToObject(inputFiles, outputFile, currentNamespace)) return 1;
     } else if (argc >= 2) {
         std::vector<std::string> inputFiles(argv + 1, argv + argc);
         frust::RunFile(inputFiles);

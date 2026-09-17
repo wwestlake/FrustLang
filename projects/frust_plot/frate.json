@@ -1,0 +1,15 @@
+{
+  "name": "frust_plot",
+  "version": "0.1.0",
+  "type": "lib",
+  "description": "Software framebuffer and data plotting routines.",
+  "exports": [
+    "Framebuffer", "framebuffer_clear", "framebuffer_set_pixel",
+    "plot_array", "render_plot"
+  ],
+  "dependencies": [
+    { "name": "core", "version": "1.0.1" },
+    { "name": "frust_linalg", "version": "0.1.0" },
+    { "name": "frust_noise", "version": "0.1.0" }
+  ]
+}

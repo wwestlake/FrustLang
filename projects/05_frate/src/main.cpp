@@ -362,19 +362,6 @@ static bool collectImportedPodFiles(const juce::File& entryFile, const frate::Fr
             }
             version = versionQuoted.substring(1, versionQuoted.length() - 1);
             isCrossPodImport = true;
-        } else if (line.startsWith("use ") && !line.startsWith("use self::")) {
-            if (!line.endsWith(";")) {
-                errorOut = "Malformed 'use' directive (missing ';'): " + rawLine.trim();
-                return false;
-            }
-
-            podName = line.substring(juce::String("use").length(), line.length() - 1).trim();
-            if (podName.isEmpty() || podName.containsAnyOf(" \t,:\"") || podName.contains("::")) {
-                // Not the v1 cross-pod shorthand. Leave future symbol imports
-                // (`use pod::Thing;`) for the compiler-level name resolver.
-                continue;
-            }
-            isCrossPodImport = true;
         }
 
         if (!isCrossPodImport) continue;
@@ -533,9 +520,10 @@ bool buildPod(const juce::File& podDir, bool isRun, const std::map<std::string, 
     std::cout << "Compiling " << meta.name << " (" << sourceFiles.size() << " source file(s))...\n";
     juce::ChildProcess compiler;
     juce::StringArray args;
-    juce::File compilerExe = resolveSiblingTool("frust_compiler.exe");
+    juce::File compilerExe = resolveSiblingTool("frust_compiler_x.exe");
     if (!compilerExe.existsAsFile()) compilerExe = resolveSiblingTool("frust_compiler");
     if (!compilerExe.existsAsFile()) {
+        std::cerr << "Tested: " << compilerExe.getFullPathName() << "\n";
         std::cerr << "Error: frust_compiler not found next to frate at "
                   << juce::File::getSpecialLocation(juce::File::currentExecutableFile).getParentDirectory().getFullPathName()
                   << "\n";

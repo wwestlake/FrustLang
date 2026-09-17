@@ -1,7 +1,4 @@
 use core;
-use core::random::xoshiro256_init;
-use core::random::Xoshiro256;
-use core::mem::malloc;
 use core::mem::free;
 extern fn host_f32_to_i64(val: f32) -> i64;
 extern fn host_i64_to_f32(val: i64) -> f32;
@@ -1067,16 +1064,16 @@ extern fn host_set_noise_perm_val(idx: i64, val: i64);
 
 // Seeds the C++ Simplex noise permutation table using our Frust RNG.
 pub fn seed_procedural_noise(seed: i64) = {
-    let mut rng: Xoshiro256 = xoshiro256_init(seed);
+    let mut rng = core::xoshiro256_init(seed);
     
     // Frust doesn't have local array variables yet, so we use a raw memory buffer
     
     // Allocate 256 i64s
-    let mut perm: raw* i64 = malloc(256 * 8) as raw* i64;
+    let mut perm: raw* i64 = core::malloc(256 * 8) as raw* i64;
     
     let mut i: i64 = 0;
     while (i < 256) {
-        set_i64(perm as String, i, i);
+        core::core::set_i64(perm as String, i, i);
         i = i + 1;
     };
     
@@ -1084,16 +1081,16 @@ pub fn seed_procedural_noise(seed: i64) = {
     i = 255;
     while (i > 0) {
         let j: i64 = rng.next_range(0, i + 1);
-        let tmp: i64 = get_i64(perm as String, i);
-        set_i64(perm as String, i, get_i64(perm as String, j));
-        set_i64(perm as String, j, tmp);
+        let tmp: i64 = core::get_i64(perm as String, i);
+        core::set_i64(perm as String, i, core::get_i64(perm as String, j));
+        core::set_i64(perm as String, j, tmp);
         i = i - 1;
     };
     
     // Send to C++
     i = 0;
     while (i < 256) {
-        host_set_noise_perm_val(i, get_i64(perm as String, i));
+        host_set_noise_perm_val(i, core::get_i64(perm as String, i));
         i = i + 1;
     };
     

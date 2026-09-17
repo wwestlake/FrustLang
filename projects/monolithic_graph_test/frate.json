@@ -1,0 +1,6 @@
+{
+  "name": "monolithic_graph",
+  "version": "0.1.0",
+  "type": "lib",
+  "dependencies": [ { "name": "core", "version": "1.0.1" } ]
+}

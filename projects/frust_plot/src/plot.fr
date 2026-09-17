@@ -1,0 +1,50 @@
+use self::canvas;
+use self::config;
+
+extern fn host_f32_to_i64(v: f32) -> i64;
+extern fn host_i64_to_f32(v: i64) -> f32;
+extern fn host_set_pixel(pixels: raw* i32, idx: i64, color: i32);
+extern fn host_read_f32_array(arr: raw* f32, idx: i64) -> f32;
+
+pub fn plot_line(fb: Framebuffer, cfg: GraphConfig, dataset: Dataset) = {
+    let mut cy: i64 = 0;
+    let mut cx: i64 = 0;
+    let mut cidx: i64 = 0;
+    
+    while (cy < fb.height) {
+        cx = 0;
+        while (cx < fb.width) {
+            cidx = (cy * fb.width) + cx;
+            host_set_pixel(fb.pixels, cidx, cfg.bg_color);
+            cx = cx + 1;
+        };
+        cy = cy + 1;
+    };
+    
+    let mut i: i64 = 0;
+    let mut x_pixel: i64 = 0;
+    let mut y_pixel: i64 = 0;
+    let mut val: f32 = 0.0;
+    let mut idx: i64 = 0;
+    
+    let y_range: f32 = cfg.y_max - cfg.y_min;
+    let fb_h_f32: f32 = host_i64_to_f32(fb.height); 
+    
+    while (i < dataset.length) {
+        val = host_read_f32_array(dataset.data, i);
+        x_pixel = (i * fb.width) / dataset.length;
+        
+        let normalized_y: f32 = (val - cfg.y_min) / y_range;
+        let y_pixel_f32: f32 = fb_h_f32 - (normalized_y * fb_h_f32);
+        
+        y_pixel = host_f32_to_i64(y_pixel_f32);
+        
+        if (y_pixel < 0) { y_pixel = 0; } else { y_pixel = y_pixel; };
+        if (y_pixel >= fb.height) { y_pixel = fb.height - 1; } else { y_pixel = y_pixel; };
+        
+        idx = (y_pixel * fb.width) + x_pixel;
+        host_set_pixel(fb.pixels, idx, cfg.line_color);
+        
+        i = i + 1;
+    }
+}
