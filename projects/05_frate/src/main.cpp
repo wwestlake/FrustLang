@@ -488,8 +488,42 @@ bool buildPod(const juce::File& podDir, bool isRun, const std::map<std::string, 
         }
         
         if (!depObj.existsAsFile()) {
-            std::cerr << "Error: Dependency object file not found: " << depObj.getFullPathName() << "\n";
-            return false;
+            // Compile the dependency from its cached source.
+            // This is normal - a freshly pulled pod has source but no .o yet.
+            juce::Array<juce::File> depSourceFiles;
+            juce::String depCollectError;
+            if (!collectSelfUseFiles(depSrc, depSourceFiles, depCollectError)) {
+                std::cerr << "Error: Could not collect source files for dep '" << dep.name << "': " << depCollectError << "\n";
+                return false;
+            }
+            juce::File depCompilerExe = resolveSiblingTool("frust_compiler_x.exe");
+            if (!depCompilerExe.existsAsFile()) depCompilerExe = resolveSiblingTool("frust_compiler");
+            if (!depCompilerExe.existsAsFile()) {
+                std::cerr << "Error: frust_compiler not found, cannot compile dependency '" << dep.name << "'\n";
+                return false;
+            }
+            juce::StringArray depArgs;
+            depArgs.add(depCompilerExe.getFullPathName());
+            depArgs.add("--emit-obj");
+            depArgs.add(depObj.getFullPathName());
+            // No --namespace here: building the dep's own .o is identical to
+            // running `frate build` inside its directory. --namespace is only
+            // used by the consumer's compiler (ModuleLoader) when importing
+            // the dep's AST, not when compiling the dep itself.
+            for (const auto& f : depSourceFiles) depArgs.add(f.getFullPathName());
+
+            std::cout << "Compiling cached dependency '" << dep.name << "' v" << dep.version << "...\n";
+            juce::ChildProcess depCompiler;
+            if (depCompiler.start(depArgs)) {
+                juce::String depOut = depCompiler.readAllProcessOutput();
+                if (depCompiler.getExitCode() != 0) {
+                    std::cerr << "Error compiling dependency '" << dep.name << "':\n" << depOut << "\n";
+                    return false;
+                }
+            } else {
+                std::cerr << "Error: Failed to launch compiler for dependency '" << dep.name << "'\n";
+                return false;
+            }
         }
         
         objFiles.push_back(depObj.getFullPathName());
