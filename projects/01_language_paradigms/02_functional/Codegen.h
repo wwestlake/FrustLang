@@ -200,7 +200,7 @@ public:
                 }
             }
         }
-        return ok;
+        return ok && !hadCodegenError;
     }
 
 private:
@@ -3966,6 +3966,8 @@ private:
                 return compileIndirectCall(expr);
             }
             std::cerr << "frust: codegen error: unknown function '" << targetName << "'\n";
+            hadCodegenError = true;
+            std::cerr << "DEBUG: blockTerminated is " << blockTerminated << "\n";
             return nullptr;
         }
         if (callee->arg_size() != expr.args.size()) {
