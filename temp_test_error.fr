@@ -1,3 +1,0 @@
-pub fn main() = {
-    this_function_does_not_exist();
-}

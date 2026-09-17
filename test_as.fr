@@ -1,1 +1,0 @@
-pub fn test_as() = { let a = 5; let b = a as f64; }
