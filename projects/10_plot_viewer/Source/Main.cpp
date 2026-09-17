@@ -43,13 +43,7 @@ extern "C" void host_set_noise_perm_val(int64_t idx, int64_t val) {
     }
 }
 
-extern "C" int64_t frust_buf_get_i64(void* base, int64_t idx) {
-    return ((int64_t*)base)[idx];
-}
 
-extern "C" void frust_buf_set_i64(void* base, int64_t idx, int64_t val) {
-    ((int64_t*)base)[idx] = val;
-}
 
 static const float G2[12][2] = {
     {1,1},{-1,1},{1,-1},{-1,-1},{1,0},{-1,0},{1,0},{-1,0},{0,1},{0,-1},{0,1},{0,-1}

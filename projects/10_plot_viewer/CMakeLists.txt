@@ -30,6 +30,7 @@ target_link_libraries(PlotViewer PRIVATE
     juce::juce_events
     juce::juce_graphics
     juce::juce_gui_basics
+    "D:/FrustLang/lib/$<CONFIG>/frust_runtime.lib"
     juce::juce_gui_extra
     juce::juce_opengl
     legacy_stdio_definitions.lib
