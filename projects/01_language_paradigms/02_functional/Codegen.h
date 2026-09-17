@@ -2699,10 +2699,27 @@ private:
             // (there's no template being spliced into).
             case ExprKind::Unquote:
                 std::cerr << "frust: codegen error: unquote() is only valid inside quote { ... }\n";
+                hadCodegenError = true;
                 return nullptr;
+
+            case ExprKind::Cast: {
+                llvm::Value* val = compileExpr(expr->lhs);
+                if (!val) return nullptr;
+                llvm::Type* targetTy = resolveType(expr->typeAnnotation);
+                if (!targetTy) {
+                    std::cerr << "frust: codegen error: invalid cast type\n";
+                    hadCodegenError = true;
+                    return nullptr;
+                }
+                if (val->getType()->isPointerTy() && targetTy->isPointerTy()) {
+                    return val;
+                }
+                return coerceToType(val, targetTy);
+            }
 
             default:
                 std::cerr << "frust: codegen does not support this expression kind yet\n";
+                hadCodegenError = true;
                 return nullptr;
         }
     }

@@ -372,6 +372,7 @@ public:
     PlotComponent() : juce::Thread("FrustRenderThread") {
         setWantsKeyboardFocus(true);
         seed_procedural_noise((int64_t)time(NULL));
+        std::cout << "DEBUG: p512[1] = " << p512[1] << ", p512[2] = " << p512[2] << std::endl;
         
         for (int i = 0; i < 3; ++i) {
             m_raw_buffers[i].resize(1200 * 800, 0xFF000000); 

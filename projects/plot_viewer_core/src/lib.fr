@@ -1076,7 +1076,7 @@ pub fn seed_procedural_noise(seed: i64) = {
     
     let mut i: i64 = 0;
     while (i < 256) {
-        core::buffer::set_i64(perm as String, i, i);
+        set_i64(perm as String, i, i);
         i = i + 1;
     };
     
@@ -1084,16 +1084,16 @@ pub fn seed_procedural_noise(seed: i64) = {
     i = 255;
     while (i > 0) {
         let j: i64 = rng.next_range(0, i + 1);
-        let tmp: i64 = core::buffer::get_i64(perm as String, i);
-        core::buffer::set_i64(perm as String, i, core::buffer::get_i64(perm as String, j));
-        core::buffer::set_i64(perm as String, j, tmp);
+        let tmp: i64 = get_i64(perm as String, i);
+        set_i64(perm as String, i, get_i64(perm as String, j));
+        set_i64(perm as String, j, tmp);
         i = i - 1;
     };
     
     // Send to C++
     i = 0;
     while (i < 256) {
-        host_set_noise_perm_val(i, core::buffer::get_i64(perm as String, i));
+        host_set_noise_perm_val(i, get_i64(perm as String, i));
         i = i + 1;
     };
     
