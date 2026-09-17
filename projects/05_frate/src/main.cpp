@@ -497,7 +497,7 @@ bool buildPod(const juce::File& podDir, bool isRun, const std::map<std::string, 
                 return false;
             }
             juce::File depCompilerExe = resolveSiblingTool("frust_compiler_x.exe");
-            if (!depCompilerExe.existsAsFile()) depCompilerExe = resolveSiblingTool("frust_compiler");
+            if (!depCompilerExe.existsAsFile()) depCompilerExe = resolveSiblingTool("frust_compiler.exe");
             if (!depCompilerExe.existsAsFile()) {
                 std::cerr << "Error: frust_compiler not found, cannot compile dependency '" << dep.name << "'\n";
                 return false;
@@ -555,7 +555,7 @@ bool buildPod(const juce::File& podDir, bool isRun, const std::map<std::string, 
     juce::ChildProcess compiler;
     juce::StringArray args;
     juce::File compilerExe = resolveSiblingTool("frust_compiler_x.exe");
-    if (!compilerExe.existsAsFile()) compilerExe = resolveSiblingTool("frust_compiler");
+    if (!compilerExe.existsAsFile()) compilerExe = resolveSiblingTool("frust_compiler.exe");
     if (!compilerExe.existsAsFile()) {
         std::cerr << "Tested: " << compilerExe.getFullPathName() << "\n";
         std::cerr << "Error: frust_compiler not found next to frate at "
