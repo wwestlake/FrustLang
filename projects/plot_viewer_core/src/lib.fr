@@ -1,9 +1,9 @@
 use core::random::xoshiro256_init;
 use core::random::Xoshiro256;
-    use core::mem::malloc;
-    use core::mem::free;
-    use core::buffer::buf_set;
-    use core::buffer::buf_get;
+use core::mem::malloc;
+use core::mem::free;
+use core::buffer::set_i64;
+use core::buffer::get_i64;
 extern fn host_f32_to_i64(val: f32) -> i64;
 extern fn host_i64_to_f32(val: i64) -> f32;
 
@@ -1075,7 +1075,7 @@ pub fn seed_procedural_noise(seed: i64) = {
     
     let mut i: i64 = 0;
     while (i < 256) {
-        buf_set(perm, i, i);
+        set_i64(perm as String, i, i);
         i = i + 1;
     };
     
@@ -1083,16 +1083,16 @@ pub fn seed_procedural_noise(seed: i64) = {
     i = 255;
     while (i > 0) {
         let j: i64 = rng.next_range(0, i + 1);
-        let tmp: i64 = buf_get(perm, i);
-        buf_set(perm, i, buf_get(perm, j));
-        buf_set(perm, j, tmp);
+        let tmp: i64 = get_i64(perm as String, i);
+        set_i64(perm as String, i, get_i64(perm as String, j));
+        set_i64(perm as String, j, tmp);
         i = i - 1;
     };
     
     // Send to C++
     i = 0;
     while (i < 256) {
-        host_set_noise_perm_val(i, buf_get(perm, i));
+        host_set_noise_perm_val(i, get_i64(perm as String, i));
         i = i + 1;
     };
     
