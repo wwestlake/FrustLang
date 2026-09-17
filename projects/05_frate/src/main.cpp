@@ -61,6 +61,30 @@ static juce::File resolveLlvmLibDir(const juce::String& configName) {
         : root.getChildFile("lib");
 }
 
+static bool finishChildProcess(juce::ChildProcess& process, juce::String& output,
+                               int& exitCode, int timeoutMs = 10 * 60 * 1000) {
+    const auto deadline = juce::Time::getMillisecondCounterHiRes() + timeoutMs;
+    char buffer[4096];
+    while (process.isRunning()) {
+        const int bytesRead = process.readProcessOutput(buffer, static_cast<int>(sizeof(buffer)));
+        if (bytesRead > 0) output.append(buffer, bytesRead);
+        else juce::Thread::sleep(10);
+        if (juce::Time::getMillisecondCounterHiRes() >= deadline) {
+            process.kill();
+            output += "\nProcess timed out.";
+            exitCode = -1;
+            return false;
+        }
+    }
+    for (;;) {
+        const int bytesRead = process.readProcessOutput(buffer, static_cast<int>(sizeof(buffer)));
+        if (bytesRead <= 0) break;
+        output.append(buffer, bytesRead);
+    }
+    exitCode = process.getExitCode();
+    return true;
+}
+
 bool linkExecutable(const std::vector<juce::String>& objFiles, const juce::File& finalBin,
                     bool needsPluginHost, bool needsLiveMetaprogramming) {
     juce::ChildProcess linker;
@@ -86,8 +110,10 @@ bool linkExecutable(const std::vector<juce::String>& objFiles, const juce::File&
         linkerArgs.add(finalBin.getFullPathName());
         
         if (linker.start(linkerArgs)) {
-            juce::String linkerOut = linker.readAllProcessOutput();
-            if (linker.getExitCode() != 0) {
+            juce::String linkerOut;
+            int linkerExit = -1;
+            finishChildProcess(linker, linkerOut, linkerExit);
+            if (linkerExit != 0) {
                 std::cerr << "Linker failed:\n" << linkerOut << "\n";
                 return false;
             }
@@ -101,7 +127,10 @@ bool linkExecutable(const std::vector<juce::String>& objFiles, const juce::File&
             juce::ChildProcess vswhere;
             juce::String vsWhereCmd = "\"" + vsWherePath + "\" -latest -property installationPath";
             if (vswhere.start(vsWhereCmd)) {
-                juce::String vsPath = vswhere.readAllProcessOutput().trim();
+                juce::String vsPath;
+                int vswhereExit = -1;
+                finishChildProcess(vswhere, vsPath, vswhereExit, 10000);
+                vsPath = vsPath.trim();
                 if (vsPath.isNotEmpty()) {
                     juce::String vsDevCmd = vsPath + "\\Common7\\Tools\\VsDevCmd.bat";
                     if (juce::File(vsDevCmd).existsAsFile()) {
@@ -243,8 +272,10 @@ bool linkExecutable(const std::vector<juce::String>& objFiles, const juce::File&
 
                         juce::String fullCmd = "cmd.exe /c \"" + linkCmd + "\"";
                         if (linker.start(fullCmd)) {
-                            juce::String linkerOut = linker.readAllProcessOutput();
-                            if (linker.getExitCode() != 0) {
+                            juce::String linkerOut;
+                            int linkerExit = -1;
+                            finishChildProcess(linker, linkerOut, linkerExit);
+                            if (linkerExit != 0) {
                                 std::cerr << "Linker failed:\n" << linkerOut << "\n";
                                 return false;
                             }
@@ -515,8 +546,10 @@ bool buildPod(const juce::File& podDir, bool isRun, const std::map<std::string, 
             std::cout << "Compiling cached dependency '" << dep.name << "' v" << dep.version << "...\n";
             juce::ChildProcess depCompiler;
             if (depCompiler.start(depArgs)) {
-                juce::String depOut = depCompiler.readAllProcessOutput();
-                if (depCompiler.getExitCode() != 0) {
+                juce::String depOut;
+                int depExit = -1;
+                finishChildProcess(depCompiler, depOut, depExit);
+                if (depExit != 0) {
                     std::cerr << "Error compiling dependency '" << dep.name << "':\n" << depOut << "\n";
                     return false;
                 }
@@ -569,9 +602,11 @@ bool buildPod(const juce::File& podDir, bool isRun, const std::map<std::string, 
     for (const auto& f : sourceFiles) args.add(f.getFullPathName());
 
     if (compiler.start(args)) {
-        juce::String output = compiler.readAllProcessOutput();
-        if (compiler.getExitCode() != 0) {
-            std::cerr << "Compiler exited with code " << compiler.getExitCode() << "\n" << output << "\n";
+        juce::String output;
+        int compilerExit = -1;
+        finishChildProcess(compiler, output, compilerExit);
+        if (compilerExit != 0) {
+            std::cerr << "Compiler exited with code " << compilerExit << "\n" << output << "\n";
             return false;
         }
     } else {
@@ -604,8 +639,10 @@ bool buildPod(const juce::File& podDir, bool isRun, const std::map<std::string, 
             juce::StringArray runArgs;
             runArgs.add(finalBin.getFullPathName());
             if (runner.start(runArgs)) {
-                std::cout << runner.readAllProcessOutput();
-                int exitCode = runner.getExitCode();
+                juce::String runnerOutput;
+                int exitCode = -1;
+                finishChildProcess(runner, runnerOutput, exitCode);
+                std::cout << runnerOutput;
                 if (exitCode != 0) std::cerr << "Process exited with code " << exitCode << "\n";
                 return exitCode == 0;
             } else {
