@@ -33,6 +33,7 @@
 #endif
 
 #include "Codegen.h"
+#include "CompilerApi.h"
 #include "Lexer.h"
 #include "ModuleLoader.h"
 #include "ReplSession.h"
@@ -51,6 +52,7 @@
 #include <llvm/IR/LegacyPassManager.h>
 #include <llvm/Support/FileSystem.h>
 #include <llvm/TargetParser/Host.h>
+
 
 #ifndef FRUST_BUILD_VERSION
 #define FRUST_BUILD_VERSION "development"
@@ -359,6 +361,17 @@ void CallAndPrint(const FunctionDecl& fn, void* addr) {
 // see that file for the full history. frust_compiler links frust_runtime
 // (CMakeLists.txt) instead of defining these itself.
 
+// Set by --dump-ir. Only the command-line compiler ever writes these debugging
+// dumps, and only when asked; nothing writes them by default.
+bool g_dumpIr = false;
+
+void DumpIr(const llvm::Module& M, const char* fileName) {
+    if (!g_dumpIr) return;
+    std::error_code EC;
+    llvm::raw_fd_ostream dest(fileName, EC, llvm::sys::fs::OF_None);
+    if (!EC) M.print(dest, nullptr);
+}
+
 void optimizeModule(llvm::Module& M) {
     llvm::LoopAnalysisManager LAM;
     llvm::FunctionAnalysisManager FAM;
@@ -372,22 +385,14 @@ void optimizeModule(llvm::Module& M) {
     PB.registerLoopAnalyses(LAM);
     PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
 
-    {
-        std::error_code EC;
-        llvm::raw_fd_ostream dest("output_pre_opt.ll", EC, llvm::sys::fs::OF_None);
-        M.print(dest, nullptr);
-    }
+    DumpIr(M, "output_pre_opt.ll");
 
     llvm::ModulePassManager MPM = PB.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O2);
     std::cout << "--- Running LLVM Pass Manager ---" << std::endl << std::flush;
     MPM.run(M, MAM);
     std::cout << "--- Pass Manager Finished ---" << std::endl << std::flush;
-    
-    {
-        std::error_code EC;
-        llvm::raw_fd_ostream dest("output_post_opt.ll", EC, llvm::sys::fs::OF_None);
-        M.print(dest, nullptr);
-    }
+
+    DumpIr(M, "output_post_opt.ll");
 }
 
 // Builds an LLJIT, hands it the module, looks up `symbolName`, and calls
@@ -457,11 +462,7 @@ void RunFile(const std::vector<std::string>& paths) {
         return;
     }
 
-    {
-        std::error_code EC;
-        llvm::raw_fd_ostream dest("output.ll", EC, llvm::sys::fs::OF_None);
-        module->print(dest, nullptr);
-    }
+    DumpIr(*module, "output.ll");
 
     std::cout << "\nRunning program...\n";
     RunViaJit(std::move(context), std::move(module), mainFn->name, [mainFn](void* addr) {
@@ -469,80 +470,60 @@ void RunFile(const std::vector<std::string>& paths) {
     });
 }
 
-bool CompileToObject(const std::vector<std::string>& paths, const std::string& outputPath, const std::string& currentNamespace) {
-    AstArena arena;
-    std::vector<std::string> parseErrors;
-    Program* prog = ParseAndMergeFiles(paths, arena, parseErrors);
-
-    if (!parseErrors.empty() || !prog) {
-        std::cerr << "frust: " << parseErrors.size() << " error(s), aborting\n";
-        for (const auto& err : parseErrors) std::cerr << err << "\n";
-        return false;
-    }
-    
-    if (!currentNamespace.empty()) {
-        std::string prefix = currentNamespace + "::";
-        for (auto* decl : prog->decls) {
-            // Only prefix non-extern declarations that were parsed in this compilation unit
-            if (decl->kind == DeclKind::Function && decl->functionDecl && !decl->functionDecl->isExtern) {
-                decl->functionDecl->name = prefix + decl->functionDecl->name;
-            } else if (decl->kind == DeclKind::Struct && decl->structDecl) {
-            } else if (decl->kind == DeclKind::TypeAlias && decl->typeAliasDecl) {
-                decl->typeAliasDecl->name = prefix + decl->typeAliasDecl->name;
-            }
-        }
-    }
-
-    auto context = std::make_unique<llvm::LLVMContext>();
-    auto module = std::make_unique<llvm::Module>("FrustModule", *context);
-
-    Codegen codegen(*context, *module);
-    codegen.currentNamespace = currentNamespace;
-    if (!codegen.compileProgram(*prog)) {
-        std::cerr << "\nfrust: codegen failed, not emitting object\n";
-        return false;
-    }
-    
-    optimizeModule(*module);
-
-    auto TargetTriple = llvm::sys::getDefaultTargetTriple();
-    module->setTargetTriple(TargetTriple);
-
-    std::string Error;
-    auto Target = llvm::TargetRegistry::lookupTarget(TargetTriple, Error);
-
-    if (!Target) {
-        llvm::errs() << Error;
-        return false;
-    }
-
-    auto CPU = "generic";
-    auto Features = "";
-    llvm::TargetOptions opt;
-    auto RM = std::optional<llvm::Reloc::Model>();
-    auto TheTargetMachine = Target->createTargetMachine(TargetTriple, CPU, Features, opt, RM);
-
-    module->setDataLayout(TheTargetMachine->createDataLayout());
-
-    std::error_code EC;
-    llvm::raw_fd_ostream dest(outputPath, EC, llvm::sys::fs::OF_None);
-
-    if (EC) {
-        llvm::errs() << "Could not open file: " << EC.message();
-        return false;
-    }
-
-    llvm::legacy::PassManager pass;
-    auto FileType = llvm::CodeGenFileType::ObjectFile;
-
-    if (TheTargetMachine->addPassesToEmitFile(pass, dest, nullptr, FileType)) {
-        llvm::errs() << "TheTargetMachine can't emit a file of this type";
-        return false;
-    }
-
-    pass.run(*module);
-    dest.flush();
+// Reads a whole file. False if it cannot be opened.
+bool ReadWholeFile(const std::string& path, std::string& text) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+    std::ostringstream all;
+    all << in.rdbuf();
+    text = all.str();
     return true;
+}
+
+// The command-line compiler is the only piece that touches the disk: it reads
+// its input files, hands the text to the embeddable compiler (CompilerApi.h),
+// and writes the object bytes it gets back.
+bool CompileToObject(const std::vector<std::string>& paths, const std::string& outputPath, const std::string& currentNamespace) {
+    CompileRequest request;
+    request.podNamespace = currentNamespace;
+    request.captureIr = g_dumpIr;
+
+    for (const auto& path : paths) {
+        SourceFile file;
+        file.name = path;
+        if (!ReadWholeFile(path, file.text)) {
+            std::cerr << "frust: cannot open '" << path << "'\n";
+            return false;
+        }
+        request.sources.push_back(std::move(file));
+    }
+
+    // On the command line the files are real files: `use self::x;` names a file next to the one that
+    // says it, and `import pod, "version";` resolves through frate.json and the Frate cache.
+    request.siblingFiles = DiskSourceProvider();
+    request.pods = FratePodProvider();
+
+    const CompileResult result = Compile(request);
+
+    for (const auto& d : result.diagnostics) std::cerr << FormatDiagnostic(d) << "\n";
+    if (g_dumpIr) {
+        std::ofstream pre("output_pre_opt.ll");
+        pre << result.irBeforeOptimization;
+        std::ofstream post("output_post_opt.ll");
+        post << result.irAfterOptimization;
+    }
+    if (!result.ok) {
+        std::cerr << "frust: " << (result.hasErrors() ? "compilation failed" : "no object produced") << ", not emitting object\n";
+        return false;
+    }
+
+    std::ofstream out(outputPath, std::ios::binary);
+    if (!out) {
+        std::cerr << "Could not open file: " << outputPath << "\n";
+        return false;
+    }
+    out.write(reinterpret_cast<const char*>(result.object.data()), static_cast<std::streamsize>(result.object.size()));
+    return static_cast<bool>(out);
 }
 
 void RunRepl() {
@@ -593,6 +574,18 @@ int main(int argc, char** argv) {
     llvm::InitializeNativeTarget();
     llvm::InitializeNativeTargetAsmPrinter();
     llvm::InitializeNativeTargetAsmParser();
+
+    // --dump-ir (anywhere on the command line) writes the LLVM IR dumps that
+    // used to be written on every run.
+    {
+        std::vector<char*> kept;
+        for (int i = 0; i < argc; ++i) {
+            if (i > 0 && std::string(argv[i]) == "--dump-ir") frust::g_dumpIr = true;
+            else kept.push_back(argv[i]);
+        }
+        for (size_t i = 0; i < kept.size(); ++i) argv[i] = kept[i];
+        argc = static_cast<int>(kept.size());
+    }
 
     // --emit-obj takes the output path first (always exactly one) followed
     // by one or more input .fr files, which get parsed and merged into a

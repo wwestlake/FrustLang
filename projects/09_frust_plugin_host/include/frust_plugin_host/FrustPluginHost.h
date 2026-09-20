@@ -98,6 +98,31 @@ FRUST_PLUGIN_HOST_API const char* frust_plugin_last_error(void);
 // plugin with none simply cannot load, full stop.
 FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_load(const char* path);
 
+// Loading from source TEXT instead of a file. Nothing here opens a file:
+// `sourceText` is the plugin's source, `name` labels it in diagnostics and
+// identifies it for reload, and each `use self::x;` in it asks `provider`
+// for "x.frust" and then "x.fr" (return NULL if there is no such file; the
+// returned text only needs to stay valid until `provider` is called again
+// or the load returns). `provider` may be NULL for a single-file plugin.
+// Everything else - the manifest requirement, compatibility, isolation - is
+// exactly as for frust_plugin_load. A host that keeps its sources somewhere
+// other than the disk (Djehuti Station keeps them in its VFS container) uses
+// these.
+typedef const char* (*FrustPluginSourceProvider)(const char* fileName, void* userData);
+FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_load_source(const char* name,
+                                                                 const char* sourceText,
+                                                                 FrustPluginSourceProvider provider,
+                                                                 void* providerUserData);
+
+// Reload for a plugin that was loaded with frust_plugin_load_source, with the
+// new source text. Same contract as frust_plugin_reload: an unchanged program
+// returns the same handle untouched; a changed one is unloaded and loaded again
+// (on_init is called on the new handle).
+FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_reload_source(FrustPluginHandle handle,
+                                                                   const char* sourceText,
+                                                                   FrustPluginSourceProvider provider,
+                                                                   void* providerUserData);
+
 // Returns the manifest of an already-loaded plugin - specifically, the
 // SAME parsed PluginManifest frust_plugin_load() itself already
 // extracted from the plugin's own `manifest "...";` declaration and

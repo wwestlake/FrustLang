@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AST.h"
+#include "CompilerApi.h"
 #include <string>
 #include <vector>
 
@@ -27,4 +28,13 @@ namespace frust {
     // a separate compiler argument" mechanism (LANGUAGE_GAPS.md #8 -
     // frust_plugin_load's single-file limitation).
     bool ResolveSelfUses(Program* prog, AstArena& arena, const std::string& baseDir, std::vector<std::string>& errors);
+
+    // Same, but the sibling files come from `files` (asked for "X.frust" and
+    // then "X.fr") instead of from a directory. Touches no file.
+    bool ResolveSelfUsesWith(Program* prog, AstArena& arena, const SourceProvider& files, std::vector<std::string>& errors);
+
+    // Merges an imported pod's declarations into `prog` under `qualifiedName`
+    // (prefixing them, and marking functions extern so they are not compiled
+    // again). Used by ResolveImports and the embeddable compiler.
+    void MergeImportedPod(Program* prog, Program* podProg, const std::string& qualifiedName);
 }

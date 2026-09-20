@@ -167,6 +167,9 @@ add_library(frust_lang STATIC
     ASTHash.h
     Lexer.h
     Codegen.h
+    Diagnostics.h
+    CompilerApi.h
+    CompilerApi.cpp
     ReplSession.h
     ReplSession.cpp
     ModuleLoader.h
@@ -245,6 +248,18 @@ if(WIN32)
     target_compile_definitions(frust_compiler PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 target_link_libraries(frust_compiler PRIVATE frust_lang frust_runtime ${FRUST_LLVM_LIBS})
+
+# ------------------------------------------------------------------------------
+# frust_compiler_api_smoke: checks the embeddable compiler (CompilerApi.h) -
+# source text in, diagnostics and object bytes out, and that it touches no file.
+# Exit code 0 = pass.
+# ------------------------------------------------------------------------------
+add_executable(frust_compiler_api_smoke tests/CompilerApiSmoke.cpp)
+target_include_directories(frust_compiler_api_smoke PRIVATE "${FRUST_GEN_DIR}" "${FRUST_FLEXLEXER_INCLUDE_DIR}")
+if(WIN32)
+    target_compile_definitions(frust_compiler_api_smoke PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+target_link_libraries(frust_compiler_api_smoke PRIVATE frust_lang frust_runtime ${FRUST_LLVM_LIBS})
 
 # ------------------------------------------------------------------------------
 # Install - on Linux, CMAKE_INSTALL_PREFIX is set by the "linux" preset to

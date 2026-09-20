@@ -21,7 +21,10 @@ static Program* ParseSource(std::istream& input, AstArena& arena, std::vector<st
     return result;
 }
 
-bool ResolveSelfUses(Program* prog, AstArena& arena, const std::string& baseDir, std::vector<std::string>& errors) {
+// Core of self-use resolution, independent of where the files live: `files`
+// is asked for "X.frust" and then "X.fr". The disk overload below and the
+// embeddable compiler (CompilerApi.cpp) both use it.
+bool ResolveSelfUsesWith(Program* prog, AstArena& arena, const SourceProvider& files, std::vector<std::string>& errors) {
     if (!prog) return false;
     bool success = true;
 
@@ -36,17 +39,15 @@ bool ResolveSelfUses(Program* prog, AstArena& arena, const std::string& baseDir,
         if (selfDecl->useDecl->pathSegments.empty()) continue;
         std::string modName = selfDecl->useDecl->pathSegments.front();
 
-        juce::File base(baseDir);
-        juce::File candidate = base.getChildFile(juce::String(modName) + ".frust");
-        if (!candidate.existsAsFile()) {
-            candidate = base.getChildFile(juce::String(modName) + ".fr");
-        }
-        std::string modPath = candidate.getFullPathName().toStdString();
-        std::ifstream modFile(modPath);
-        if (!modFile.is_open()) {
-            errors.push_back("ModuleLoader: use self::" + modName + " names a missing file (tried .frust then .fr next to the importing file): " + modPath);
-            success = false;
-            continue;
+        std::string modPath = modName + ".frust";
+        std::string text;
+        if (!files || !files(modPath, text)) {
+            modPath = modName + ".fr";
+            if (!files || !files(modPath, text)) {
+                errors.push_back("ModuleLoader: use self::" + modName + " names a missing file (tried " + modName + ".frust then " + modName + ".fr next to the importing file)");
+                success = false;
+                continue;
+            }
         }
 
         // Same "errors is shared/accumulated across every self-use this
@@ -54,6 +55,7 @@ bool ResolveSelfUses(Program* prog, AstArena& arena, const std::string& baseDir,
         // compare the count before/after THIS file, not whether the
         // shared vector is empty overall.
         size_t errorsBefore = errors.size();
+        std::istringstream modFile(text);
         Program* modProg = ParseSource(modFile, arena, errors);
         if (!modProg || errors.size() > errorsBefore) {
             errors.push_back("ModuleLoader: failed to parse '" + modPath + "' for use self::" + modName);
@@ -64,6 +66,77 @@ bool ResolveSelfUses(Program* prog, AstArena& arena, const std::string& baseDir,
     }
 
     return success;
+}
+
+bool ResolveSelfUses(Program* prog, AstArena& arena, const std::string& baseDir, std::vector<std::string>& errors) {
+    // The command-line compiler and the plugin host's file loader: sibling
+    // files sit next to the importing file on disk.
+    const SourceProvider disk = [&baseDir](const std::string& name, std::string& text) {
+        juce::File candidate = juce::File(baseDir).getChildFile(juce::String(name));
+        if (!candidate.existsAsFile()) return false;
+        std::ifstream in(candidate.getFullPathName().toStdString());
+        if (!in.is_open()) return false;
+        std::ostringstream all;
+        all << in.rdbuf();
+        text = all.str();
+        return true;
+    };
+    return ResolveSelfUsesWith(prog, arena, disk, errors);
+}
+
+// Brings an imported pod's declarations into `prog` under `qualifiedName`.
+// Shared by the on-disk import path below and the embeddable compiler.
+void MergeImportedPod(Program* prog, Program* podProg, const std::string& qualifiedName) {
+    // Prefix all declarations in the pod with its qualified name
+    for (auto* decl : podProg->decls) {
+        std::string prefix = qualifiedName + "::";
+        if (decl->kind == DeclKind::Function && decl->functionDecl) {
+            decl->functionDecl->name = prefix + decl->functionDecl->name;
+            decl->functionDecl->isExtern = true; // Skip LLVM codegen for dependency functions
+        } else if (decl->kind == DeclKind::Struct && decl->structDecl) {
+        } else if (decl->kind == DeclKind::TypeAlias && decl->typeAliasDecl) {
+            decl->typeAliasDecl->name = prefix + decl->typeAliasDecl->name;
+        } else if (decl->kind == DeclKind::Effect && decl->effectDecl) {
+            decl->effectDecl->name = prefix + decl->effectDecl->name;
+        } else if (decl->kind == DeclKind::Component && decl->componentDecl) {
+            decl->componentDecl->name = prefix + decl->componentDecl->name;
+        } else if (decl->kind == DeclKind::Impl && decl->implDecl) {
+            for (auto* method : decl->implDecl->methods) {
+                method->isExtern = true;
+            }
+        }
+
+        prog->decls.push_back(decl);
+    }
+}
+
+// Pods from frate.json and the Frate cache in the working directory - the
+// disk-backed PodProvider the command-line compiler passes to Compile().
+PodProvider FratePodProvider() {
+    return [](const std::string& name, const std::string&, PodSource& pod) {
+        frate::FrateCache cache;
+        frate::FrateConfig config;
+        config.load(juce::File::getCurrentWorkingDirectory().getChildFile("frate.json"));
+        std::string version;
+        for (const auto& dep : config.getDependencies())
+            if (dep.name == name) { version = dep.version; break; }
+        if (version.empty() || !cache.isCached(name, version)) return false;
+
+        const juce::File podDir = cache.getCachedPodDir(name, version);
+        const auto read = DiskSourceProvider();
+        juce::Array<juce::File> files;
+        podDir.getChildFile("src").findChildFiles(files, juce::File::findFiles, false, "*.fr;*.frust");
+        for (const auto& f : files) {
+            SourceFile file;
+            file.name = f.getFileName().toStdString();
+            if (!read(f.getFullPathName().toStdString(), file.text)) return false;
+            pod.sources.push_back(std::move(file));
+        }
+        frate::FrateConfig podConfig;
+        podConfig.load(podDir.getChildFile("frate.json"));
+        pod.ns = podConfig.getMetadata().namespacePath;
+        return true;
+    };
 }
 
 bool ResolveImports(Program* prog, AstArena& arena, std::vector<std::string>& errors) {
@@ -169,27 +242,7 @@ bool ResolveImports(Program* prog, AstArena& arena, std::vector<std::string>& er
         const std::string& declaredNamespace = podConfig.getMetadata().namespacePath;
         std::string qualifiedName = declaredNamespace.empty() ? podName : declaredNamespace;
 
-        // Prefix all declarations in the pod with its qualified name
-        for (auto* decl : podProg->decls) {
-            std::string prefix = qualifiedName + "::";
-            if (decl->kind == DeclKind::Function && decl->functionDecl) {
-                decl->functionDecl->name = prefix + decl->functionDecl->name;
-                decl->functionDecl->isExtern = true; // Skip LLVM codegen for dependency functions
-            } else if (decl->kind == DeclKind::Struct && decl->structDecl) {
-            } else if (decl->kind == DeclKind::TypeAlias && decl->typeAliasDecl) {
-                decl->typeAliasDecl->name = prefix + decl->typeAliasDecl->name;
-            } else if (decl->kind == DeclKind::Effect && decl->effectDecl) {
-                decl->effectDecl->name = prefix + decl->effectDecl->name;
-            } else if (decl->kind == DeclKind::Component && decl->componentDecl) {
-                decl->componentDecl->name = prefix + decl->componentDecl->name;
-            } else if (decl->kind == DeclKind::Impl && decl->implDecl) {
-                for (auto* method : decl->implDecl->methods) {
-                    method->isExtern = true;
-                }
-            }
-
-            prog->decls.push_back(decl);
-        }
+        MergeImportedPod(prog, podProg, qualifiedName);
     }
 
     return success;

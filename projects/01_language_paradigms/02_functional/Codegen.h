@@ -14,6 +14,7 @@
 // llvm::Value*s to inspect) rather than via a real inference/checking pass.
 
 #include "AST.h"
+#include "Diagnostics.h"
 
 #include <map>
 
@@ -562,7 +563,7 @@ private:
         for (auto* decl : prog.decls) {
             if (decl->kind != DeclKind::Manifest) continue;
             if (found) {
-                std::cerr << "frust: codegen error: more than one 'manifest' declaration in the same program\n";
+                Diag() << "frust: codegen error: more than one 'manifest' declaration in the same program\n";
                 return false;
             }
             found = decl->manifestDecl;
@@ -775,7 +776,7 @@ private:
         int64_t count = 0;
         if (!getArrayTypeInfo(type, elemTypeName, count)) return false;
         if (count <= 0) {
-            std::cerr << "frust: codegen error: Array<" << count << "> - size must be a positive integer\n";
+            Diag() << "frust: codegen error: Array<" << count << "> - size must be a positive integer\n";
             return false;
         }
         namedValueArraySize[name] = count;
@@ -857,7 +858,7 @@ private:
 
         if (member.text == "len") {
             if (!expr.args.empty()) {
-                std::cerr << "frust: codegen error: Vector<T>'s 'len' takes no arguments\n";
+                Diag() << "frust: codegen error: Vector<T>'s 'len' takes no arguments\n";
                 return nullptr;
             }
             return builder.CreateLoad(i64Ty, lenFieldPtr, "veclen");
@@ -865,7 +866,7 @@ private:
 
         if (member.text == "get") {
             if (expr.args.size() != 1) {
-                std::cerr << "frust: codegen error: Vector<T>'s 'get' takes exactly 1 argument\n";
+                Diag() << "frust: codegen error: Vector<T>'s 'get' takes exactly 1 argument\n";
                 return nullptr;
             }
             llvm::Value* idx = compileExpr(expr.args[0]);
@@ -877,7 +878,7 @@ private:
 
         if (member.text == "push") {
             if (expr.args.size() != 1) {
-                std::cerr << "frust: codegen error: Vector<T>'s 'push' takes exactly 1 argument\n";
+                Diag() << "frust: codegen error: Vector<T>'s 'push' takes exactly 1 argument\n";
                 return nullptr;
             }
             llvm::Value* val = compileExpr(expr.args[0]);
@@ -914,7 +915,7 @@ private:
             return newLength;
         }
 
-        std::cerr << "frust: codegen error: Vector<T> has no method '" << member.text << "'\n";
+        Diag() << "frust: codegen error: Vector<T> has no method '" << member.text << "'\n";
         return nullptr;
     }
 
@@ -1141,12 +1142,12 @@ private:
 
         auto templateIt = genericEnumTemplates.find(baseName);
         if (templateIt == genericEnumTemplates.end()) {
-            std::cerr << "frust: codegen error: '" << baseName << "' is not a generic enum\n";
+            Diag() << "frust: codegen error: '" << baseName << "' is not a generic enum\n";
             return false;
         }
         const EnumDecl& templateDecl = *templateIt->second;
         if (templateDecl.genericParams.size() != concreteArgNames.size()) {
-            std::cerr << "frust: codegen error: '" << baseName << "' expects "
+            Diag() << "frust: codegen error: '" << baseName << "' expects "
                        << templateDecl.genericParams.size() << " type argument(s), got "
                        << concreteArgNames.size() << "\n";
             return false;
@@ -1258,7 +1259,7 @@ private:
 
         const GenericMethodTemplate& tmpl = templateIt->second;
         if (tmpl.implGenericParams.size() != concreteArgNames.size()) {
-            std::cerr << "frust: codegen error: '" << baseTypeName << "' expects "
+            Diag() << "frust: codegen error: '" << baseTypeName << "' expects "
                        << tmpl.implGenericParams.size() << " type argument(s), got "
                        << concreteArgNames.size() << "\n";
             return nullptr;
@@ -1375,12 +1376,12 @@ private:
 
         auto templateIt = genericStructTemplates.find(baseName);
         if (templateIt == genericStructTemplates.end()) {
-            std::cerr << "frust: codegen error: '" << baseName << "' is not a generic struct\n";
+            Diag() << "frust: codegen error: '" << baseName << "' is not a generic struct\n";
             return nullptr;
         }
         const StructDecl& templateDecl = *templateIt->second;
         if (templateDecl.genericParams.size() != concreteArgNames.size()) {
-            std::cerr << "frust: codegen error: '" << baseName << "' expects "
+            Diag() << "frust: codegen error: '" << baseName << "' expects "
                        << templateDecl.genericParams.size() << " type argument(s), got "
                        << concreteArgNames.size() << "\n";
             return nullptr;
@@ -1441,12 +1442,12 @@ private:
 
         auto templateIt = genericFunctionTemplates.find(baseName);
         if (templateIt == genericFunctionTemplates.end()) {
-            std::cerr << "frust: codegen error: '" << baseName << "' is not a generic function\n";
+            Diag() << "frust: codegen error: '" << baseName << "' is not a generic function\n";
             return nullptr;
         }
         const FunctionDecl& templateDecl = *templateIt->second;
         if (templateDecl.genericParams.size() != concreteArgNames.size()) {
-            std::cerr << "frust: codegen error: '" << baseName << "' expects "
+            Diag() << "frust: codegen error: '" << baseName << "' expects "
                        << templateDecl.genericParams.size() << " type argument(s), got "
                        << concreteArgNames.size() << "\n";
             return nullptr;
@@ -1781,7 +1782,7 @@ private:
         if (!type) return llvm::Type::getInt64Ty(context); // untyped => default i64
 
         if (depth > 16) {
-            std::cerr << "frust: codegen error: type alias cycle involving '" << type->name << "'\n";
+            Diag() << "frust: codegen error: type alias cycle involving '" << type->name << "'\n";
             return llvm::Type::getInt64Ty(context);
         }
 
@@ -1841,7 +1842,7 @@ private:
         if (n == "Vec" && type->genericArgs.size() == 1 && type->genericArgs[0].isIntConst) {
             int64_t count = type->genericArgs[0].intConst;
             if (count <= 0) {
-                std::cerr << "frust: codegen error: Vec<" << count << "> - size must be a positive integer\n";
+                Diag() << "frust: codegen error: Vec<" << count << "> - size must be a positive integer\n";
                 return llvm::Type::getInt64Ty(context);
             }
             return llvm::FixedVectorType::get(llvm::Type::getFloatTy(context), static_cast<unsigned>(count));
@@ -1907,7 +1908,7 @@ private:
         // buildVtable/compileMethodCall's interface-dispatch branch).
         if (interfaceDecls.count(n)) return fatPointerType();
 
-        std::cerr << "frust: codegen error: unknown type '" << n << "'\n";
+        Diag() << "frust: codegen error: unknown type '" << n << "'\n";
         hadCodegenError = true;
         return llvm::Type::getInt64Ty(context);
     }
@@ -2115,7 +2116,7 @@ private:
     // compile error, not a silent miscompile.
     llvm::Value* buildQuoteTree(const Expr* node) {
         if (!node) {
-            std::cerr << "frust: codegen error: empty quote block\n";
+            Diag() << "frust: codegen error: empty quote block\n";
             return nullptr;
         }
 
@@ -2124,7 +2125,7 @@ private:
         switch (node->kind) {
             case ExprKind::Block: {
                 if (node->statements.empty()) {
-                    std::cerr << "frust: codegen error: quote { } has no template expression\n";
+                    Diag() << "frust: codegen error: quote { } has no template expression\n";
                     return nullptr;
                 }
                 return buildQuoteTree(node->statements.back());
@@ -2175,7 +2176,7 @@ private:
             }
 
             default:
-                std::cerr << "frust: codegen error: unsupported inside quote { ... } for now\n";
+                Diag() << "frust: codegen error: unsupported inside quote { ... } for now\n";
                 return nullptr;
         }
     }
@@ -2237,7 +2238,7 @@ private:
                     if (llvm::Function* fn = module.getFunction(expr->text)) {
                         return fn;
                     }
-                    std::cerr << "frust: codegen error: unknown identifier '" << expr->text << "'\n";
+                    Diag() << "frust: codegen error: unknown identifier '" << expr->text << "'\n";
                     return nullptr;
                 }
                 // Struct-typed bindings are always pointer-represented (see
@@ -2286,7 +2287,7 @@ private:
                     }
                 }
 
-                std::cerr << "frust: codegen error: unknown path '" << fullName << "'\n";
+                Diag() << "frust: codegen error: unknown path '" << fullName << "'\n";
                 return nullptr;
             }
 
@@ -2353,7 +2354,7 @@ private:
                     // allow specify type and size."
                     if (getArrayTypeInfo(expr->typeAnnotation, elemTypeName, count)) {
                         if (count <= 0) {
-                            std::cerr << "frust: codegen error: Array<" << count << "> - size must be a positive integer\n";
+                            Diag() << "frust: codegen error: Array<" << count << "> - size must be a positive integer\n";
                             return nullptr;
                         }
                         llvm::Type* elemTy = resolveTypeByName(elemTypeName);
@@ -2396,7 +2397,7 @@ private:
                             concreteArgNames.push_back(subIt != currentGenericSubstitution.end() ? subIt->second : arg.type->name);
                         }
                         if (!allTypeArgs) {
-                            std::cerr << "frust: codegen error: '" << expr->typeAnnotation->name
+                            Diag() << "frust: codegen error: '" << expr->typeAnnotation->name
                                        << "' type arguments must be types, not integers\n";
                             return nullptr;
                         }
@@ -2462,7 +2463,7 @@ private:
                 if (expr->typeAnnotation && interfaceDecls.count(expr->typeAnnotation->name)) {
                     auto concreteTypeName = inferStructTypeName(expr->lhs);
                     if (!concreteTypeName) {
-                        std::cerr << "frust: codegen error: '" << expr->text << ": " << expr->typeAnnotation->name
+                        Diag() << "frust: codegen error: '" << expr->text << ": " << expr->typeAnnotation->name
                                    << "' needs a struct-valued initializer\n";
                         return nullptr;
                     }
@@ -2700,7 +2701,7 @@ private:
             // used outside a quote { ... } block, which is meaningless
             // (there's no template being spliced into).
             case ExprKind::Unquote:
-                std::cerr << "frust: codegen error: unquote() is only valid inside quote { ... }\n";
+                Diag() << "frust: codegen error: unquote() is only valid inside quote { ... }\n";
                 hadCodegenError = true;
                 return nullptr;
 
@@ -2709,7 +2710,7 @@ private:
                 if (!val) return nullptr;
                 llvm::Type* targetTy = resolveType(expr->typeAnnotation);
                 if (!targetTy) {
-                    std::cerr << "frust: codegen error: invalid cast type\n";
+                    Diag() << "frust: codegen error: invalid cast type\n";
                     hadCodegenError = true;
                     return nullptr;
                 }
@@ -2720,7 +2721,7 @@ private:
             }
 
             default:
-                std::cerr << "frust: codegen does not support this expression kind yet\n";
+                Diag() << "frust: codegen does not support this expression kind yet\n";
                 hadCodegenError = true;
                 return nullptr;
         }
@@ -2737,13 +2738,13 @@ private:
 
         if (expr.binaryOp == BinaryOp::Add || expr.binaryOp == BinaryOp::Sub) {
             if (!lhsVec || !rhsVec) {
-                std::cerr << "frust: codegen error: '+'/'-' needs two Vec<N> operands of the same size (vector-scalar +/- isn't supported)\n";
+                Diag() << "frust: codegen error: '+'/'-' needs two Vec<N> operands of the same size (vector-scalar +/- isn't supported)\n";
                 return nullptr;
             }
             unsigned lw = llvm::cast<llvm::FixedVectorType>(lhs->getType())->getNumElements();
             unsigned rw = llvm::cast<llvm::FixedVectorType>(rhs->getType())->getNumElements();
             if (lw != rw) {
-                std::cerr << "frust: codegen error: Vec<" << lw << "> and Vec<" << rw << "> have different sizes\n";
+                Diag() << "frust: codegen error: Vec<" << lw << "> and Vec<" << rw << "> have different sizes\n";
                 return nullptr;
             }
             return expr.binaryOp == BinaryOp::Add
@@ -2753,11 +2754,11 @@ private:
 
         if (expr.binaryOp == BinaryOp::Mul || expr.binaryOp == BinaryOp::Div) {
             if (lhsVec && rhsVec) {
-                std::cerr << "frust: codegen error: '*'/'/ ' between two vectors is ambiguous - use dot(a, b) for a dot product\n";
+                Diag() << "frust: codegen error: '*'/'/ ' between two vectors is ambiguous - use dot(a, b) for a dot product\n";
                 return nullptr;
             }
             if (expr.binaryOp == BinaryOp::Div && !lhsVec) {
-                std::cerr << "frust: codegen error: scalar / Vec<N> is not supported - only Vec<N> / scalar\n";
+                Diag() << "frust: codegen error: scalar / Vec<N> is not supported - only Vec<N> / scalar\n";
                 return nullptr;
             }
             llvm::Value* vec = lhsVec ? lhs : rhs;
@@ -2770,7 +2771,7 @@ private:
                 : builder.CreateFDiv(vec, splat, "vdivtmp");
         }
 
-        std::cerr << "frust: codegen does not support this operator on Vec<N> yet\n";
+        Diag() << "frust: codegen does not support this operator on Vec<N> yet\n";
         return nullptr;
     }
 
@@ -2853,19 +2854,19 @@ private:
             // on a signed integer by default - Frust's integers are signed
             // throughout (see compileBinary's existing SExt/ICmpS* usage).
             case BinaryOp::BitOr:
-                if (isFloat) { std::cerr << "frust: codegen error: '|' is not defined for float operands\n"; return nullptr; }
+                if (isFloat) { Diag() << "frust: codegen error: '|' is not defined for float operands\n"; return nullptr; }
                 return builder.CreateOr(lhs, rhs, "ortmp");
             case BinaryOp::BitXor:
-                if (isFloat) { std::cerr << "frust: codegen error: '^' is not defined for float operands\n"; return nullptr; }
+                if (isFloat) { Diag() << "frust: codegen error: '^' is not defined for float operands\n"; return nullptr; }
                 return builder.CreateXor(lhs, rhs, "xortmp");
             case BinaryOp::BitAnd:
-                if (isFloat) { std::cerr << "frust: codegen error: '&' is not defined for float operands\n"; return nullptr; }
+                if (isFloat) { Diag() << "frust: codegen error: '&' is not defined for float operands\n"; return nullptr; }
                 return builder.CreateAnd(lhs, rhs, "andtmp");
             case BinaryOp::Shl:
-                if (isFloat) { std::cerr << "frust: codegen error: '<<' is not defined for float operands\n"; return nullptr; }
+                if (isFloat) { Diag() << "frust: codegen error: '<<' is not defined for float operands\n"; return nullptr; }
                 return builder.CreateShl(lhs, rhs, "shltmp");
             case BinaryOp::Shr:
-                if (isFloat) { std::cerr << "frust: codegen error: '>>' is not defined for float operands\n"; return nullptr; }
+                if (isFloat) { Diag() << "frust: codegen error: '>>' is not defined for float operands\n"; return nullptr; }
                 return builder.CreateAShr(lhs, rhs, "shrtmp");
         }
         return nullptr;
@@ -2890,7 +2891,7 @@ private:
             case UnaryOp::Deref: {
                 auto pointeeTypeName = inferRawPointeeTypeName(expr.lhs);
                 if (!pointeeTypeName) {
-                    std::cerr << "frust: codegen error: cannot dereference - only a raw*-typed "
+                    Diag() << "frust: codegen error: cannot dereference - only a raw*-typed "
                                  "named variable or parameter can be dereferenced today\n";
                     return nullptr;
                 }
@@ -2906,18 +2907,18 @@ private:
             const Expr& member = *expr.lhs;
             auto typeName = inferStructTypeName(member.lhs);
             if (!typeName) {
-                std::cerr << "frust: codegen error: cannot assign to a member of an unknown struct type\n";
+                Diag() << "frust: codegen error: cannot assign to a member of an unknown struct type\n";
                 return nullptr;
             }
             auto structIt = structTypes.find(*typeName);
             if (structIt == structTypes.end()) {
-                std::cerr << "frust: codegen error: unknown struct type '" << *typeName << "'\n";
+                Diag() << "frust: codegen error: unknown struct type '" << *typeName << "'\n";
                 return nullptr;
             }
             auto& fieldIndex = structFieldIndex[*typeName];
             auto fieldIt = fieldIndex.find(member.text);
             if (fieldIt == fieldIndex.end()) {
-                std::cerr << "frust: codegen error: struct '" << *typeName << "' has no field '" << member.text << "'\n";
+                Diag() << "frust: codegen error: struct '" << *typeName << "' has no field '" << member.text << "'\n";
                 return nullptr;
             }
 
@@ -3064,17 +3065,17 @@ private:
             // replaced, store that back - the standard LLVM pattern for
             // "mutating" one lane of an SSA vector value.
             if (indexExpr.lhs->kind != ExprKind::Identifier) {
-                std::cerr << "frust: codegen error: indexed assignment only supports a plain variable base (v[i] = x, not expr[i] = x)\n";
+                Diag() << "frust: codegen error: indexed assignment only supports a plain variable base (v[i] = x, not expr[i] = x)\n";
                 return nullptr;
             }
             auto vecIt = namedValues.find(indexExpr.lhs->text);
             if (vecIt == namedValues.end() || !llvm::isa<llvm::AllocaInst>(vecIt->second)) {
-                std::cerr << "frust: codegen error: cannot assign into an element of immutable or unknown variable '" << indexExpr.lhs->text << "'\n";
+                Diag() << "frust: codegen error: cannot assign into an element of immutable or unknown variable '" << indexExpr.lhs->text << "'\n";
                 return nullptr;
             }
             auto* vecAlloca = llvm::cast<llvm::AllocaInst>(vecIt->second);
             if (!vecAlloca->getAllocatedType()->isVectorTy()) {
-                std::cerr << "frust: codegen error: indexed assignment is only supported for Vec<N> variables\n";
+                Diag() << "frust: codegen error: indexed assignment is only supported for Vec<N> variables\n";
                 return nullptr;
             }
 
@@ -3100,7 +3101,7 @@ private:
             const Expr& derefTarget = *expr.lhs->lhs;
             auto pointeeTypeName = inferRawPointeeTypeName(&derefTarget);
             if (!pointeeTypeName) {
-                std::cerr << "frust: codegen error: cannot assign through a dereference - only a "
+                Diag() << "frust: codegen error: cannot assign through a dereference - only a "
                              "raw*-typed named variable or parameter can be dereferenced today\n";
                 return nullptr;
             }
@@ -3116,12 +3117,12 @@ private:
         }
 
         if (expr.lhs->kind != ExprKind::Identifier) {
-            std::cerr << "frust: codegen error: assignment to non-identifier\n";
+            Diag() << "frust: codegen error: assignment to non-identifier\n";
             return nullptr;
         }
         auto it = namedValues.find(expr.lhs->text);
         if (it == namedValues.end() || !llvm::isa<llvm::AllocaInst>(it->second)) {
-            std::cerr << "frust: codegen error: cannot assign to immutable or unknown variable '" << expr.lhs->text << "'\n";
+            Diag() << "frust: codegen error: cannot assign to immutable or unknown variable '" << expr.lhs->text << "'\n";
             return nullptr;
         }
         auto* val = compileExpr(expr.rhs);
@@ -3136,7 +3137,7 @@ private:
     // literals right below this.
     llvm::Value* compileArrayLiteral(const Expr& expr) {
         if (expr.args.empty()) {
-            std::cerr << "frust: codegen error: array literal must have at least one element\n";
+            Diag() << "frust: codegen error: array literal must have at least one element\n";
             return nullptr;
         }
 
@@ -3243,7 +3244,7 @@ private:
         if (!base) return nullptr;
 
         if (!base->getType()->isVectorTy()) {
-            std::cerr << "frust: codegen does not support indexing this expression yet\n";
+            Diag() << "frust: codegen does not support indexing this expression yet\n";
             return nullptr;
         }
 
@@ -3251,7 +3252,7 @@ private:
         if (expr.rhs->kind == ExprKind::IntLiteral) {
             int64_t idx = expr.rhs->intValue;
             if (idx < 0 || static_cast<uint64_t>(idx) >= count) {
-                std::cerr << "frust: codegen error: index " << idx << " out of range for Vec<" << count << ">\n";
+                Diag() << "frust: codegen error: index " << idx << " out of range for Vec<" << count << ">\n";
                 return nullptr;
             }
         }
@@ -3270,7 +3271,7 @@ private:
         for (auto& init : expr.fields) {
             auto fieldIt = fieldIndex.find(init.name);
             if (fieldIt == fieldIndex.end()) {
-                std::cerr << "frust: codegen error: struct '" << typeName << "' has no field '" << init.name << "'\n";
+                Diag() << "frust: codegen error: struct '" << typeName << "' has no field '" << init.name << "'\n";
                 return false;
             }
             auto* val = compileExpr(init.value);
@@ -3293,13 +3294,13 @@ private:
     // arguments itself - LANGUAGE_GAPS.md #4.
     llvm::Value* compileStructLiteral(const Expr& expr, const std::string& typeNameOverride = "") {
         if (typeNameOverride.empty() && expr.pathSegments.empty()) {
-            std::cerr << "frust: codegen error: struct literal missing a type name\n";
+            Diag() << "frust: codegen error: struct literal missing a type name\n";
             return nullptr;
         }
         std::string typeName = typeNameOverride.empty() ? expr.pathSegments.front() : typeNameOverride;
         auto typeIt = structTypes.find(typeName);
         if (typeIt == structTypes.end()) {
-            std::cerr << "frust: codegen error: unknown struct type '" << typeName << "'\n";
+            Diag() << "frust: codegen error: unknown struct type '" << typeName << "'\n";
             return nullptr;
         }
         llvm::StructType* structTy = typeIt->second;
@@ -3373,17 +3374,17 @@ private:
         bool isShared = (smartPtrExpr.smartPtrKind == SmartPtrKind::Shared);
         const Expr* lit = smartPtrExpr.lhs;
         if (!lit || lit->kind != ExprKind::StructLiteral) {
-            std::cerr << "frust: codegen error: 'own'/'raw'/'shared' currently only wraps a struct literal, e.g. `own Foo { ... }`\n";
+            Diag() << "frust: codegen error: 'own'/'raw'/'shared' currently only wraps a struct literal, e.g. `own Foo { ... }`\n";
             return nullptr;
         }
         if (typeNameOverride.empty() && lit->pathSegments.empty()) {
-            std::cerr << "frust: codegen error: struct literal missing a type name\n";
+            Diag() << "frust: codegen error: struct literal missing a type name\n";
             return nullptr;
         }
         std::string typeName = typeNameOverride.empty() ? lit->pathSegments.front() : typeNameOverride;
         auto typeIt = structTypes.find(typeName);
         if (typeIt == structTypes.end()) {
-            std::cerr << "frust: codegen error: unknown struct type '" << typeName << "'\n";
+            Diag() << "frust: codegen error: unknown struct type '" << typeName << "'\n";
             return nullptr;
         }
         llvm::StructType* structTy = typeIt->second;
@@ -3429,11 +3430,11 @@ private:
     llvm::Value* compileWeakNew(const Expr& smartPtrExpr) {
         const Expr* target = smartPtrExpr.lhs;
         if (!target || target->kind != ExprKind::Identifier) {
-            std::cerr << "frust: codegen error: 'weak' currently only wraps a plain shared-bound variable, e.g. `weak existing_var`\n";
+            Diag() << "frust: codegen error: 'weak' currently only wraps a plain shared-bound variable, e.g. `weak existing_var`\n";
             return nullptr;
         }
         if (!namedValueSharedType.count(target->text)) {
-            std::cerr << "frust: codegen error: 'weak " << target->text << "' - '" << target->text << "' is not a shared-bound variable\n";
+            Diag() << "frust: codegen error: 'weak " << target->text << "' - '" << target->text << "' is not a shared-bound variable\n";
             return nullptr;
         }
         llvm::Value* payloadPtr = compileExpr(target);
@@ -3472,15 +3473,15 @@ private:
     // caller's own in-progress locals).
     llvm::Value* compileWeakMethodCall(const Expr& expr, const Expr& member, std::string targetTypeName) {
         if (member.text != "upgrade") {
-            std::cerr << "frust: codegen error: 'weak' has no method '" << member.text << "' - only .upgrade() is supported\n";
+            Diag() << "frust: codegen error: 'weak' has no method '" << member.text << "' - only .upgrade() is supported\n";
             return nullptr;
         }
         if (!expr.args.empty()) {
-            std::cerr << "frust: codegen error: 'upgrade' takes no arguments\n";
+            Diag() << "frust: codegen error: 'upgrade' takes no arguments\n";
             return nullptr;
         }
         if (!genericEnumTemplates.count("Option")) {
-            std::cerr << "frust: codegen error: '.upgrade()' needs 'enum Option<T> { Some(T), None }' declared in this program\n";
+            Diag() << "frust: codegen error: '.upgrade()' needs 'enum Option<T> { Some(T), None }' declared in this program\n";
             return nullptr;
         }
 
@@ -3533,7 +3534,7 @@ private:
         blockTerminated = savedBlockTerminated;
 
         if (!someFn || !noneFn) {
-            std::cerr << "frust: codegen error: could not resolve Option::Some/Option::None for '" << targetTypeName << "'\n";
+            Diag() << "frust: codegen error: could not resolve Option::Some/Option::None for '" << targetTypeName << "'\n";
             return nullptr;
         }
 
@@ -3575,18 +3576,18 @@ private:
     llvm::Value* compileEnumVariantNew(const Expr& expr) {
         auto enumNameOpt = resolveEnumTypeName(expr.typeAnnotation);
         if (!enumNameOpt) {
-            std::cerr << "frust: codegen error: could not resolve enum type constructing '" << expr.text << "'\n";
+            Diag() << "frust: codegen error: could not resolve enum type constructing '" << expr.text << "'\n";
             return nullptr;
         }
         const std::string& enumName = *enumNameOpt;
         auto variantMapIt = enumVariantIndex.find(enumName);
         if (variantMapIt == enumVariantIndex.end()) {
-            std::cerr << "frust: codegen error: unknown enum type '" << enumName << "'\n";
+            Diag() << "frust: codegen error: unknown enum type '" << enumName << "'\n";
             return nullptr;
         }
         auto variantIt = variantMapIt->second.find(expr.text);
         if (variantIt == variantMapIt->second.end()) {
-            std::cerr << "frust: codegen error: '" << enumName << "' has no variant '" << expr.text << "'\n";
+            Diag() << "frust: codegen error: '" << enumName << "' has no variant '" << expr.text << "'\n";
             return nullptr;
         }
         int tag = variantIt->second;
@@ -3620,18 +3621,18 @@ private:
             // Covers every case out of scope for v1 too: nested-struct
             // fields, struct-returning calls, etc. - falls through to the
             // same "unsupported" signal as before this feature existed.
-            std::cerr << "frust: codegen does not support this member-access expression yet\n";
+            Diag() << "frust: codegen does not support this member-access expression yet\n";
             return nullptr;
         }
         auto structIt = structTypes.find(*typeName);
         if (structIt == structTypes.end()) {
-            std::cerr << "frust: codegen error: unknown struct type '" << *typeName << "'\n";
+            Diag() << "frust: codegen error: unknown struct type '" << *typeName << "'\n";
             return nullptr;
         }
         auto& fieldIndex = structFieldIndex[*typeName];
         auto fieldIt = fieldIndex.find(expr.text);
         if (fieldIt == fieldIndex.end()) {
-            std::cerr << "frust: codegen error: struct '" << *typeName << "' has no field '" << expr.text << "'\n";
+            Diag() << "frust: codegen error: struct '" << *typeName << "' has no field '" << expr.text << "'\n";
             return nullptr;
         }
 
@@ -3691,7 +3692,7 @@ private:
         auto typeName = inferStructTypeName(member.lhs);
         if (!typeName) typeName = inferEnumTypeName(member.lhs);
         if (!typeName) {
-            std::cerr << "frust: codegen error: cannot call a method on an expression of unknown struct type\n";
+            Diag() << "frust: codegen error: cannot call a method on an expression of unknown struct type\n";
             return nullptr;
         }
         std::string mangled = mangleMethodName(*typeName, member.text);
@@ -3708,7 +3709,7 @@ private:
             }
         }
         if (!callee || !methods.count(mangled)) {
-            std::cerr << "frust: codegen error: no such method '" << member.text << "' on struct '" << *typeName << "'\n";
+            Diag() << "frust: codegen error: no such method '" << member.text << "' on struct '" << *typeName << "'\n";
             return nullptr;
         }
 
@@ -3717,7 +3718,7 @@ private:
 
         std::size_t declaredArgCount = callee->arg_size() - 1; // minus the synthetic self param
         if (declaredArgCount != expr.args.size()) {
-            std::cerr << "frust: codegen error: '" << member.text << "' expects " << declaredArgCount
+            Diag() << "frust: codegen error: '" << member.text << "' expects " << declaredArgCount
                        << " argument(s), got " << expr.args.size() << "\n";
             return nullptr;
         }
@@ -3779,7 +3780,7 @@ private:
     llvm::Value* compileInterfaceMethodCall(const Expr& expr, const Expr& member, const std::string& interfaceName) {
         auto ifaceIt = interfaceDecls.find(interfaceName);
         if (ifaceIt == interfaceDecls.end()) {
-            std::cerr << "frust: codegen internal error: unknown interface '" << interfaceName << "'\n";
+            Diag() << "frust: codegen internal error: unknown interface '" << interfaceName << "'\n";
             return nullptr;
         }
         InterfaceDecl* iface = ifaceIt->second;
@@ -3790,11 +3791,11 @@ private:
             if (iface->methods[i].name == member.text) { methodIndex = static_cast<int>(i); sig = &iface->methods[i]; break; }
         }
         if (!sig) {
-            std::cerr << "frust: codegen error: interface '" << interfaceName << "' has no method '" << member.text << "'\n";
+            Diag() << "frust: codegen error: interface '" << interfaceName << "' has no method '" << member.text << "'\n";
             return nullptr;
         }
         if (sig->params.size() != expr.args.size()) {
-            std::cerr << "frust: codegen error: '" << member.text << "' expects " << sig->params.size()
+            Diag() << "frust: codegen error: '" << member.text << "' expects " << sig->params.size()
                        << " argument(s), got " << expr.args.size() << "\n";
             return nullptr;
         }
@@ -3849,44 +3850,44 @@ private:
     llvm::Value* compileVecBuiltinCall(const std::string& name, const Expr& expr) {
         if (name == "dot") {
             if (expr.args.size() != 2) {
-                std::cerr << "frust: codegen error: dot() expects exactly 2 Vec<N> arguments\n";
+                Diag() << "frust: codegen error: dot() expects exactly 2 Vec<N> arguments\n";
                 return nullptr;
             }
             auto* a = compileExpr(expr.args[0]);
             auto* b = compileExpr(expr.args[1]);
             if (!a || !b) return nullptr;
             if (!a->getType()->isVectorTy() || !b->getType()->isVectorTy()) {
-                std::cerr << "frust: codegen error: dot() expects two Vec<N> arguments\n";
+                Diag() << "frust: codegen error: dot() expects two Vec<N> arguments\n";
                 return nullptr;
             }
             unsigned na = llvm::cast<llvm::FixedVectorType>(a->getType())->getNumElements();
             unsigned nb = llvm::cast<llvm::FixedVectorType>(b->getType())->getNumElements();
             if (na != nb) {
-                std::cerr << "frust: codegen error: dot() between Vec<" << na << "> and Vec<" << nb << "> - sizes must match\n";
+                Diag() << "frust: codegen error: dot() between Vec<" << na << "> and Vec<" << nb << "> - sizes must match\n";
                 return nullptr;
             }
             return vecDotProduct(a, b);
         }
         if (name == "length") {
             if (expr.args.size() != 1) {
-                std::cerr << "frust: codegen error: length() expects exactly 1 Vec<N> argument\n";
+                Diag() << "frust: codegen error: length() expects exactly 1 Vec<N> argument\n";
                 return nullptr;
             }
             auto* v = compileExpr(expr.args[0]);
             if (!v || !v->getType()->isVectorTy()) {
-                std::cerr << "frust: codegen error: length() expects a Vec<N> argument\n";
+                Diag() << "frust: codegen error: length() expects a Vec<N> argument\n";
                 return nullptr;
             }
             return vecLength(v);
         }
         // name == "normalize"
         if (expr.args.size() != 1) {
-            std::cerr << "frust: codegen error: normalize() expects exactly 1 Vec<N> argument\n";
+            Diag() << "frust: codegen error: normalize() expects exactly 1 Vec<N> argument\n";
             return nullptr;
         }
         auto* v = compileExpr(expr.args[0]);
         if (!v || !v->getType()->isVectorTy()) {
-            std::cerr << "frust: codegen error: normalize() expects a Vec<N> argument\n";
+            Diag() << "frust: codegen error: normalize() expects a Vec<N> argument\n";
             return nullptr;
         }
         llvm::Value* len = vecLength(v);
@@ -3944,7 +3945,7 @@ private:
             std::vector<std::string> concreteArgNames;
             for (auto& arg : expr.lhs->explicitGenericArgs) {
                 if (arg.isIntConst || !arg.type) {
-                    std::cerr << "frust: codegen error: '" << targetName << "'s explicit type arguments must be types, not integers\n";
+                    Diag() << "frust: codegen error: '" << targetName << "'s explicit type arguments must be types, not integers\n";
                     return nullptr;
                 }
                 concreteArgNames.push_back(arg.type->name);
@@ -3952,13 +3953,13 @@ private:
             std::string mangled = monomorphizedStructName(targetName, concreteArgNames);
             llvm::Function* monoCallee = module.getFunction(mangled);
             if (!monoCallee) {
-                std::cerr << "frust: codegen error: '" << mangled << "' was never monomorphized - a generic "
+                Diag() << "frust: codegen error: '" << mangled << "' was never monomorphized - a generic "
                            << "function calling another explicit-generic-arg function from its own body "
                            << "isn't supported yet\n";
                 return nullptr;
             }
             if (monoCallee->arg_size() != expr.args.size()) {
-                std::cerr << "frust: codegen error: '" << mangled << "' expects " << monoCallee->arg_size()
+                Diag() << "frust: codegen error: '" << mangled << "' expects " << monoCallee->arg_size()
                            << " argument(s), got " << expr.args.size() << "\n";
                 return nullptr;
             }
@@ -3984,13 +3985,13 @@ private:
             if (namedValues.count(targetName)) {
                 return compileIndirectCall(expr);
             }
-            std::cerr << "frust: codegen error: unknown function '" << targetName << "'\n";
+            Diag() << "frust: codegen error: unknown function '" << targetName << "'\n";
             hadCodegenError = true;
-            std::cerr << "DEBUG: blockTerminated is " << blockTerminated << "\n";
+            Diag() << "DEBUG: blockTerminated is " << blockTerminated << "\n";
             return nullptr;
         }
         if (callee->arg_size() != expr.args.size()) {
-            std::cerr << "frust: codegen error: '" << expr.lhs->text << "' expects " << callee->arg_size()
+            Diag() << "frust: codegen error: '" << expr.lhs->text << "' expects " << callee->arg_size()
                        << " argument(s), got " << expr.args.size() << "\n";
             return nullptr;
         }
@@ -4051,7 +4052,7 @@ private:
         llvm::Value* fat = compileExpr(expr.lhs);
         if (!fat) return nullptr;
         if (expr.args.size() != sig.paramTypes.size()) {
-            std::cerr << "frust: codegen error: closure '" << name << "' expects " << sig.paramTypes.size()
+            Diag() << "frust: codegen error: closure '" << name << "' expects " << sig.paramTypes.size()
                        << " argument(s), got " << expr.args.size() << "\n";
             return nullptr;
         }
@@ -4099,7 +4100,7 @@ private:
     // the rest are the real arguments passed through to it.
     llvm::Value* compileTypedIndirectCall(const std::string& builtinName, const Expr& expr) {
         if (expr.args.empty()) {
-            std::cerr << "frust: codegen error: " << builtinName << "() needs a function value as its first argument\n";
+            Diag() << "frust: codegen error: " << builtinName << "() needs a function value as its first argument\n";
             return nullptr;
         }
         llvm::Value* calleeVal = compileExpr(expr.args[0]);
@@ -4268,27 +4269,27 @@ private:
                 // a runtime string's), which is worse than an honest
                 // compile error. Real content comparison needs a runtime
                 // strcmp-style helper this pass doesn't add.
-                std::cerr << "frust: codegen error: string literal patterns in `match` are not supported yet\n";
+                Diag() << "frust: codegen error: string literal patterns in `match` are not supported yet\n";
                 return false;
             }
             case PatternKind::Struct: {
-                std::cerr << "frust: codegen error: struct patterns in `match` are not supported yet\n";
+                Diag() << "frust: codegen error: struct patterns in `match` are not supported yet\n";
                 return false;
             }
             case PatternKind::Variant: {
                 if (!enumTypeName) {
-                    std::cerr << "frust: codegen error: pattern '" << (pattern->pathSegments.empty() ? "" : pattern->pathSegments.back())
+                    Diag() << "frust: codegen error: pattern '" << (pattern->pathSegments.empty() ? "" : pattern->pathSegments.back())
                                << "' expects an enum value, but this scrutinee's enum type is unknown\n";
                     return false;
                 }
                 if (pattern->pathSegments.empty()) {
-                    std::cerr << "frust: codegen internal error: variant pattern with no path\n";
+                    Diag() << "frust: codegen internal error: variant pattern with no path\n";
                     return false;
                 }
                 const std::string& variantName = pattern->pathSegments.back();
                 auto variantMapIt = enumVariantIndex.find(*enumTypeName);
                 if (variantMapIt == enumVariantIndex.end() || !variantMapIt->second.count(variantName)) {
-                    std::cerr << "frust: codegen error: '" << *enumTypeName << "' has no variant '" << variantName << "'\n";
+                    Diag() << "frust: codegen error: '" << *enumTypeName << "' has no variant '" << variantName << "'\n";
                     return false;
                 }
                 int tag = variantMapIt->second.at(variantName);
@@ -4302,7 +4303,7 @@ private:
 
                 llvm::StructType* payloadTy = enumVariantPayloadType[*enumTypeName][variantName];
                 if (pattern->subPatterns.size() != payloadTy->getNumElements()) {
-                    std::cerr << "frust: codegen error: '" << *enumTypeName << "::" << variantName << "' takes "
+                    Diag() << "frust: codegen error: '" << *enumTypeName << "::" << variantName << "' takes "
                                << payloadTy->getNumElements() << " argument(s), pattern has "
                                << pattern->subPatterns.size() << "\n";
                     return false;
@@ -4362,14 +4363,14 @@ private:
         }
         if (!hasCatchAll) {
             if (!enumNameOpt) {
-                std::cerr << "frust: codegen error: match is not exhaustive - add a `_` arm\n";
+                Diag() << "frust: codegen error: match is not exhaustive - add a `_` arm\n";
                 return nullptr;
             }
             auto variantMapIt = enumVariantIndex.find(*enumNameOpt);
             if (variantMapIt != enumVariantIndex.end()) {
                 for (auto& kv : variantMapIt->second) {
                     if (!coveredVariants.count(kv.first)) {
-                        std::cerr << "frust: codegen error: match is not exhaustive - missing variant '"
+                        Diag() << "frust: codegen error: match is not exhaustive - missing variant '"
                                    << kv.first << "' of '" << *enumNameOpt << "' (add a `_` arm or cover every variant)\n";
                         return nullptr;
                     }
@@ -4639,7 +4640,7 @@ private:
     llvm::Value* compileBreak(const Expr& expr) {
         (void)expr;
         if (loopStack.empty()) {
-            std::cerr << "frust: codegen error: 'break' used outside of a loop\n";
+            Diag() << "frust: codegen error: 'break' used outside of a loop\n";
             return nullptr;
         }
         dropSharedScopesSinceLoopEntry();
@@ -4652,7 +4653,7 @@ private:
     llvm::Value* compileContinue(const Expr& expr) {
         (void)expr;
         if (loopStack.empty()) {
-            std::cerr << "frust: codegen error: 'continue' used outside of a loop\n";
+            Diag() << "frust: codegen error: 'continue' used outside of a loop\n";
             return nullptr;
         }
         dropSharedScopesSinceLoopEntry();
@@ -4869,7 +4870,7 @@ private:
 
     llvm::Value* compilePerform(const Expr& expr) {
         if (!currentCoroHandle) {
-            std::cerr << "frust: perform used outside of a coroutine function\n";
+            Diag() << "frust: perform used outside of a coroutine function\n";
             return nullptr;
         }
 
@@ -4882,12 +4883,12 @@ private:
         // dropped, no error.
         auto declIt = effectDecls.find(expr.text);
         if (declIt == effectDecls.end()) {
-            std::cerr << "frust: codegen error: unknown effect '" << expr.text << "' - no matching 'effect' declaration\n";
+            Diag() << "frust: codegen error: unknown effect '" << expr.text << "' - no matching 'effect' declaration\n";
             return nullptr;
         }
         EffectDecl* decl = declIt->second;
         if (expr.args.size() != decl->params.size()) {
-            std::cerr << "frust: codegen error: effect '" << expr.text << "' expects " << decl->params.size()
+            Diag() << "frust: codegen error: effect '" << expr.text << "' expects " << decl->params.size()
                        << " argument(s), got " << expr.args.size() << "\n";
             return nullptr;
         }
@@ -5041,7 +5042,7 @@ private:
 
     llvm::Value* compileResume(const Expr& expr) {
         if (!currentActiveHandleForResume) {
-            std::cerr << "frust: resume used outside of a handler\n";
+            Diag() << "frust: resume used outside of a handler\n";
             return nullptr;
         }
         
@@ -5077,7 +5078,7 @@ private:
     bool buildVtable(const ImplDecl& impl) {
         auto ifaceIt = interfaceDecls.find(impl.interfaceName);
         if (ifaceIt == interfaceDecls.end()) {
-            std::cerr << "frust: codegen error: '" << impl.typeName << "' implements unknown interface '" << impl.interfaceName << "'\n";
+            Diag() << "frust: codegen error: '" << impl.typeName << "' implements unknown interface '" << impl.interfaceName << "'\n";
             return false;
         }
         InterfaceDecl* iface = ifaceIt->second;
@@ -5088,7 +5089,7 @@ private:
             std::string mangled = mangleMethodName(impl.typeName, sig.name);
             llvm::Function* fn = module.getFunction(mangled);
             if (!fn) {
-                std::cerr << "frust: codegen error: '" << impl.typeName << "' does not implement '"
+                Diag() << "frust: codegen error: '" << impl.typeName << "' does not implement '"
                            << impl.interfaceName << "::" << sig.name << "' (required by the interface)\n";
                 return false;
             }
@@ -5112,7 +5113,7 @@ private:
     llvm::Value* wrapAsInterface(llvm::Value* concretePtr, const std::string& interfaceName, const std::string& concreteTypeName) {
         auto it = vtables.find(mangleMethodName(interfaceName, concreteTypeName));
         if (it == vtables.end()) {
-            std::cerr << "frust: codegen error: '" << concreteTypeName << "' does not implement interface '" << interfaceName << "'\n";
+            Diag() << "frust: codegen error: '" << concreteTypeName << "' does not implement interface '" << interfaceName << "'\n";
             return nullptr;
         }
         llvm::Value* fat = llvm::UndefValue::get(fatPointerType());
@@ -5208,7 +5209,7 @@ private:
     // generated function.
     llvm::Value* compileClosureLiteral(const Expr& expr) {
         if (hasPerform(expr.lhs)) {
-            std::cerr << "frust: codegen error: 'perform' inside a closure body isn't supported yet\n";
+            Diag() << "frust: codegen error: 'perform' inside a closure body isn't supported yet\n";
             return nullptr;
         }
 
@@ -5347,7 +5348,7 @@ private:
             } else if (result) {
                 builder.CreateRet(coerceToType(result, retType));
             } else {
-                std::cerr << "frust: codegen error: closure body has no return value\n";
+                Diag() << "frust: codegen error: closure body has no return value\n";
                 restoreState();
                 trampolineFn->eraseFromParent();
                 return nullptr;
@@ -5361,7 +5362,7 @@ private:
         restoreState();
 
         if (verifyFailed) {
-            std::cerr << "frust: LLVM verification failed for closure: " << os.str() << "\n";
+            Diag() << "frust: LLVM verification failed for closure: " << os.str() << "\n";
             trampolineFn->eraseFromParent();
             return nullptr;
         }
@@ -5390,7 +5391,7 @@ private:
             if (argVal->getType() == fatPointerType()) return argVal; // already a fat pointer - trust it as-is
             auto concreteTypeName = inferStructTypeName(argExpr);
             if (!concreteTypeName) {
-                std::cerr << "frust: codegen error: argument for interface-typed parameter '" << *ifaceName
+                Diag() << "frust: codegen error: argument for interface-typed parameter '" << *ifaceName
                            << "' needs a struct-valued expression\n";
                 return nullptr;
             }
@@ -5434,7 +5435,7 @@ public:
         std::string llvmName = fn.isMethod ? mangleMethodName(fn.selfTypeName, fn.name) : fn.name;
         llvm::Function* llvmFn = module.getFunction(llvmName);
         if (!llvmFn) {
-            std::cerr << "frust: codegen internal error: '" << llvmName << "' has no declared signature\n";
+            Diag() << "frust: codegen internal error: '" << llvmName << "' has no declared signature\n";
             return nullptr;
         }
 
@@ -5578,7 +5579,7 @@ public:
                 } else if (result) {
                     builder.CreateRet(coerceToType(result, declaredRetType));
                 } else {
-                    std::cerr << "frust: codegen error: function '" << fn.name << "' has no return value\n";
+                    Diag() << "frust: codegen error: function '" << fn.name << "' has no return value\n";
                     llvmFn->eraseFromParent();
                     return nullptr;
                 }
@@ -5621,7 +5622,7 @@ public:
         std::string errMsg;
         llvm::raw_string_ostream os(errMsg);
         if (llvm::verifyFunction(*llvmFn, &os)) {
-            std::cerr << "frust: LLVM verification failed for '" << fn.name << "': " << os.str() << "\n";
+            Diag() << "frust: LLVM verification failed for '" << fn.name << "': " << os.str() << "\n";
             llvmFn->eraseFromParent();
             return nullptr;
         }
@@ -5669,7 +5670,7 @@ public:
         currentFnRetType = prevFnRetType;
         if (!blockTerminated) {
             if (!result) {
-                std::cerr << "frust: codegen error: expression produced no value\n";
+                Diag() << "frust: codegen error: expression produced no value\n";
                 llvmFn->eraseFromParent();
                 return nullptr;
             }
@@ -5679,7 +5680,7 @@ public:
         std::string errMsg;
         llvm::raw_string_ostream os(errMsg);
         if (llvm::verifyFunction(*llvmFn, &os)) {
-            std::cerr << "frust: LLVM verification failed: " << os.str() << "\n";
+            Diag() << "frust: LLVM verification failed: " << os.str() << "\n";
             llvmFn->eraseFromParent();
             return nullptr;
         }
