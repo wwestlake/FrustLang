@@ -182,6 +182,10 @@ add_library(frust_lang STATIC
     ReplSession.cpp
     ModuleLoader.h
     ModuleLoader.cpp
+    # The disk half of module loading. Its own object file inside frust_lang: a host that never
+    # references it (an application using a HostEnvironment) does not get it linked in.
+    DiskLoader.h
+    DiskLoader.cpp
     "${FRUST_PARSER_CPP}"
     "${FRUST_LEXER_CPP}"
 )

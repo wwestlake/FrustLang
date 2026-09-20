@@ -62,8 +62,10 @@ add_library(frate_lib STATIC
     src/PodMetadataJson.h
     src/PodMetadataJson.cpp
     src/FrateConfig.cpp
+    src/FrateConfigFiles.cpp
     src/FrateCache.cpp
     src/FrateRegistryClient.cpp
+    src/FrateRegistryClientFiles.cpp
     src/FrateResolver.cpp
     src/FratePodBuilder.cpp
     src/PodArchive.cpp

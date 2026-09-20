@@ -86,12 +86,6 @@ struct CompileResult {
 // own compiler state).
 CompileResult Compile(const CompileRequest& request);
 
-// Ready-made providers that read the real disk, for the command-line compiler
-// and any tool that works on real folders. Compile() itself never uses them;
-// a host that must not touch the disk simply does not pass them.
-SourceProvider DiskSourceProvider();  // a name is a path; returns its contents
-PodProvider FratePodProvider();       // frate.json in the working directory and the Frate cache
-
 // Human-readable form of a diagnostic: "file:line:col: error: message".
 std::string FormatDiagnostic(const Diagnostic& diagnostic);
 

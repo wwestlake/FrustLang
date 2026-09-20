@@ -33,6 +33,7 @@
 #endif
 
 #include "Codegen.h"
+#include "DiskLoader.h"
 #include "CompilerApi.h"
 #include "Lexer.h"
 #include "ModuleLoader.h"
@@ -574,6 +575,9 @@ int main(int argc, char** argv) {
     llvm::InitializeNativeTarget();
     llvm::InitializeNativeTargetAsmPrinter();
     llvm::InitializeNativeTargetAsmParser();
+
+    // The command line works on real folders: give the loader the disk.
+    frust::InstallDiskResolvers();
 
     // --dump-ir (anywhere on the command line) writes the LLVM IR dumps that
     // used to be written on every run.

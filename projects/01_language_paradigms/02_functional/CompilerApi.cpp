@@ -23,7 +23,6 @@
 #include <llvm/Target/TargetOptions.h>
 #include <llvm/TargetParser/Host.h>
 
-#include <fstream>
 #include <mutex>
 #include <optional>
 #include <regex>
@@ -133,17 +132,6 @@ std::string FormatDiagnostic(const Diagnostic& d) {
     if (!d.file.empty() || d.line > 0) out << " ";
     out << (d.severity == Diagnostic::Severity::Error ? "error: " : "warning: ") << d.message;
     return out.str();
-}
-
-SourceProvider DiskSourceProvider() {
-    return [](const std::string& path, std::string& text) {
-        std::ifstream in(path, std::ios::binary);
-        if (!in) return false;
-        std::ostringstream all;
-        all << in.rdbuf();
-        text = all.str();
-        return true;
-    };
 }
 
 Program* BuildProgram(const CompileRequest& request, AstArena& arena, CompileResult& result) {
