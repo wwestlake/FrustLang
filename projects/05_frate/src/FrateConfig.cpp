@@ -17,6 +17,20 @@ bool FrateConfig::load(const juce::File& frateJsonFile) {
     return true;
 }
 
+bool FrateConfig::loadFromString(const std::string& frateJsonText) {
+    auto jsonVar = juce::JSON::parse(juce::String(frateJsonText));
+    if (!jsonVar.isObject()) {
+        return false;
+    }
+
+    metadata = PodMetadataJson::fromJson(jsonVar);
+    return true;
+}
+
+std::string FrateConfig::toJsonString() const {
+    return juce::JSON::toString(PodMetadataJson::toJson(metadata)).toStdString();
+}
+
 bool FrateConfig::save(const juce::File& frateJsonFile) const {
     auto jsonVar = PodMetadataJson::toJson(metadata);
     juce::String jsonStr = juce::JSON::toString(jsonVar);

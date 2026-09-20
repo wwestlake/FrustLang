@@ -169,4 +169,19 @@ bool FrateRegistryClient::downloadFromS3(const juce::String& presignedUrl, const
     return false;
 }
 
+bool FrateRegistryClient::downloadToMemory(const juce::String& presignedUrl, juce::MemoryBlock& bytes) {
+    juce::URL url(presignedUrl);
+
+    int statusCode = 0;
+    std::unique_ptr<juce::InputStream> stream(url.createInputStream(
+        juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
+            .withStatusCode(&statusCode)
+    ));
+
+    if (stream == nullptr || statusCode != 200) return false;
+    bytes.reset();
+    stream->readIntoMemoryBlock(bytes);
+    return bytes.getSize() > 0;
+}
+
 } // namespace frate

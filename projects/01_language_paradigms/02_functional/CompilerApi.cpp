@@ -180,17 +180,28 @@ CompileResult Compile(const CompileRequest& request) {
         if (!ResolveSelfUsesWith(program, arena, siblings, moduleErrors))
             parseFailed = true;
 
-        // `import pod, "version";` - pods, from the host's provider.
+        // `import pod, "version";` and the bare `use pod;` - pods, from the
+        // host's provider. An import must resolve. A bare `use name;` is only a
+        // pod reference if the host knows a pod of that name (a declared
+        // dependency); otherwise it is left alone, as before.
         // Snapshot first: merging a pod appends to program->decls.
-        std::vector<Decl*> importDecls;
-        for (auto* decl : program->decls)
-            if (decl->kind == DeclKind::Use && decl->useDecl->isImport && !decl->useDecl->pathSegments.empty())
-                importDecls.push_back(decl);
-        for (auto* decl : importDecls) {
+        struct PodReference { Decl* decl; bool mustResolve; };
+        std::vector<PodReference> importDecls;
+        for (auto* decl : program->decls) {
+            if (decl->kind != DeclKind::Use || decl->useDecl->pathSegments.empty()) continue;
+            if (decl->useDecl->isImport)
+                importDecls.push_back({ decl, true });
+            else if (!decl->useDecl->isSelfUse && decl->useDecl->pathSegments.size() == 1
+                     && decl->useDecl->pathSegments.front() != "self")
+                importDecls.push_back({ decl, false });
+        }
+        for (const auto& reference : importDecls) {
+            auto* decl = reference.decl;
             const std::string podName = decl->useDecl->pathSegments.front();
-            const std::string version = decl->useDecl->importVersion;
+            const std::string version = decl->useDecl->isImport ? decl->useDecl->importVersion : std::string();
             PodSource pod;
             if (!request.pods || !request.pods(podName, version, pod)) {
+                if (!reference.mustResolve) continue;
                 moduleErrors.push_back("ModuleLoader: pod '" + podName + "' version " + version + " is not available to this compile");
                 parseFailed = true;
                 continue;
