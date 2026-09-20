@@ -104,6 +104,8 @@ target_sources(LagDaemonResearchIDE PRIVATE
     Source/ShellTokeniser.cpp
     Source/ContextPanel.h
     Source/ContextPanel.cpp
+    Source/ConversationStore.h
+    Source/ConversationStore.cpp
     Source/AiChatPanel.h
     Source/AiChatPanel.cpp
     Source/FratePanel.h
@@ -133,6 +135,7 @@ target_link_libraries(LagDaemonResearchIDE PRIVATE
     ai_provider
     frate_lib
     juce::juce_core
+    juce::juce_cryptography
     juce::juce_data_structures
     juce::juce_events
     juce::juce_graphics
@@ -150,3 +153,21 @@ if(UNIX AND NOT APPLE)
 endif()
 
 juce_generate_juce_header(LagDaemonResearchIDE)
+
+juce_add_console_app(ConversationStoreTests
+    PRODUCT_NAME "Conversation Store Tests"
+)
+
+target_sources(ConversationStoreTests PRIVATE
+    Source/ConversationStore.h
+    Source/ConversationStore.cpp
+    Source/ConversationStoreTests.cpp
+)
+
+target_link_libraries(ConversationStoreTests PRIVATE
+    juce::juce_core
+    juce::juce_data_structures
+    juce::juce_cryptography
+)
+
+juce_generate_juce_header(ConversationStoreTests)

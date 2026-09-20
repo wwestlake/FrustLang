@@ -56,7 +56,7 @@ WorkbenchComponent::WorkbenchComponent()
         if (fileTreePanel) fileTreePanel->refresh();
     };
 
-    auto aiChat = std::make_unique<AiChatPanel>();
+    auto aiChat = std::make_unique<AiChatPanel>(appProperties.get());
     // appProperties (constructed above) is what persists which
     // discovered plugins are marked auto-load across restarts - same
     // mechanism already used for lastOpenedFolder.

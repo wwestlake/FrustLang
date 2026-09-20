@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include <ai_provider/AiConfig.h>
+#include "ConversationStore.h"
 #include <memory>
 #include <vector>
 
@@ -13,7 +14,7 @@
 class AiChatPanel : public juce::Component
 {
 public:
-    AiChatPanel();
+    explicit AiChatPanel(juce::ApplicationProperties* properties);
     ~AiChatPanel() override;
 
     void paint(juce::Graphics& g) override;
@@ -23,16 +24,34 @@ private:
     void sendMessage();
     void appendTranscript(const juce::String& speaker, const juce::String& text);
     void refreshProfileList();
+    void refreshConversationList(bool loadMostRecent);
+    void loadConversation(const juce::String& id);
+    void startNewConversation();
+    void archiveCurrentConversation();
+    void showFolderMenu();
+    void chooseFolder(bool archiveFolder);
+    void renderConversation();
+    bool appendAndSave(const juce::String& role, const juce::String& content);
+    void updateConversationControls();
     static juce::String loadFrustSystemPrompt();
 
     juce::Label headerLabel { "Header", "AI Assistant" };
     juce::ComboBox profileBox;
+    juce::ComboBox conversationBox;
+    juce::TextButton newButton { "New" };
+    juce::TextButton archiveButton { "Archive" };
+    juce::TextButton foldersButton { "Folders..." };
     juce::TextEditor transcript;
     juce::TextEditor inputBox;
     juce::TextButton sendButton { "Send" };
 
     ai_provider::AiConfig aiConfig;
+    ConversationStore conversationStore;
+    StoredConversation currentConversation;
+    std::vector<ConversationSummary> conversationSummaries;
     std::vector<ai_provider::ChatMessage> history; // includes the leading system message
+    std::unique_ptr<juce::FileChooser> folderChooser;
+    bool changingConversationSelection = false;
 
     // Guards against overlapping requests; the network call runs on a
     // background std::thread and marshals its result back via
