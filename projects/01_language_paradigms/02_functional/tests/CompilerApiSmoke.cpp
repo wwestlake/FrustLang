@@ -154,7 +154,7 @@ int main() {
 
     // 7b. The bare `use pod;` form: a known pod is merged, an unknown name is left alone.
     {
-        frust::CompileRequest request = one("main.fr", "use mathpod;\npub fn f() -> i64 = three()\n");
+        frust::CompileRequest request = one("main.fr", "use mathpod;\npub fn f() -> i64 = mathpod::three()\n");
         int askedFor = 0;
         request.pods = [&askedFor](const std::string& name, const std::string&, frust::PodSource& pod) {
             ++askedFor;

@@ -99,11 +99,11 @@ int main() {
         store.pods["mathpod@1.0.0"] = libPod("mathpod", "", "use self::ops;\n", { { "src/ops.fr", "pub fn three() -> i64 = 3\n" } });
 
         const auto useForm = libPod("app", "{\"name\":\"mathpod\",\"version\":\"1.0.0\"}",
-                                    "use mathpod;\npub fn f() -> i64 = three()\n");
+                                    "use mathpod;\npub fn f() -> i64 = mathpod::three()\n");
         const auto r = frate::buildPod(useForm, &store);
         check(r.ok && store.lookups >= 1, "a bare 'use pod;' takes the version from frate.json and merges the pod");
 
-        const auto importForm = libPod("app2", "", "import mathpod, \"1.0.0\";\npub fn f() -> i64 = three()\n");
+        const auto importForm = libPod("app2", "", "import mathpod, \"1.0.0\";\npub fn f() -> i64 = mathpod::three()\n");
         check(frate::buildPod(importForm, &store).ok, "import pod, \"version\" merges the pod");
 
         const auto noSuch = libPod("app3", "", "import mathpod, \"9.9.9\";\npub fn f() -> i64 = 1\n");
