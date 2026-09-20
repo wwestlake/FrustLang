@@ -2,6 +2,7 @@
 // object bytes out, no file touched.
 
 #include "CompilerApi.h"
+#include "CompilerFrontend.h"
 
 #include "AST.h"
 #include "Codegen.h"
@@ -145,16 +146,12 @@ SourceProvider DiskSourceProvider() {
     };
 }
 
-CompileResult Compile(const CompileRequest& request) {
-    CompileResult result;
-    InitialiseLlvmOnce();
-
+Program* BuildProgram(const CompileRequest& request, AstArena& arena, CompileResult& result) {
     if (request.sources.empty()) {
         Add(result, Diagnostic::Phase::Parser, {}, 0, 0, "no source was given");
-        return result;
+        return nullptr;
     }
 
-    AstArena arena;
     Program* merged = arena.NewProgram();
 
     // 1. Parse every source into the one arena and merge them, so a unit can
@@ -243,7 +240,7 @@ CompileResult Compile(const CompileRequest& request) {
         for (const auto& text : moduleErrors) Add(result, Diagnostic::Phase::Modules, source.name, 0, 0, text);
         merged->decls.insert(merged->decls.end(), program->decls.begin(), program->decls.end());
     }
-    if (parseFailed || result.hasErrors()) return result;
+    if (parseFailed || result.hasErrors()) return nullptr;
 
     // 2. Pod namespace prefix, exactly as the command-line compiler did.
     if (!request.podNamespace.empty()) {
@@ -255,6 +252,17 @@ CompileResult Compile(const CompileRequest& request) {
                 decl->typeAliasDecl->name = prefix + decl->typeAliasDecl->name;
         }
     }
+
+    return merged;
+}
+
+CompileResult Compile(const CompileRequest& request) {
+    CompileResult result;
+    InitialiseLlvmOnce();
+
+    AstArena arena;
+    Program* merged = BuildProgram(request, arena, result);
+    if (merged == nullptr) return result;
 
     // 3. Code generation. The compiler writes its messages to a diagnostic
     //    stream; capture that instead of the console and turn each line into
