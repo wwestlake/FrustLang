@@ -8,7 +8,6 @@
 #include "frust_plugin_host/FrustPluginManifest.h"
 
 #include <algorithm>
-#include <fstream>
 #include <sstream>
 #include <iostream>
 #include <map>
@@ -190,11 +189,14 @@ bool CompilePluginModule(const std::string& path,
     std::lock_guard<std::mutex> lock(s.mutex);
     if (!s.ensureInit()) return false;
 
-    std::ifstream file(path);
-    if (!file) {
-        reportError("cannot open '" + path + "'");
+    // The path-based load reads through the host's file reader (frust::SetFileReader). The plugin
+    // host itself opens no file: a host that never installs a reader can only load from source text.
+    std::string sourceText;
+    if (!frust::ReadFileThroughHost(path, sourceText)) {
+        reportError("cannot read '" + path + "' (no file access installed, or no such file)");
         return false;
     }
+    std::istringstream file(sourceText);
 
     AstArena arena;
     std::vector<std::string> parseErrors;
@@ -211,7 +213,11 @@ bool CompilePluginModule(const std::string& path,
     // directory (`X.frust` tried first, then `X.fr`), merged directly
     // into `prog`. A no-op for a plugin with no self-use decls at all -
     // every existing single-file plugin is unaffected.
-    if (!ResolveSelfUses(prog, arena, ParentDirOf(path), parseErrors)) {
+    const std::string baseDir = ParentDirOf(path);
+    const frust::SourceProvider siblings = [&baseDir](const std::string& name, std::string& text) {
+        return frust::ReadFileThroughHost(baseDir + "/" + name, text);
+    };
+    if (!ResolveSelfUsesWith(prog, arena, siblings, parseErrors)) {
         std::string msg = std::to_string(parseErrors.size()) + " error(s) resolving 'use self::' for '" + path + "'";
         for (const auto& err : parseErrors) msg += "\n  " + err;
         reportError(msg);
@@ -577,8 +583,9 @@ FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_reload(FrustPluginHandle ha
     // hashes the same as what's already loaded, skip the real work
     // entirely and hand back the existing handle untouched.
     {
-        std::ifstream file(path);
-        if (file) {
+        std::string reloadText;
+        if (frust::ReadFileThroughHost(path, reloadText)) {
+            std::istringstream file(reloadText);
             AstArena arena;
             std::vector<std::string> parseErrors;
             Program* prog = ParsePluginSource(file, arena, parseErrors);

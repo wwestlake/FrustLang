@@ -1,5 +1,6 @@
 #include <JuceHeader.h>
 #include "WorkbenchComponent.h"
+#include <DiskLoader.h>
 
 #include <cstdint>
 #include <cstdio>
@@ -29,6 +30,9 @@ public:
 
     void initialise (const juce::String& commandLine) override
     {
+        // The IDE works on real folders: give FRust's loader the disk.
+        frust::InstallDiskResolvers();
+
         mainWindow.reset (new MainWindow (getApplicationName()));
     }
 

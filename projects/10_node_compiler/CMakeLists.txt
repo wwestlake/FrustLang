@@ -84,7 +84,7 @@ if(NOT TARGET frust_plugin_host)
 endif()
 
 add_executable(node_compiler_example examples/run_examples.cpp)
-target_link_libraries(node_compiler_example PRIVATE node_compiler frust_plugin_host)
+target_link_libraries(node_compiler_example PRIVATE node_compiler frust_plugin_host frust_plugin_host_disk_init)
 set_target_properties(node_compiler_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"

@@ -97,8 +97,17 @@ install(DIRECTORY include/ DESTINATION include)
 # genuine hot-reload where the plugin source changes on disk between
 # calls).
 # ------------------------------------------------------------------------------
+# Installs the real disk as the loader's file access, for the examples below (they load plugins by path).
+# The plugin host library itself opens no file.
+add_library(frust_plugin_host_disk_init OBJECT examples/disk_init.cpp)
+target_link_libraries(frust_plugin_host_disk_init PRIVATE frust_lang)
+target_include_directories(frust_plugin_host_disk_init PRIVATE "${FRUST_GEN_DIR}" "${FRUST_FLEXLEXER_INCLUDE_DIR}")
+if(WIN32)
+    target_compile_definitions(frust_plugin_host_disk_init PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+
 add_executable(frust_plugin_host_example examples/host_example.cpp)
-target_link_libraries(frust_plugin_host_example PRIVATE frust_plugin_host)
+target_link_libraries(frust_plugin_host_example PRIVATE frust_plugin_host frust_plugin_host_disk_init)
 set_target_properties(frust_plugin_host_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
@@ -107,7 +116,7 @@ set_target_properties(frust_plugin_host_example PROPERTIES
 # Phase 2 verification harness - plugin manifest + lifecycle convenience
 # wrappers. See lifecycle_example.cpp/lifecycle_plugin.frust/.json.
 add_executable(frust_plugin_host_lifecycle_example examples/lifecycle_example.cpp)
-target_link_libraries(frust_plugin_host_lifecycle_example PRIVATE frust_plugin_host)
+target_link_libraries(frust_plugin_host_lifecycle_example PRIVATE frust_plugin_host frust_plugin_host_disk_init)
 set_target_properties(frust_plugin_host_lifecycle_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
@@ -116,7 +125,7 @@ set_target_properties(frust_plugin_host_lifecycle_example PROPERTIES
 # AST-content-hash reload skip (FRUST_LANG_SPEC.md 1.4) verification
 # harness. See reload_example.cpp/reload_plugin_v1.frust/reload_plugin_v2.frust.
 add_executable(frust_plugin_host_reload_example examples/reload_example.cpp)
-target_link_libraries(frust_plugin_host_reload_example PRIVATE frust_plugin_host)
+target_link_libraries(frust_plugin_host_reload_example PRIVATE frust_plugin_host frust_plugin_host_disk_init)
 set_target_properties(frust_plugin_host_reload_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
@@ -128,7 +137,7 @@ set_target_properties(frust_plugin_host_reload_example PROPERTIES
 # calling its methods directly by symbol name, no interface/vtable
 # knowledge needed host-side. See automation_host_example.cpp.
 add_executable(frust_plugin_host_automation_example examples/automation_host_example.cpp)
-target_link_libraries(frust_plugin_host_automation_example PRIVATE frust_plugin_host)
+target_link_libraries(frust_plugin_host_automation_example PRIVATE frust_plugin_host frust_plugin_host_disk_init)
 set_target_properties(frust_plugin_host_automation_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
@@ -137,7 +146,7 @@ set_target_properties(frust_plugin_host_automation_example PROPERTIES
 # Event subscription verification harness (docs/17-Plugin-Automation-Layer.md).
 # See event_example.cpp/event_plugin.frust.
 add_executable(frust_plugin_host_event_example examples/event_example.cpp)
-target_link_libraries(frust_plugin_host_event_example PRIVATE frust_plugin_host)
+target_link_libraries(frust_plugin_host_event_example PRIVATE frust_plugin_host frust_plugin_host_disk_init)
 set_target_properties(frust_plugin_host_event_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
@@ -147,7 +156,7 @@ set_target_properties(frust_plugin_host_event_example PROPERTIES
 # (docs/17-Plugin-Automation-Layer.md section 4.3). See
 # service_example.cpp/service_provider.frust/service_consumer.frust.
 add_executable(frust_plugin_host_service_example examples/service_example.cpp)
-target_link_libraries(frust_plugin_host_service_example PRIVATE frust_plugin_host)
+target_link_libraries(frust_plugin_host_service_example PRIVATE frust_plugin_host frust_plugin_host_disk_init)
 set_target_properties(frust_plugin_host_service_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
@@ -158,7 +167,7 @@ set_target_properties(frust_plugin_host_service_example PROPERTIES
 # capabilities, a plugin discovers and drives them entirely on its own.
 # See host_file_service_example.cpp/file_reader_plugin.frust/sample_data.csv.
 add_executable(frust_plugin_host_file_service_example examples/host_file_service_example.cpp)
-target_link_libraries(frust_plugin_host_file_service_example PRIVATE frust_plugin_host)
+target_link_libraries(frust_plugin_host_file_service_example PRIVATE frust_plugin_host frust_plugin_host_disk_init)
 set_target_properties(frust_plugin_host_file_service_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
@@ -169,7 +178,7 @@ set_target_properties(frust_plugin_host_file_service_example PROPERTIES
 # frust_plugin_last_error() must report something after a failed load.
 # See reload_events_example.cpp/event_plugin.frust/event_plugin_v2.frust.
 add_executable(frust_plugin_host_reload_events_example examples/reload_events_example.cpp)
-target_link_libraries(frust_plugin_host_reload_events_example PRIVATE frust_plugin_host)
+target_link_libraries(frust_plugin_host_reload_events_example PRIVATE frust_plugin_host frust_plugin_host_disk_init)
 set_target_properties(frust_plugin_host_reload_events_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
@@ -178,7 +187,7 @@ set_target_properties(frust_plugin_host_reload_events_example PROPERTIES
 # Completion-plan item D: 4 real plugins loaded simultaneously, plus
 # unload/reload mid-session, proving cross-plugin isolation.
 add_executable(frust_plugin_host_multi_plugin_stress_example examples/multi_plugin_stress_example.cpp)
-target_link_libraries(frust_plugin_host_multi_plugin_stress_example PRIVATE frust_plugin_host)
+target_link_libraries(frust_plugin_host_multi_plugin_stress_example PRIVATE frust_plugin_host frust_plugin_host_disk_init)
 set_target_properties(frust_plugin_host_multi_plugin_stress_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
@@ -187,7 +196,7 @@ set_target_properties(frust_plugin_host_multi_plugin_stress_example PROPERTIES
 # Completion-plan item E: concurrent access to the event/service
 # registries from multiple threads.
 add_executable(frust_plugin_host_concurrency_stress_example examples/concurrency_stress_example.cpp)
-target_link_libraries(frust_plugin_host_concurrency_stress_example PRIVATE frust_plugin_host)
+target_link_libraries(frust_plugin_host_concurrency_stress_example PRIVATE frust_plugin_host frust_plugin_host_disk_init)
 set_target_properties(frust_plugin_host_concurrency_stress_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
@@ -197,7 +206,7 @@ set_target_properties(frust_plugin_host_concurrency_stress_example PROPERTIES
 # "an application should be able to know what plugins are valid for
 # it." See app_identity_example.cpp/restricted_plugin.json/unrestricted_plugin.json.
 add_executable(frust_plugin_host_app_identity_example examples/app_identity_example.cpp)
-target_link_libraries(frust_plugin_host_app_identity_example PRIVATE frust_plugin_host)
+target_link_libraries(frust_plugin_host_app_identity_example PRIVATE frust_plugin_host frust_plugin_host_disk_init)
 set_target_properties(frust_plugin_host_app_identity_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
@@ -208,21 +217,21 @@ set_target_properties(frust_plugin_host_app_identity_example PROPERTIES
 # it" / "if it doesn't know, let the app decide") - see
 # auto_refuse_example.cpp/restricted_plugin.frust/unrestricted_plugin.frust.
 add_executable(frust_plugin_host_auto_refuse_example examples/auto_refuse_example.cpp)
-target_link_libraries(frust_plugin_host_auto_refuse_example PRIVATE frust_plugin_host)
+target_link_libraries(frust_plugin_host_auto_refuse_example PRIVATE frust_plugin_host frust_plugin_host_disk_init)
 set_target_properties(frust_plugin_host_auto_refuse_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
 )
 
 add_executable(frust_plugin_host_peek_manifest_example examples/peek_manifest_example.cpp)
-target_link_libraries(frust_plugin_host_peek_manifest_example PRIVATE frust_plugin_host)
+target_link_libraries(frust_plugin_host_peek_manifest_example PRIVATE frust_plugin_host frust_plugin_host_disk_init)
 set_target_properties(frust_plugin_host_peek_manifest_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
 )
 
 add_executable(frust_plugin_host_node_library_manifest_example examples/node_library_manifest_example.cpp)
-target_link_libraries(frust_plugin_host_node_library_manifest_example PRIVATE frust_plugin_host)
+target_link_libraries(frust_plugin_host_node_library_manifest_example PRIVATE frust_plugin_host frust_plugin_host_disk_init)
 set_target_properties(frust_plugin_host_node_library_manifest_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
@@ -232,7 +241,7 @@ set_target_properties(frust_plugin_host_node_library_manifest_example PROPERTIES
 # IDE (../02_juce_language_host/plugins/) - linter, plugin_generator,
 # metrics, symbol_finder. See ide_plugins_example.cpp.
 add_executable(frust_plugin_host_ide_plugins_example examples/ide_plugins_example.cpp)
-target_link_libraries(frust_plugin_host_ide_plugins_example PRIVATE frust_plugin_host)
+target_link_libraries(frust_plugin_host_ide_plugins_example PRIVATE frust_plugin_host frust_plugin_host_disk_init)
 set_target_properties(frust_plugin_host_ide_plugins_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
@@ -241,7 +250,7 @@ set_target_properties(frust_plugin_host_ide_plugins_example PROPERTIES
 # Verification harness for LANGUAGE_GAPS.md #8 (multi-file plugins) -
 # see multifile_plugin_example.cpp/multifile_main.frust/helper.frust.
 add_executable(frust_plugin_host_multifile_plugin_example examples/multifile_plugin_example.cpp)
-target_link_libraries(frust_plugin_host_multifile_plugin_example PRIVATE frust_plugin_host)
+target_link_libraries(frust_plugin_host_multifile_plugin_example PRIVATE frust_plugin_host frust_plugin_host_disk_init)
 set_target_properties(frust_plugin_host_multifile_plugin_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
@@ -250,7 +259,7 @@ set_target_properties(frust_plugin_host_multifile_plugin_example PROPERTIES
 # Verification harness for LANGUAGE_GAPS.md #9 (bool-across-FFI
 # convention) - see bool_ffi_example.cpp/bool_ffi_plugin.frust.
 add_executable(frust_plugin_host_bool_ffi_example examples/bool_ffi_example.cpp)
-target_link_libraries(frust_plugin_host_bool_ffi_example PRIVATE frust_plugin_host)
+target_link_libraries(frust_plugin_host_bool_ffi_example PRIVATE frust_plugin_host frust_plugin_host_disk_init)
 set_target_properties(frust_plugin_host_bool_ffi_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/examples/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/examples/Release"
