@@ -321,8 +321,7 @@ bool CompilePluginSource(const frust::CompileRequest& request,
     Program* prog = frust::BuildProgram(request, arena, front);
     if (prog == nullptr) {
         std::string msg = std::to_string(front.diagnostics.size()) + " error(s) loading '" + name + "'";
-        for (const auto& d : front.diagnostics) msg += "
-  " + frust::FormatDiagnostic(d);
+        for (const auto& d : front.diagnostics) msg += "\n  " + frust::FormatDiagnostic(d);
         reportError(msg);
         return false;
     }
@@ -340,8 +339,7 @@ bool CompilePluginSource(const frust::CompileRequest& request,
     }
     if (!codegenOk) {
         std::string msg = "codegen failed for '" + name + "'";
-        if (!codegenText.str().empty()) msg += "
-  " + codegenText.str();
+        if (!codegenText.str().empty()) msg += "\n  " + codegenText.str();
         reportError(msg);
         return false;
     }
