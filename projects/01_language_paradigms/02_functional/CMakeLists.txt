@@ -170,8 +170,14 @@ add_library(frust_lang STATIC
     Diagnostics.h
     CompilerApi.h
     CompilerApi.cpp
+    HostEnvironment.h
+    MemoryEnvironment.h
+    EnvironmentCompile.h
+    EnvironmentCompile.cpp
     "${CMAKE_CURRENT_SOURCE_DIR}/../../05_frate/include/frate/PodBuild.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../05_frate/src/PodBuild.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../05_frate/include/frate/PodEnvironment.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../05_frate/src/PodEnvironment.cpp"
     ReplSession.h
     ReplSession.cpp
     ModuleLoader.h
@@ -272,6 +278,15 @@ if(WIN32)
     target_compile_definitions(frate_pod_build_smoke PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 target_link_libraries(frate_pod_build_smoke PRIVATE frust_lang frust_runtime frate_lib ${FRUST_LLVM_LIBS})
+
+# frust_environment_smoke: the compiler and Frate over a HostEnvironment (files and log through the
+# environment only) - see HostEnvironment.h.
+add_executable(frust_environment_smoke tests/EnvironmentSmoke.cpp)
+target_include_directories(frust_environment_smoke PRIVATE "${FRUST_GEN_DIR}" "${FRUST_FLEXLEXER_INCLUDE_DIR}")
+if(WIN32)
+    target_compile_definitions(frust_environment_smoke PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+target_link_libraries(frust_environment_smoke PRIVATE frust_lang frust_runtime frate_lib ${FRUST_LLVM_LIBS})
 
 # ------------------------------------------------------------------------------
 # Install - on Linux, CMAKE_INSTALL_PREFIX is set by the "linux" preset to
