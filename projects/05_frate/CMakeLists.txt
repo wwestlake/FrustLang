@@ -91,25 +91,12 @@ if(UNIX AND NOT APPLE)
 endif()
 
 # ------------------------------------------------------------------------------
-# Add frate Executable Target
+# The frate executable (frate_cli) is defined in the compiler's CMakeLists.txt
+# (projects/01_language_paradigms/02_functional): `frate build` compiles in
+# process through the FRust compiler library and launches no compiler, so it is
+# built where that library is. This directory is the library: frate_lib.
 # ------------------------------------------------------------------------------
-add_executable(frate_cli
-    src/main.cpp
-)
-set_target_properties(frate_cli PROPERTIES OUTPUT_NAME "frate")
-target_compile_definitions(frate_cli PRIVATE
-    "FRUST_BUILD_VERSION=\"${FRUST_BUILD_VERSION}\"")
-
-target_link_libraries(frate_cli PRIVATE
-    frate_lib
-)
-
-if(DEFINED FRUST_LLVM_ROOT)
-    target_compile_definitions(frate_cli PRIVATE
-        "FRUST_LLVM_ROOT=\"${FRUST_LLVM_ROOT}\"")
-endif()
 
 # See the frust compiler's CMakeLists.txt for what CMAKE_INSTALL_PREFIX
 # actually resolves to (the shared drive, on Linux).
-install(TARGETS frate_cli RUNTIME DESTINATION bin)
 install(TARGETS frate_lib ARCHIVE DESTINATION lib)
