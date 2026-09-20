@@ -181,8 +181,12 @@ CompileResult Compile(const CompileRequest& request) {
             parseFailed = true;
 
         // `import pod, "version";` - pods, from the host's provider.
-        for (auto* decl : program->decls) {
-            if (decl->kind != DeclKind::Use || !decl->useDecl->isImport || decl->useDecl->pathSegments.empty()) continue;
+        // Snapshot first: merging a pod appends to program->decls.
+        std::vector<Decl*> importDecls;
+        for (auto* decl : program->decls)
+            if (decl->kind == DeclKind::Use && decl->useDecl->isImport && !decl->useDecl->pathSegments.empty())
+                importDecls.push_back(decl);
+        for (auto* decl : importDecls) {
             const std::string podName = decl->useDecl->pathSegments.front();
             const std::string version = decl->useDecl->importVersion;
             PodSource pod;
