@@ -770,6 +770,16 @@ FrustPluginHandle loadFromSource(const frust::CompileRequest& request) {
     return LinkPlugin(request.sources.front().name, std::move(context), std::move(module), astHash);
 }
 
+FrustPluginHandle loadFromEnvironment(frust::HostEnvironment& env, const frust::FileCompileRequest& request) {
+    frust::CompileRequest compileRequest;
+    std::string error;
+    if (!frust::MakeCompileRequest(env, request, compileRequest, error)) {
+        reportError(error);
+        return nullptr;
+    }
+    return loadFromSource(compileRequest);
+}
+
 FrustPluginHandle reloadFromSource(FrustPluginHandle handle, const frust::CompileRequest& request) {
     if (!handle || request.sources.empty()) return nullptr;
     const std::string name = handle->path; // copy before unload deletes the handle
