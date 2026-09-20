@@ -58,6 +58,7 @@ add_library(frate_lib STATIC
     include/frate/FrateRegistryClient.h
     include/frate/FrateResolver.h
     include/frate/FratePodBuilder.h
+    include/frate/PodArchive.h
     src/PodMetadataJson.h
     src/PodMetadataJson.cpp
     src/FrateConfig.cpp
@@ -65,6 +66,7 @@ add_library(frate_lib STATIC
     src/FrateRegistryClient.cpp
     src/FrateResolver.cpp
     src/FratePodBuilder.cpp
+    src/PodArchive.cpp
 )
 
 target_include_directories(frate_lib PUBLIC

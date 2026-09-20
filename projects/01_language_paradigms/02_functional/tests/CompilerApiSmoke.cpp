@@ -152,6 +152,26 @@ int main() {
         check(!m.ok && anyMessageContains(m, "mathpod"), "an unavailable pod is an error that names it");
     }
 
+    // 7b. The bare `use pod;` form: a known pod is merged, an unknown name is left alone.
+    {
+        frust::CompileRequest request = one("main.fr", "use mathpod;\npub fn f() -> i64 = mathpod::three()\n");
+        int askedFor = 0;
+        request.pods = [&askedFor](const std::string& name, const std::string&, frust::PodSource& pod) {
+            ++askedFor;
+            if (name != "mathpod") return false;
+            pod.ns = "";
+            pod.sources.push_back({ "lib.fr", "use self::ops;\n" });
+            pod.sources.push_back({ "ops.fr", "pub fn three() -> i64 = 3\n" });
+            return true;
+        };
+        const auto known = frust::Compile(request);
+        check(known.ok && askedFor == 1, "a bare 'use pod;' merges a pod the host knows");
+
+        frust::CompileRequest unknown = one("main.fr", "use nothingelse;\npub fn f() -> i64 = 1\n");
+        unknown.pods = [](const std::string&, const std::string&, frust::PodSource&) { return false; };
+        check(frust::Compile(unknown).ok, "a bare 'use name;' the host does not know is left alone, not an error");
+    }
+
     // 8. Check-only and IR capture.
     {
         auto request = one("gain.fr", kGood);

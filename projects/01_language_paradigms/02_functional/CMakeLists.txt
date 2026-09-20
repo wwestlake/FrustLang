@@ -170,6 +170,8 @@ add_library(frust_lang STATIC
     Diagnostics.h
     CompilerApi.h
     CompilerApi.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../05_frate/include/frate/PodBuild.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../05_frate/src/PodBuild.cpp"
     ReplSession.h
     ReplSession.cpp
     ModuleLoader.h
@@ -180,6 +182,7 @@ add_library(frust_lang STATIC
 
 target_include_directories(frust_lang
     PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}"
+           "${CMAKE_CURRENT_SOURCE_DIR}/../../05_frate/include"
     PRIVATE "${FRUST_GEN_DIR}" "${FRUST_FLEXLEXER_INCLUDE_DIR}"
 )
 
@@ -260,6 +263,15 @@ if(WIN32)
     target_compile_definitions(frust_compiler_api_smoke PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 target_link_libraries(frust_compiler_api_smoke PRIVATE frust_lang frust_runtime ${FRUST_LLVM_LIBS})
+
+# frate_pod_build_smoke: building a pod entirely in memory (frate/PodBuild.h,
+# frate/PodArchive.h) - pod files in, diagnostics and object bytes out, no file touched.
+add_executable(frate_pod_build_smoke "${CMAKE_CURRENT_SOURCE_DIR}/../../05_frate/tests/PodBuildSmoke.cpp")
+target_include_directories(frate_pod_build_smoke PRIVATE "${FRUST_GEN_DIR}" "${FRUST_FLEXLEXER_INCLUDE_DIR}")
+if(WIN32)
+    target_compile_definitions(frate_pod_build_smoke PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+target_link_libraries(frate_pod_build_smoke PRIVATE frust_lang frust_runtime frate_lib ${FRUST_LLVM_LIBS})
 
 # ------------------------------------------------------------------------------
 # Install - on Linux, CMAKE_INSTALL_PREFIX is set by the "linux" preset to

@@ -41,6 +41,9 @@ public:
     // Download raw bytes from the presigned S3 URL
     bool downloadFromS3(const juce::String& presignedUrl, const juce::File& targetFile);
 
+    // The same download, into memory - nothing is written to disk.
+    bool downloadToMemory(const juce::String& presignedUrl, juce::MemoryBlock& bytes);
+
 private:
     juce::String baseUrl;
     juce::String authToken;
