@@ -121,6 +121,8 @@ target_sources(LagDaemonResearchIDE PRIVATE
     Source/AiChatPanel.cpp
     Source/EngineerTools.h
     Source/EngineerTools.cpp
+    Source/AgentTask.h
+    Source/AgentTask.cpp
     Source/AiConversationView.h
     Source/AiConversationView.cpp
     Source/FratePanel.h
@@ -204,7 +206,26 @@ target_compile_definitions(EngineerToolsTests PRIVATE
 
 target_link_libraries(EngineerToolsTests PRIVATE
     ai_provider
+    frust_lang
+    frust_runtime
     juce::juce_core
 )
 
 juce_generate_juce_header(EngineerToolsTests)
+
+juce_add_console_app(AgentTaskTests
+    PRODUCT_NAME "Agent Task Tests"
+)
+
+target_sources(AgentTaskTests PRIVATE
+    Source/AgentTask.h
+    Source/AgentTask.cpp
+    Source/AgentTaskTests.cpp
+)
+
+target_link_libraries(AgentTaskTests PRIVATE
+    ai_provider
+    juce::juce_core
+)
+
+juce_generate_juce_header(AgentTaskTests)

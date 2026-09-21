@@ -100,6 +100,21 @@
         },
         "required": ["path", "old_text", "new_text"]
       }
+    },
+    {
+      "name": "workspace_check_frust",
+      "description": "Compile-check a Frust source file directly from project content and return structured compiler diagnostics without creating temporary files.",
+      "usage": "Use after editing Frust code. Fix reported errors and repeat until the check passes before completing the task.",
+      "access": "observe",
+      "tokens": ["compile", "check", "verify", "diagnostics", "errors", "warnings"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string", "description": "Frust source path relative to the open project." }
+        },
+        "required": ["path"]
+      }
     }
   ]
 }

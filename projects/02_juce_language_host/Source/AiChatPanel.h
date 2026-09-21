@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include <ai_provider/AiConfig.h>
 #include "AiConversationView.h"
+#include "AgentTask.h"
 #include "ConversationStore.h"
 #include "EngineerTools.h"
 #include <functional>
@@ -45,17 +46,20 @@ private:
     void updateCurrentConversationListEntry();
     bool appendAndSave(const juce::String& role, const juce::String& content);
     void updateConversationControls();
+    void refreshTaskStatus();
     static juce::String loadFrustSystemPrompt();
 
     juce::Label headerLabel { "Header", "AI Assistant" };
     juce::ComboBox profileBox;
     juce::ComboBox modelBox;
     juce::ComboBox accessBox;
+    juce::ComboBox modeBox;
     juce::TextButton aiSettingsButton { "AI Settings..." };
     juce::ComboBox conversationBox;
     juce::TextButton newButton { "New" };
     juce::TextButton archiveButton { "Archive" };
     juce::TextButton foldersButton { "Folders..." };
+    juce::Label taskStatusLabel { "TaskStatus", "No active task" };
     AiConversationView transcript;
     juce::TextEditor inputBox;
     juce::TextButton sendButton { "Send" };

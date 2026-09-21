@@ -20,6 +20,30 @@ enum class MutationIntent
     fileWrite
 };
 
+enum class AgentMode
+{
+    automatic = 1,
+    plan = 2,
+    execute = 3,
+    review = 4
+};
+
+juce::String modeName(AgentMode mode)
+{
+    if (mode == AgentMode::plan) return "plan";
+    if (mode == AgentMode::execute) return "execute";
+    if (mode == AgentMode::review) return "review";
+    return "auto";
+}
+
+bool isPlanContinuation(const juce::String& request)
+{
+    const auto text = request.trim().toLowerCase();
+    return text == "do it" || text == "go ahead" || text == "proceed"
+        || text == "continue" || text.contains("execute the plan")
+        || text.contains("implement the plan");
+}
+
 MutationIntent mutationIntentFor(const juce::String& request)
 {
     const auto text = request.toLowerCase();
@@ -35,20 +59,20 @@ MutationIntent mutationIntentFor(const juce::String& request)
     return directoryOnly ? MutationIntent::anyWrite : MutationIntent::fileWrite;
 }
 
-bool isInspectionTool(const std::string& name)
-{
-    return name == "workspace_list" || name == "workspace_read" || name == "workspace_search";
-}
-
 bool isWriteTool(const std::string& name)
 {
     return name == "workspace_create_directory" || name == "workspace_create_file"
         || name == "workspace_replace_text";
 }
 
-bool isFileWriteTool(const std::string& name)
+bool requiresFrustVerification(const juce::String& request)
 {
-    return name == "workspace_create_file" || name == "workspace_replace_text";
+    const auto text = request.toLowerCase();
+    if (text.contains("documentation") || text.contains("readme") || text.contains("specification"))
+        return false;
+    return text.contains("code") || text.contains("frust") || text.contains(".fr")
+        || text.contains("function") || text.contains("compile") || text.contains("command")
+        || text.contains("game loop") || text.contains("source") || text.contains("project");
 }
 }
 
@@ -83,6 +107,21 @@ AiChatPanel::AiChatPanel(juce::ApplicationProperties* properties)
     };
     addAndMakeVisible(accessBox);
 
+    modeBox.addItem("Auto", static_cast<int>(AgentMode::automatic));
+    modeBox.addItem("Plan", static_cast<int>(AgentMode::plan));
+    modeBox.addItem("Execute", static_cast<int>(AgentMode::execute));
+    modeBox.addItem("Review", static_cast<int>(AgentMode::review));
+    modeBox.setTooltip("Agent workflow mode; access is controlled separately");
+    const auto savedMode = appProperties != nullptr
+        ? appProperties->getUserSettings()->getIntValue("aiAssistantMode", 1) : 1;
+    modeBox.setSelectedId(juce::jlimit(1, 4, savedMode), juce::dontSendNotification);
+    modeBox.onChange = [this] {
+        if (appProperties == nullptr) return;
+        appProperties->getUserSettings()->setValue("aiAssistantMode", modeBox.getSelectedId());
+        appProperties->getUserSettings()->saveIfNeeded();
+    };
+    addAndMakeVisible(modeBox);
+
     aiSettingsButton.setTooltip("Configure the selected AI provider");
     aiSettingsButton.onClick = [this] { showAiSettings(); };
     addAndMakeVisible(aiSettingsButton);
@@ -106,6 +145,12 @@ AiChatPanel::AiChatPanel(juce::ApplicationProperties* properties)
     foldersButton.setTooltip("Configure or open conversation folders");
     foldersButton.onClick = [this] { showFolderMenu(); };
     addAndMakeVisible(foldersButton);
+
+    taskStatusLabel.setFont(juce::Font(12.0f, juce::Font::bold));
+    taskStatusLabel.setColour(juce::Label::textColourId, juce::Colour(0xff8fded7));
+    taskStatusLabel.setColour(juce::Label::backgroundColourId, juce::Colour(0xff202a2d));
+    taskStatusLabel.setBorderSize(juce::BorderSize<int>(0, 6, 0, 6));
+    addAndMakeVisible(taskStatusLabel);
 
     transcript.onScaleChanged = [this](float scale) {
         inputBox.setFont(juce::Font("Consolas", 13.0f * scale, juce::Font::plain));
@@ -157,6 +202,12 @@ void AiChatPanel::resized()
     newButton.setBounds(conversationBar.removeFromRight(48));
     conversationBar.removeFromRight(4);
     conversationBox.setBounds(conversationBar);
+    bounds.removeFromTop(4);
+
+    auto taskBar = bounds.removeFromTop(22);
+    modeBox.setBounds(taskBar.removeFromLeft(92));
+    taskBar.removeFromLeft(4);
+    taskStatusLabel.setBounds(taskBar);
     bounds.removeFromTop(4);
 
     auto inputArea = bounds.removeFromBottom(70);
@@ -386,6 +437,7 @@ void AiChatPanel::loadConversation(const juce::String& id)
         if (conversationSummaries[i].id == currentConversation.id)
             conversationBox.setSelectedItemIndex(static_cast<int>(i), juce::dontSendNotification);
     changingConversationSelection = false;
+    refreshTaskStatus();
     updateConversationControls();
 }
 
@@ -399,6 +451,7 @@ void AiChatPanel::startNewConversation()
     conversationBox.setText("New conversation", juce::dontSendNotification);
     changingConversationSelection = false;
     renderConversation();
+    taskStatusLabel.setText("No active task", juce::dontSendNotification);
     updateConversationControls();
     inputBox.grabKeyboardFocus();
 }
@@ -530,8 +583,18 @@ void AiChatPanel::updateConversationControls()
     foldersButton.setEnabled(!requestInFlight);
     profileBox.setEnabled(!requestInFlight);
     accessBox.setEnabled(!requestInFlight);
+    modeBox.setEnabled(!requestInFlight);
     modelBox.setEnabled(!requestInFlight && !modelRequestInFlight && modelBox.getNumItems() > 0);
     sendButton.setEnabled(!requestInFlight);
+}
+
+void AiChatPanel::refreshTaskStatus()
+{
+    AgentTask task;
+    if (AgentTask::load(conversationStore.getConversationFolder(), currentConversation.id, task))
+        taskStatusLabel.setText(task.statusLine(), juce::dontSendNotification);
+    else
+        taskStatusLabel.setText("No active task", juce::dontSendNotification);
 }
 
 void AiChatPanel::sendMessage()
@@ -568,12 +631,13 @@ void AiChatPanel::sendMessage()
     if (ragContext.isNotEmpty() && !historySnapshot.empty())
         historySnapshot.back().content =
             (userText + "\n\n---\nRetrieved context for this request:\n" + ragContext).toStdString();
-    auto* providerPtr = provider.release();
-
     const auto projectRoot = getProjectRoot ? getProjectRoot() : juce::File();
     const auto access = accessBox.getSelectedId() == 2
         ? EngineerTools::AccessLevel::workspace : EngineerTools::AccessLevel::observe;
-    EngineerTools engineerTools(projectRoot, access);
+    const auto selectedMode = static_cast<AgentMode>(modeBox.getSelectedId());
+    const auto effectiveAccess = selectedMode == AgentMode::plan || selectedMode == AgentMode::review
+        ? EngineerTools::AccessLevel::observe : access;
+    EngineerTools engineerTools(projectRoot, effectiveAccess);
     auto toolDefinitions = projectRoot.isDirectory()
         ? engineerTools.definitions() : std::vector<ai_provider::ToolDefinition> {};
     if (!historySnapshot.empty())
@@ -582,38 +646,89 @@ void AiChatPanel::sendMessage()
             "\n\nYou have real FrustIDE engineering tools for the project currently open in the "
             "Project Explorer. Use them whenever the user asks you to inspect, create, or edit project "
             "content. Never claim that you cannot create files or projects when the corresponding tool "
-            "is available. Treat the newest user message as the only current request; do not resume an "
-            "older request unless the newest message asks you to. Inspect the current project before any "
+            "is available. The host-owned task packet is authoritative for the current goal. A new user "
+            "request starts or steers work; a saved plan is resumed only when the host explicitly places "
+            "it in that packet. Inspect the current project before any "
             "write. Treat the open root as the current project: when its folder name matches the requested "
             "project, initialize files directly in that root rather than creating a duplicate named folder. "
             "Never present proposed code as though it was written; report only paths confirmed by tool results. "
             "Current project root: " + projectRoot.getFullPathName().toStdString()
-            + ". Current access: " + EngineerTools::accessName(access).toStdString() + ".";
+            + ". Current mode: " + modeName(selectedMode).toStdString()
+            + ". Current access ceiling: " + EngineerTools::accessName(access).toStdString() + ".";
     }
-    const auto mutationIntent = access == EngineerTools::AccessLevel::workspace
-        ? mutationIntentFor(userText) : MutationIntent::none;
+    const auto requestedMutation = mutationIntentFor(userText);
+    const bool continuation = selectedMode == AgentMode::execute && isPlanContinuation(userText);
+    const bool executeRequested = (selectedMode == AgentMode::automatic
+                                    && requestedMutation != MutationIntent::none)
+        || (selectedMode == AgentMode::execute
+            && (requestedMutation != MutationIntent::none || continuation));
+    if ((executeRequested || selectedMode == AgentMode::plan || selectedMode == AgentMode::review)
+        && !projectRoot.isDirectory())
+    {
+        const juce::String message = "This mode needs an open project folder. Open the target folder in "
+            "Project Explorer, then send the request again.";
+        appendAndSave("assistant", message);
+        renderConversation();
+        requestInFlight = false;
+        updateConversationControls();
+        return;
+    }
+    if (executeRequested && access != EngineerTools::AccessLevel::workspace)
+    {
+        const juce::String message = "Execute work is blocked because access is set to Observe. "
+            "Change the access control to Workspace when you want the agent to edit the open project.";
+        appendAndSave("assistant", message);
+        renderConversation();
+        requestInFlight = false;
+        updateConversationControls();
+        return;
+    }
+
+    const bool agentRun = projectRoot.isDirectory()
+        && (executeRequested || selectedMode == AgentMode::plan || selectedMode == AgentMode::review);
+    AgentTask task;
+    const auto conversationFolder = conversationStore.getConversationFolder();
+    if (agentRun)
+    {
+        juce::String goal = userText;
+        juce::StringArray initialPlan;
+        AgentTask previous;
+        if (continuation && AgentTask::load(conversationFolder, currentConversation.id, previous)
+            && previous.isCompleted() && previous.taskMode() == "plan")
+        {
+            goal = previous.taskGoal();
+            initialPlan = previous.planSteps();
+        }
+        const bool planRequired = selectedMode != AgentMode::review;
+        const bool writeRequired = executeRequested;
+        task = AgentTask::begin(currentConversation.id, goal,
+                                executeRequested ? "execute" : modeName(selectedMode),
+                                planRequired, writeRequired,
+                                writeRequired && requiresFrustVerification(goal), initialPlan);
+        const auto controlTools = task.controlDefinitions();
+        toolDefinitions.insert(toolDefinitions.end(), controlTools.begin(), controlTools.end());
+        historySnapshot.push_back({ "system", task.contextMessage().toStdString() });
+        task.save(conversationFolder);
+        taskStatusLabel.setText(task.statusLine(), juce::dontSendNotification);
+    }
+
+    auto* providerPtr = provider.release();
 
     std::thread([safeThis, historySnapshot, providerPtr, engineerTools, toolDefinitions,
-                 mutationIntent] () mutable {
+                 agentRun, task, conversationFolder] () mutable {
         std::unique_ptr<ai_provider::AiProvider> owned(providerPtr);
         auto workingHistory = historySnapshot;
         ai_provider::ChatResponse response;
         bool workspaceChanged = false;
-        bool inspectedProject = false;
-        bool successfulWrite = false;
-        bool successfulFileWrite = false;
         juce::StringArray activity;
-        constexpr int maximumToolRounds = 12;
+        constexpr int maximumToolRounds = 24;
         for (int round = 0; round < maximumToolRounds; ++round)
         {
-            const bool stillNeedsWrite = mutationIntent == MutationIntent::fileWrite
-                ? !successfulFileWrite
-                : mutationIntent == MutationIntent::anyWrite && !successfulWrite;
             response = owned->sendChat(
                 workingHistory,
                 toolDefinitions,
-                stillNeedsWrite ? ai_provider::ToolChoice::required
-                                : ai_provider::ToolChoice::autoSelect);
+                agentRun ? ai_provider::ToolChoice::required
+                         : ai_provider::ToolChoice::autoSelect);
             if (!response.ok || response.toolCalls.empty())
                 break;
 
@@ -621,56 +736,78 @@ void AiChatPanel::sendMessage()
                 { "assistant", response.content, response.toolCalls, {} });
             for (const auto& call : response.toolCalls)
             {
-                auto result = isWriteTool(call.name) && !inspectedProject
-                    ? EngineerTools::Result {
-                        false,
-                        false,
-                        "Error: Inspect the current project with workspace_list, workspace_search, or "
-                        "workspace_read before writing so the target path is grounded."
-                    }
-                    : engineerTools.execute(call);
-                if (result.ok && isInspectionTool(call.name))
-                    inspectedProject = true;
-                if (result.ok && isWriteTool(call.name))
-                    successfulWrite = true;
-                if (result.ok && isFileWriteTool(call.name))
-                    successfulFileWrite = true;
+                EngineerTools::Result result;
+                auto control = agentRun ? task.executeControl(call) : AgentTask::ControlResult {};
+                if (control.handled)
+                {
+                    result = { control.ok, false, control.message };
+                }
+                else if (agentRun && isWriteTool(call.name) && !task.canWrite())
+                {
+                    result = { false, false,
+                        "Error: The host requires a successful project inspection and an explicit "
+                        "agent_set_plan call before any project write." };
+                }
+                else
+                {
+                    result = engineerTools.execute(call);
+                    if (agentRun) task.recordEngineerResult(call.name, result);
+                }
                 workspaceChanged = workspaceChanged || result.workspaceChanged;
                 const auto summary = result.message.upToFirstOccurrenceOf("\n", false, false);
                 activity.add("- `" + juce::String(call.name) + "`: " + summary);
-                juce::MessageManager::callAsync([safeThis, callName = juce::String(call.name),
-                                                  summary, changed = result.workspaceChanged] {
+                const auto taskLine = agentRun ? task.statusLine() : juce::String();
+                juce::MessageManager::callAsync([safeThis, callName = juce::String(call.name), summary,
+                                                  changed = result.workspaceChanged, taskLine] {
                     if (safeThis == nullptr) return;
                     safeThis->appendTranscript("tool", "`" + callName + "`: " + summary);
+                    if (taskLine.isNotEmpty())
+                        safeThis->taskStatusLabel.setText(taskLine, juce::dontSendNotification);
                     if (changed && safeThis->onFileSystemChanged)
                         safeThis->onFileSystemChanged();
                 });
                 workingHistory.push_back(
                     { "tool", result.message.toStdString(), {}, call.id });
             }
+            if (agentRun)
+            {
+                task.save(conversationFolder);
+                if (task.isTerminal()) break;
+                workingHistory.push_back({ "system", task.contextMessage().toStdString() });
+            }
             if (round == maximumToolRounds - 1)
-                response = { false, {}, "The Engineer reached the 12-round tool limit." };
+                response = { false, {}, "The Engineer reached the 24-round tool limit." };
         }
 
-        const bool mutationSatisfied = mutationIntent == MutationIntent::none
-            || (mutationIntent == MutationIntent::fileWrite ? successfulFileWrite : successfulWrite);
-        juce::MessageManager::callAsync([safeThis, response, workspaceChanged, mutationIntent,
-                                         mutationSatisfied, activity] {
+        if (agentRun && !task.isTerminal())
+        {
+            if (!response.ok)
+                task.fail("Provider error: " + juce::String(response.errorMessage));
+            else if (response.toolCalls.empty())
+                task.fail("The model stopped without completing the assigned task.");
+            else
+                task.fail("The agent run ended before the host accepted completion.");
+            task.save(conversationFolder);
+        }
+
+        juce::MessageManager::callAsync([safeThis, response, workspaceChanged,
+                                         agentRun, task, activity] {
             if (safeThis == nullptr) return;
 
-            if (response.ok) {
-                auto finalContent = response.content.empty()
-                    ? std::string("The requested project operation completed.") : response.content;
+            if (response.ok || agentRun) {
+                auto finalContent = agentRun ? task.finalMessage().toStdString()
+                    : (response.content.empty() ? std::string("The requested operation completed.")
+                                                : response.content);
                 juce::String report;
                 if (!activity.isEmpty())
                     report = "**Project activity**\n\n" + activity.joinIntoString("\n") + "\n\n";
-                if (mutationIntent != MutationIntent::none && !mutationSatisfied)
-                    report << "**No project files were changed.**\n\n";
                 if (report.isNotEmpty())
                     finalContent = (report + juce::String(finalContent)).toStdString();
                 safeThis->history.push_back({ "assistant", finalContent });
                 safeThis->appendAndSave("assistant", juce::String(finalContent));
                 safeThis->renderConversation();
+                if (agentRun)
+                    safeThis->taskStatusLabel.setText(task.statusLine(), juce::dontSendNotification);
             } else {
                 safeThis->renderConversation();
                 safeThis->appendTranscript("system", "Error: " + juce::String(response.errorMessage));

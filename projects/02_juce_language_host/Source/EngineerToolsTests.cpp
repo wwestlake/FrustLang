@@ -27,8 +27,8 @@ int main()
 
     EngineerTools observe(base, EngineerTools::AccessLevel::observe);
     EngineerTools workspace(base, EngineerTools::AccessLevel::workspace);
-    expect(observe.definitions().size() == 3, "Observe exposes three read-only tools");
-    expect(workspace.definitions().size() == 6, "Workspace exposes all six project tools");
+    expect(observe.definitions().size() == 4, "Observe exposes read-only and verification tools");
+    expect(workspace.definitions().size() == 7, "Workspace exposes all seven project tools");
 
     auto denied = observe.execute(call(
         "workspace_create_file", R"({"path":"src/main.fr","content":"fn main() = 42"})"));
@@ -49,6 +49,19 @@ int main()
     expect(edited.ok, "Exact source edit succeeds");
     expect(base.getChildFile("src/main.fr").loadFileAsString().contains("84"),
            "Exact source edit reaches disk");
+
+    auto checked = workspace.execute(call(
+        "workspace_check_frust", R"({"path":"src/main.fr"})"));
+    expect(checked.ok && checked.verificationPerformed, "Valid Frust source passes verification");
+
+    auto broken = workspace.execute(call(
+        "workspace_replace_text",
+        R"({"path":"src/main.fr","old_text":"84","new_text":"{"})"));
+    expect(broken.ok, "Test can introduce invalid Frust source");
+    checked = workspace.execute(call(
+        "workspace_check_frust", R"({"path":"src/main.fr"})"));
+    expect(!checked.ok && checked.verificationPerformed,
+           "Invalid Frust source returns a failed verification");
 
     auto escaped = workspace.execute(call(
         "workspace_create_file", R"({"path":"../outside.txt","content":"no"})"));

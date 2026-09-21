@@ -19,6 +19,7 @@ public:
         bool ok = false;
         bool workspaceChanged = false;
         juce::String message;
+        bool verificationPerformed = false;
     };
 
     EngineerTools(juce::File projectRoot, AccessLevel accessLevel);
@@ -39,6 +40,7 @@ private:
     Result createDirectory(const juce::var& arguments) const;
     Result createFile(const juce::var& arguments) const;
     Result replaceText(const juce::var& arguments) const;
+    Result checkFrust(const juce::var& arguments) const;
 
     juce::File root;
     AccessLevel access;

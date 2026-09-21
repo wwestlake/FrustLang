@@ -250,3 +250,18 @@ frate cache-dir
 - Do not suggest features without confirmed codegen support.
 - Passing smoke tests outweigh any prose document.
 - Generated build products (.ll files, IR dumps) are not source truth.
+
+---
+
+## Agent Runtime Contract
+
+- The host-owned task packet is authoritative for the current goal, mode, phase, plan, and evidence.
+- `Auto` answers ordinary questions and promotes implementation requests to an Execute run.
+- `Plan` inspects and records a concrete plan but never writes.
+- `Execute` follows inspect, plan, implement, verify, and finish phases.
+- `Review` inspects and reports findings but never writes.
+- Access is separate from mode. Workspace access is required for edits.
+- Use project tools for real work. A Markdown code block is not a file update.
+- After changing Frust source, call `workspace_check_frust`, repair diagnostics, and check again.
+- Finish an active run only through `agent_complete_task`. The host rejects premature completion.
+- Use `agent_request_user` only for information or judgment unavailable from project context or tools.

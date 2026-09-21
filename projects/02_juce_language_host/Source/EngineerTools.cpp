@@ -1,5 +1,7 @@
 #include "EngineerTools.h"
 
+#include <CompilerApi.h>
+
 #include <filesystem>
 
 namespace
@@ -150,6 +152,7 @@ EngineerTools::Result EngineerTools::execute(const ai_provider::ToolCall& call) 
     if (name == "workspace_create_directory") return createDirectory(arguments);
     if (name == "workspace_create_file") return createFile(arguments);
     if (name == "workspace_replace_text") return replaceText(arguments);
+    if (name == "workspace_check_frust") return checkFrust(arguments);
     return failure("Unknown tool: " + name);
 }
 
@@ -278,4 +281,32 @@ EngineerTools::Result EngineerTools::replaceText(const juce::var& arguments) con
         : original.replaceSection(first, oldText.length(), newText);
     if (!file.replaceWithText(updated)) return failure("Could not write the edited file.");
     return { true, true, "Updated " + file.getRelativePathFrom(root).replaceCharacter('\\', '/') };
+}
+
+EngineerTools::Result EngineerTools::checkFrust(const juce::var& arguments) const
+{
+    juce::String error;
+    const auto file = resolveProjectPath(stringProperty(arguments, "path"), error);
+    if (error.isNotEmpty()) return failure(error);
+    if (!file.existsAsFile()) return failure("File does not exist.");
+    if (file.getSize() > maxTextFileBytes) return failure("File exceeds the 2 MB check limit.");
+
+    frust::CompileRequest request;
+    request.sources.push_back({ file.getFullPathName().toStdString(),
+                                file.loadFileAsString().toStdString() });
+    request.emitObject = false;
+    const auto parent = file.getParentDirectory();
+    request.siblingFiles = [parent](const std::string& requested, std::string& text) {
+        const auto sibling = parent.getChildFile(juce::String(requested));
+        if (!sibling.existsAsFile()) return false;
+        text = sibling.loadFileAsString().toStdString();
+        return true;
+    };
+
+    const auto result = frust::Compile(request);
+    juce::String output = result.ok ? "Frust check passed" : "Frust check failed";
+    output << ": " << file.getRelativePathFrom(root).replaceCharacter('\\', '/');
+    for (const auto& diagnostic : result.diagnostics)
+        output << "\n" << juce::String(frust::FormatDiagnostic(diagnostic));
+    return { result.ok, false, output, true };
 }

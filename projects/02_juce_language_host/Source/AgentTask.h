@@ -1,0 +1,73 @@
+#pragma once
+
+#include <JuceHeader.h>
+#include <ai_provider/AiProvider.h>
+
+#include "EngineerTools.h"
+
+#include <vector>
+
+class AgentTask
+{
+public:
+    AgentTask() = default;
+
+    struct ControlResult
+    {
+        bool handled = false;
+        bool ok = false;
+        bool terminal = false;
+        juce::String message;
+    };
+
+    static AgentTask begin(const juce::String& conversationId,
+                           const juce::String& goal,
+                           const juce::String& mode,
+                           bool requiresPlan,
+                           bool requiresWrite,
+                           bool requiresVerification,
+                           const juce::StringArray& initialPlan = {});
+    static bool load(const juce::File& conversationFolder,
+                     const juce::String& conversationId,
+                     AgentTask& task);
+
+    bool save(const juce::File& conversationFolder) const;
+    std::vector<ai_provider::ToolDefinition> controlDefinitions() const;
+    ControlResult executeControl(const ai_provider::ToolCall& call);
+    void recordEngineerResult(const std::string& toolName, const EngineerTools::Result& result);
+    void fail(const juce::String& reason);
+
+    juce::String contextMessage() const;
+    juce::String statusLine() const;
+    juce::String finalMessage() const;
+    bool isTerminal() const;
+    bool isCompleted() const;
+    bool canWrite() const;
+    const juce::StringArray& planSteps() const;
+    const juce::String& taskGoal() const;
+    const juce::String& taskMode() const;
+
+private:
+    juce::String phase() const;
+    juce::String completionBlocker() const;
+    juce::var toJson() const;
+    static bool fromJson(const juce::var&, AgentTask&);
+
+    juce::String taskId;
+    juce::String conversationId;
+    juce::String goal;
+    juce::String mode { "execute" };
+    juce::String status { "running" };
+    juce::String summary;
+    juce::String pendingQuestion;
+    juce::String latestVerification;
+    juce::StringArray plan;
+    juce::StringArray observations;
+    bool requiresWrite = false;
+    bool requiresPlan = true;
+    bool requiresVerification = false;
+    bool inspected = false;
+    bool changed = false;
+    bool verified = false;
+    int toolCalls = 0;
+};
