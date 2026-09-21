@@ -4,6 +4,8 @@
 #include <ai_provider/AiConfig.h>
 #include "AiConversationView.h"
 #include "ConversationStore.h"
+#include "EngineerTools.h"
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -20,6 +22,9 @@ public:
 
     void paint(juce::Graphics& g) override;
     void resized() override;
+
+    std::function<juce::File()> getProjectRoot;
+    std::function<void()> onFileSystemChanged;
 
 private:
     void sendMessage();
@@ -45,6 +50,7 @@ private:
     juce::Label headerLabel { "Header", "AI Assistant" };
     juce::ComboBox profileBox;
     juce::ComboBox modelBox;
+    juce::ComboBox accessBox;
     juce::TextButton aiSettingsButton { "AI Settings..." };
     juce::ComboBox conversationBox;
     juce::TextButton newButton { "New" };
@@ -55,6 +61,7 @@ private:
     juce::TextButton sendButton { "Send" };
 
     ai_provider::AiConfig aiConfig;
+    juce::ApplicationProperties* appProperties = nullptr;
     ConversationStore conversationStore;
     StoredConversation currentConversation;
     std::vector<ConversationSummary> conversationSummaries;

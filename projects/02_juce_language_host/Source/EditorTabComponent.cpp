@@ -77,6 +77,16 @@ void CodeEditorTab::saveAs(const juce::File& newFile)
     saveFile();
 }
 
+void CodeEditorTab::goToLocation(int line, int column)
+{
+    if (line <= 0) return;
+    const auto lineIndex = juce::jlimit(0, juce::jmax(0, document.getNumLines() - 1), line - 1);
+    juce::CodeDocument::Position position(document, lineIndex, juce::jmax(0, column - 1));
+    editor.moveCaretTo(position, false);
+    editor.scrollToLine(lineIndex);
+    editor.grabKeyboardFocus();
+}
+
 void CodeEditorTab::codeDocumentTextInserted(const juce::String&, int)
 {
     if (!suppressDirtyTracking) isDirty = true;
@@ -147,6 +157,15 @@ void EditorTabComponent::openFile(const juce::File& file)
     tabs.setCurrentTabIndex(tabs.getNumTabs() - 1);
 
     if (onActiveFileChanged) onActiveFileChanged(file);
+}
+
+void EditorTabComponent::openFileAt(const juce::File& file, int line, int column)
+{
+    openFile(file);
+    const auto current = tabs.getCurrentTabIndex();
+    if (current >= 0)
+        if (auto* tab = dynamic_cast<CodeEditorTab*>(tabs.getTabContentComponent(current)))
+            tab->goToLocation(line, column);
 }
 
 void EditorTabComponent::newUntitledTab()

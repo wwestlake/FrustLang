@@ -20,6 +20,7 @@ public:
     juce::String displayName() const;
     void saveFile();
     void saveAs(const juce::File& newFile);
+    void goToLocation(int line, int column);
 
 private:
     // juce::CodeDocument::Listener
@@ -57,6 +58,7 @@ public:
     void resized() override;
 
     void openFile(const juce::File& file);
+    void openFileAt(const juce::File& file, int line, int column);
     void newUntitledTab();
     void saveActiveFile();
     void saveActiveFileAs(const juce::File& newFile);

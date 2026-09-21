@@ -12,10 +12,49 @@ juce::File getConfigFile()
         .getChildFile("LagDaemonResearchIDE")
         .getChildFile("ai_config.json");
 }
+
+enum class MutationIntent
+{
+    none,
+    anyWrite,
+    fileWrite
+};
+
+MutationIntent mutationIntentFor(const juce::String& request)
+{
+    const auto text = request.toLowerCase();
+    const bool action = text.contains("create") || text.contains("write")
+        || text.contains("update") || text.contains("edit") || text.contains("change")
+        || text.contains("add") || text.contains("implement") || text.contains("fix")
+        || text.contains("make") || text.contains("rename");
+    if (!action) return MutationIntent::none;
+
+    const bool directoryOnly = (text.contains("folder") || text.contains("directory"))
+        && !text.contains("file") && !text.contains("code") && !text.contains("project")
+        && !text.contains("source") && !text.contains("document");
+    return directoryOnly ? MutationIntent::anyWrite : MutationIntent::fileWrite;
+}
+
+bool isInspectionTool(const std::string& name)
+{
+    return name == "workspace_list" || name == "workspace_read" || name == "workspace_search";
+}
+
+bool isWriteTool(const std::string& name)
+{
+    return name == "workspace_create_directory" || name == "workspace_create_file"
+        || name == "workspace_replace_text";
+}
+
+bool isFileWriteTool(const std::string& name)
+{
+    return name == "workspace_create_file" || name == "workspace_replace_text";
+}
 }
 
 AiChatPanel::AiChatPanel(juce::ApplicationProperties* properties)
     : aiConfig(getConfigFile().getFullPathName().toStdString()),
+      appProperties(properties),
       conversationStore(properties)
 {
     headerLabel.setFont(juce::Font(14.0f, juce::Font::bold));
@@ -30,6 +69,19 @@ AiChatPanel::AiChatPanel(juce::ApplicationProperties* properties)
     modelBox.setTooltip("Model used by the AI Assistant");
     modelBox.setTextWhenNothingSelected("Loading models...");
     modelBox.onChange = [this] { saveSelectedModel(); };
+
+    accessBox.addItem("Observe", 1);
+    accessBox.addItem("Workspace", 2);
+    accessBox.setTooltip("Maximum access available to the AI Assistant");
+    const auto savedAccess = appProperties != nullptr
+        ? appProperties->getUserSettings()->getIntValue("aiAssistantAccess", 2) : 2;
+    accessBox.setSelectedId(savedAccess == 1 ? 1 : 2, juce::dontSendNotification);
+    accessBox.onChange = [this] {
+        if (appProperties == nullptr) return;
+        appProperties->getUserSettings()->setValue("aiAssistantAccess", accessBox.getSelectedId());
+        appProperties->getUserSettings()->saveIfNeeded();
+    };
+    addAndMakeVisible(accessBox);
 
     aiSettingsButton.setTooltip("Configure the selected AI provider");
     aiSettingsButton.onClick = [this] { showAiSettings(); };
@@ -92,6 +144,8 @@ void AiChatPanel::resized()
     topBar.removeFromRight(4);
     profileBox.setBounds(topBar.removeFromLeft(150));
     topBar.removeFromLeft(4);
+    accessBox.setBounds(topBar.removeFromRight(100));
+    topBar.removeFromRight(4);
     modelBox.setBounds(topBar);
     bounds.removeFromTop(4);
 
@@ -475,6 +529,7 @@ void AiChatPanel::updateConversationControls()
     archiveButton.setEnabled(!requestInFlight && !currentConversation.blocks.empty());
     foldersButton.setEnabled(!requestInFlight);
     profileBox.setEnabled(!requestInFlight);
+    accessBox.setEnabled(!requestInFlight);
     modelBox.setEnabled(!requestInFlight && !modelRequestInFlight && modelBox.getNumItems() > 0);
     sendButton.setEnabled(!requestInFlight);
 }
@@ -515,16 +570,106 @@ void AiChatPanel::sendMessage()
             (userText + "\n\n---\nRetrieved context for this request:\n" + ragContext).toStdString();
     auto* providerPtr = provider.release();
 
-    std::thread([safeThis, historySnapshot, providerPtr] {
-        std::unique_ptr<ai_provider::AiProvider> owned(providerPtr);
-        auto response = owned->sendChat(historySnapshot);
+    const auto projectRoot = getProjectRoot ? getProjectRoot() : juce::File();
+    const auto access = accessBox.getSelectedId() == 2
+        ? EngineerTools::AccessLevel::workspace : EngineerTools::AccessLevel::observe;
+    EngineerTools engineerTools(projectRoot, access);
+    auto toolDefinitions = projectRoot.isDirectory()
+        ? engineerTools.definitions() : std::vector<ai_provider::ToolDefinition> {};
+    if (!historySnapshot.empty())
+    {
+        historySnapshot.front().content +=
+            "\n\nYou have real FrustIDE engineering tools for the project currently open in the "
+            "Project Explorer. Use them whenever the user asks you to inspect, create, or edit project "
+            "content. Never claim that you cannot create files or projects when the corresponding tool "
+            "is available. Treat the newest user message as the only current request; do not resume an "
+            "older request unless the newest message asks you to. Inspect the current project before any "
+            "write. Treat the open root as the current project: when its folder name matches the requested "
+            "project, initialize files directly in that root rather than creating a duplicate named folder. "
+            "Never present proposed code as though it was written; report only paths confirmed by tool results. "
+            "Current project root: " + projectRoot.getFullPathName().toStdString()
+            + ". Current access: " + EngineerTools::accessName(access).toStdString() + ".";
+    }
+    const auto mutationIntent = access == EngineerTools::AccessLevel::workspace
+        ? mutationIntentFor(userText) : MutationIntent::none;
 
-        juce::MessageManager::callAsync([safeThis, response] {
+    std::thread([safeThis, historySnapshot, providerPtr, engineerTools, toolDefinitions,
+                 mutationIntent] () mutable {
+        std::unique_ptr<ai_provider::AiProvider> owned(providerPtr);
+        auto workingHistory = historySnapshot;
+        ai_provider::ChatResponse response;
+        bool workspaceChanged = false;
+        bool inspectedProject = false;
+        bool successfulWrite = false;
+        bool successfulFileWrite = false;
+        juce::StringArray activity;
+        constexpr int maximumToolRounds = 12;
+        for (int round = 0; round < maximumToolRounds; ++round)
+        {
+            const bool stillNeedsWrite = mutationIntent == MutationIntent::fileWrite
+                ? !successfulFileWrite
+                : mutationIntent == MutationIntent::anyWrite && !successfulWrite;
+            response = owned->sendChat(
+                workingHistory,
+                toolDefinitions,
+                stillNeedsWrite ? ai_provider::ToolChoice::required
+                                : ai_provider::ToolChoice::autoSelect);
+            if (!response.ok || response.toolCalls.empty())
+                break;
+
+            workingHistory.push_back(
+                { "assistant", response.content, response.toolCalls, {} });
+            for (const auto& call : response.toolCalls)
+            {
+                auto result = isWriteTool(call.name) && !inspectedProject
+                    ? EngineerTools::Result {
+                        false,
+                        false,
+                        "Error: Inspect the current project with workspace_list, workspace_search, or "
+                        "workspace_read before writing so the target path is grounded."
+                    }
+                    : engineerTools.execute(call);
+                if (result.ok && isInspectionTool(call.name))
+                    inspectedProject = true;
+                if (result.ok && isWriteTool(call.name))
+                    successfulWrite = true;
+                if (result.ok && isFileWriteTool(call.name))
+                    successfulFileWrite = true;
+                workspaceChanged = workspaceChanged || result.workspaceChanged;
+                const auto summary = result.message.upToFirstOccurrenceOf("\n", false, false);
+                activity.add("- `" + juce::String(call.name) + "`: " + summary);
+                juce::MessageManager::callAsync([safeThis, callName = juce::String(call.name),
+                                                  summary, changed = result.workspaceChanged] {
+                    if (safeThis == nullptr) return;
+                    safeThis->appendTranscript("tool", "`" + callName + "`: " + summary);
+                    if (changed && safeThis->onFileSystemChanged)
+                        safeThis->onFileSystemChanged();
+                });
+                workingHistory.push_back(
+                    { "tool", result.message.toStdString(), {}, call.id });
+            }
+            if (round == maximumToolRounds - 1)
+                response = { false, {}, "The Engineer reached the 12-round tool limit." };
+        }
+
+        const bool mutationSatisfied = mutationIntent == MutationIntent::none
+            || (mutationIntent == MutationIntent::fileWrite ? successfulFileWrite : successfulWrite);
+        juce::MessageManager::callAsync([safeThis, response, workspaceChanged, mutationIntent,
+                                         mutationSatisfied, activity] {
             if (safeThis == nullptr) return;
 
             if (response.ok) {
-                safeThis->history.push_back({ "assistant", response.content });
-                safeThis->appendAndSave("assistant", juce::String(response.content));
+                auto finalContent = response.content.empty()
+                    ? std::string("The requested project operation completed.") : response.content;
+                juce::String report;
+                if (!activity.isEmpty())
+                    report = "**Project activity**\n\n" + activity.joinIntoString("\n") + "\n\n";
+                if (mutationIntent != MutationIntent::none && !mutationSatisfied)
+                    report << "**No project files were changed.**\n\n";
+                if (report.isNotEmpty())
+                    finalContent = (report + juce::String(finalContent)).toStdString();
+                safeThis->history.push_back({ "assistant", finalContent });
+                safeThis->appendAndSave("assistant", juce::String(finalContent));
                 safeThis->renderConversation();
             } else {
                 safeThis->renderConversation();
@@ -532,6 +677,8 @@ void AiChatPanel::sendMessage()
             }
 
             safeThis->transcript.scrollToBottom();
+            if (workspaceChanged && safeThis->onFileSystemChanged)
+                safeThis->onFileSystemChanged();
             safeThis->requestInFlight = false;
             safeThis->updateConversationControls();
         });

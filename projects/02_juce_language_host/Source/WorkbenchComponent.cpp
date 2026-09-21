@@ -53,6 +53,21 @@ WorkbenchComponent::WorkbenchComponent()
     auto console = std::make_unique<ConsolePanel>();
     consolePanel = console.get();
     consolePanel->getProjectRoot = [this] { return fileTreePanel->getRootDirectory(); };
+
+    auto errorList = std::make_unique<ErrorListPanel>();
+    errorListPanel = errorList.get();
+    errorListPanel->onDiagnosticActivated = [this](const frust::Diagnostic& diagnostic) {
+        if (editorTabComponent == nullptr || diagnostic.file.empty()) return;
+        auto file = juce::File(juce::String(diagnostic.file));
+        if (!juce::File::isAbsolutePath(juce::String(diagnostic.file)))
+            file = fileTreePanel->getRootDirectory().getChildFile(juce::String(diagnostic.file));
+        if (file.existsAsFile())
+            editorTabComponent->openFileAt(file, diagnostic.line, diagnostic.column);
+    };
+    consolePanel->onDiagnostics = [this](std::vector<frust::Diagnostic> diagnostics) {
+        if (errorListPanel != nullptr)
+            errorListPanel->setDiagnostics(std::move(diagnostics));
+    };
     
     auto terminal = std::make_unique<TerminalPanel>(appProperties.get());
     terminalPanel = terminal.get();
@@ -70,6 +85,10 @@ WorkbenchComponent::WorkbenchComponent()
     };
 
     auto aiChat = std::make_unique<AiChatPanel>(appProperties.get());
+    aiChat->getProjectRoot = [this] { return fileTreePanel->getRootDirectory(); };
+    aiChat->onFileSystemChanged = [this] {
+        if (fileTreePanel != nullptr) fileTreePanel->refresh();
+    };
     // appProperties (constructed above) is what persists which
     // discovered plugins are marked auto-load across restarts - same
     // mechanism already used for lastOpenedFolder.
@@ -83,6 +102,7 @@ WorkbenchComponent::WorkbenchComponent()
     dockManager->registerPanel("ai", "AI Assistant", std::move(aiChat), CreationDock::DockTargetZone::Right);
     dockManager->registerPanel("plugins", "Plugins", std::move(plugins), CreationDock::DockTargetZone::Right);
     dockManager->registerPanel("console", "Console & Output REPL", std::move(console), CreationDock::DockTargetZone::Bottom);
+    dockManager->registerPanel("errors", "Error List", std::move(errorList), CreationDock::DockTargetZone::Bottom);
     dockManager->registerPanel("terminal", "OS Terminal", std::move(terminal), CreationDock::DockTargetZone::Bottom);
 
     dockManager->loadLayoutFromFile(getLayoutFile());
@@ -253,7 +273,7 @@ void WorkbenchComponent::runActiveFileInRepl()
     if (source.trim().isEmpty()) return;
 
     auto label = editorTabComponent->getActiveFile().exists()
-        ? editorTabComponent->getActiveFile().getFileName()
+        ? editorTabComponent->getActiveFile().getFullPathName()
         : juce::String("untitled");
 
     consolePanel->runScript(source, label);

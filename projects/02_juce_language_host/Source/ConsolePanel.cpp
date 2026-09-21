@@ -96,6 +96,17 @@ void ConsolePanel::runScript(const juce::String& source, const juce::String& lab
 {
     if (source.trim().isEmpty()) return;
 
+    frust::CompileRequest check;
+    check.sources.push_back({ label.toStdString(), source.toStdString() });
+    check.emitObject = false;
+    auto compileResult = frust::Compile(check);
+    if (onDiagnostics) onDiagnostics(compileResult.diagnostics);
+    if (!compileResult.ok)
+    {
+        logMessage("(compile failed; see Error List)");
+        return;
+    }
+
     logMessage("(running " + label + " in the console session)");
 
     auto results = replSession->runScript(source.toStdString());

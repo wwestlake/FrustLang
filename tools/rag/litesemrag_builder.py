@@ -11,6 +11,7 @@ WIKI_DIR = REPO_ROOT / "wiki" / "reference"
 PROJECTS_DIR = REPO_ROOT / "projects"
 AGENT_CONTEXT = REPO_ROOT / "projects" / "frust-ide-agent" / "FRUST_AI_CONTEXT.md"
 SPEC_FILE = REPO_ROOT / "projects" / "01_language_paradigms" / "02_functional" / "FRUST_LANG_SPEC.md"
+ENGINEER_TOOL_CARDS = REPO_ROOT / "projects" / "frust-ide-agent" / "ENGINEER_TOOL_CARDS.jsonl"
 GRAMMAR_FILES = [
     REPO_ROOT / "projects" / "01_language_paradigms" / "02_functional" / "grammar" / "frust.y",
     REPO_ROOT / "projects" / "01_language_paradigms" / "02_functional" / "grammar" / "frust.l",
@@ -93,6 +94,25 @@ def parse_authoritative_docs(cursor):
         else:
             print(f"Warning: grammar file not found at {path}")
 
+def parse_engineer_tool_cards(cursor):
+    if not ENGINEER_TOOL_CARDS.exists():
+        print(f"Warning: Engineer tool cards not found at {ENGINEER_TOOL_CARDS}")
+        return
+
+    for line in ENGINEER_TOOL_CARDS.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        card = json.loads(line)
+        upsert_node(
+            cursor,
+            card["id"],
+            "TOOL",
+            card["title"],
+            card["text"],
+            card["source"],
+        )
+        print(f"Ingested Tool: {card['title']}")
+
 def parse_pods(cursor):
     if not PROJECTS_DIR.exists():
         return
@@ -158,6 +178,7 @@ def main():
     clear_db(cursor)
     
     parse_authoritative_docs(cursor)
+    parse_engineer_tool_cards(cursor)
     parse_wiki(cursor)
     parse_pods(cursor)
     

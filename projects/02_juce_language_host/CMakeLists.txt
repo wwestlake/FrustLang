@@ -103,6 +103,8 @@ target_sources(LagDaemonResearchIDE PRIVATE
     Source/MetadataPanel.cpp
     Source/ConsolePanel.h
     Source/ConsolePanel.cpp
+    Source/ErrorListPanel.h
+    Source/ErrorListPanel.cpp
     Source/TerminalPanel.h
     Source/TerminalPanel.cpp
     Source/TerminalInstance.h
@@ -117,6 +119,8 @@ target_sources(LagDaemonResearchIDE PRIVATE
     Source/ConversationStore.cpp
     Source/AiChatPanel.h
     Source/AiChatPanel.cpp
+    Source/EngineerTools.h
+    Source/EngineerTools.cpp
     Source/AiConversationView.h
     Source/AiConversationView.cpp
     Source/FratePanel.h
@@ -183,3 +187,24 @@ target_link_libraries(ConversationStoreTests PRIVATE
 )
 
 juce_generate_juce_header(ConversationStoreTests)
+
+juce_add_console_app(EngineerToolsTests
+    PRODUCT_NAME "Engineer Tools Tests"
+)
+
+target_sources(EngineerToolsTests PRIVATE
+    Source/EngineerTools.h
+    Source/EngineerTools.cpp
+    Source/EngineerToolsTests.cpp
+)
+
+target_compile_definitions(EngineerToolsTests PRIVATE
+    FRUST_REPO_ROOT_DIR="${REPO_ROOT_DIR}"
+)
+
+target_link_libraries(EngineerToolsTests PRIVATE
+    ai_provider
+    juce::juce_core
+)
+
+juce_generate_juce_header(EngineerToolsTests)

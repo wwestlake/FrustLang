@@ -11,6 +11,7 @@
 #include "FratePanel.h"
 #include "PluginsPanel.h"
 #include "TerminalPanel.h"
+#include "ErrorListPanel.h"
 #include "Auth/DesktopAuthSession.h"
 
 class WorkbenchComponent  : public juce::Component,
@@ -43,6 +44,7 @@ private:
     ConsolePanel* consolePanel = nullptr;
     TerminalPanel* terminalPanel = nullptr;
     ContextPanel* contextPanel = nullptr;
+    ErrorListPanel* errorListPanel = nullptr;
     FratePanel* fratePanel = nullptr;
     std::unique_ptr<juce::FileChooser> activeFileChooser;
 

@@ -12,9 +12,16 @@ Crawls the `wiki/reference` directory and `projects/` source code.
 - **Edges**: `DEFINED_IN`, `IMPLEMENTS`.
 - By default, pod ingestion only includes `frate.json` manifests already tracked by Git. Set `FRUST_RAG_INCLUDE_UNTRACKED=1` when experimenting locally with untracked pod folders.
 
+### `build_engineer_tool_cards.py`
+Generates the assistant's LiteSemRAG tool cards from
+`projects/frust-ide-agent/ENGINEER_TOOLS.json`. FrustIDE reads that same catalog
+to construct the live provider tool definitions, keeping tool knowledge and
+executable capability synchronized.
+
 **Usage:**
-```bash
-python litesemrag_builder.py
+```powershell
+py tools\rag\build_engineer_tool_cards.py
+py tools\rag\litesemrag_builder.py
 ```
 This will output `frust_knowledge.db` in this directory.
 

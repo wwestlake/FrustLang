@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 1,
+  "tools": [
+    {
+      "name": "workspace_list",
+      "description": "List files and directories in the project currently open in FrustIDE.",
+      "usage": "Use before assuming the project layout or choosing a file to inspect.",
+      "access": "observe",
+      "tokens": ["files", "folders", "tree", "project", "list"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string", "description": "Path relative to the open project.", "default": "." },
+          "recursive": { "type": "boolean", "default": false },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 200 }
+        }
+      }
+    },
+    {
+      "name": "workspace_read",
+      "description": "Read a UTF-8 project file with line numbers and optional line bounds.",
+      "usage": "Read specifications and surrounding source before proposing or making an edit.",
+      "access": "observe",
+      "tokens": ["read", "source", "specification", "documentation", "lines"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string", "description": "Path relative to the open project." },
+          "start_line": { "type": "integer", "minimum": 1, "default": 1 },
+          "end_line": { "type": "integer", "minimum": 1 }
+        },
+        "required": ["path"]
+      }
+    },
+    {
+      "name": "workspace_search",
+      "description": "Search UTF-8 text files in the open project and return matching paths, lines, and excerpts.",
+      "usage": "Use to find definitions, references, requirements, and relevant documentation before editing.",
+      "access": "observe",
+      "tokens": ["search", "find", "references", "definitions", "specifications"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "query": { "type": "string", "minLength": 1 },
+          "path": { "type": "string", "description": "Path relative to the open project.", "default": "." },
+          "file_pattern": { "type": "string", "default": "*" },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "workspace_create_directory",
+      "description": "Create a directory inside the project currently open in FrustIDE, including missing parents.",
+      "usage": "Use to establish a requested project or module layout. It succeeds when the directory already exists.",
+      "access": "workspace",
+      "tokens": ["create", "directory", "folder", "project", "module"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string", "description": "Path relative to the open project." }
+        },
+        "required": ["path"]
+      }
+    },
+    {
+      "name": "workspace_create_file",
+      "description": "Create a new UTF-8 source, specification, or documentation file without overwriting an existing file.",
+      "usage": "Use for new files. If the file exists, read it and make a focused edit instead.",
+      "access": "workspace",
+      "tokens": ["create", "file", "write", "code", "documentation"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string", "description": "Path relative to the open project." },
+          "content": { "type": "string" }
+        },
+        "required": ["path", "content"]
+      }
+    },
+    {
+      "name": "workspace_replace_text",
+      "description": "Replace exact text in an existing UTF-8 project file.",
+      "usage": "Use for focused edits after reading the file. By default the old text must occur exactly once.",
+      "access": "workspace",
+      "tokens": ["edit", "replace", "patch", "code", "documentation"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string", "description": "Path relative to the open project." },
+          "old_text": { "type": "string", "minLength": 1 },
+          "new_text": { "type": "string" },
+          "replace_all": { "type": "boolean", "default": false }
+        },
+        "required": ["path", "old_text", "new_text"]
+      }
+    }
+  ]
+}

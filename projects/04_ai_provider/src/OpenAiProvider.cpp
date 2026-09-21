@@ -8,7 +8,9 @@ namespace ai_provider {
 OpenAiProvider::OpenAiProvider(std::string apiKeyIn, std::string modelIn)
     : apiKey(std::move(apiKeyIn)), model(std::move(modelIn)) {}
 
-ChatResponse OpenAiProvider::sendChat(const std::vector<ChatMessage>& messages) {
+ChatResponse OpenAiProvider::sendChat(const std::vector<ChatMessage>& messages,
+                                      const std::vector<ToolDefinition>& tools,
+                                      ToolChoice toolChoice) {
     if (apiKey.empty() || apiKey == "PASTE_YOUR_OPENAI_API_KEY_HERE") {
         return { false, {}, "No OpenAI API key set for this profile (open AI Settings)." };
     }
@@ -18,12 +20,47 @@ ChatResponse OpenAiProvider::sendChat(const std::vector<ChatMessage>& messages) 
         auto* obj = new juce::DynamicObject();
         obj->setProperty("role", juce::String(m.role));
         obj->setProperty("content", juce::String(m.content));
+        if (!m.toolCallId.empty())
+            obj->setProperty("tool_call_id", juce::String(m.toolCallId));
+        if (!m.toolCalls.empty()) {
+            juce::Array<juce::var> calls;
+            for (const auto& call : m.toolCalls) {
+                auto* function = new juce::DynamicObject();
+                function->setProperty("name", juce::String(call.name));
+                function->setProperty("arguments", juce::String(call.argumentsJson));
+                auto* callObject = new juce::DynamicObject();
+                callObject->setProperty("id", juce::String(call.id));
+                callObject->setProperty("type", "function");
+                callObject->setProperty("function", juce::var(function));
+                calls.add(juce::var(callObject));
+            }
+            obj->setProperty("tool_calls", calls);
+        }
         messagesArray.add(juce::var(obj));
     }
 
     auto* bodyObj = new juce::DynamicObject();
     bodyObj->setProperty("model", juce::String(model.empty() ? "gpt-4o-mini" : model));
     bodyObj->setProperty("messages", messagesArray);
+    if (!tools.empty()) {
+        juce::Array<juce::var> toolArray;
+        for (const auto& tool : tools) {
+            auto parameters = juce::JSON::parse(juce::String(tool.parametersJson));
+            if (!parameters.isObject())
+                return { false, {}, "Tool schema is not a JSON object: " + tool.name };
+            auto* function = new juce::DynamicObject();
+            function->setProperty("name", juce::String(tool.name));
+            function->setProperty("description", juce::String(tool.description));
+            function->setProperty("parameters", parameters);
+            auto* toolObject = new juce::DynamicObject();
+            toolObject->setProperty("type", "function");
+            toolObject->setProperty("function", juce::var(function));
+            toolArray.add(juce::var(toolObject));
+        }
+        bodyObj->setProperty("tools", toolArray);
+        bodyObj->setProperty("tool_choice",
+            toolChoice == ToolChoice::required ? "required" : "auto");
+    }
 
     auto bodyText = juce::JSON::toString(juce::var(bodyObj), true);
     juce::MemoryBlock postData(bodyText.toRawUTF8(), bodyText.getNumBytesAsUTF8());
@@ -56,8 +93,22 @@ ChatResponse OpenAiProvider::sendChat(const std::vector<ChatMessage>& messages) 
     if (choices == nullptr || choices->isEmpty())
         return { false, {}, "OpenAI response had no choices: " + responseText.toStdString() };
 
-    auto content = choices->getReference(0).getProperty("message", {}).getProperty("content", {}).toString();
-    return { true, content.toStdString(), {} };
+    auto message = choices->getReference(0).getProperty("message", {});
+    auto content = message.getProperty("content", {}).toString();
+    std::vector<ToolCall> toolCalls;
+    if (auto* calls = message.getProperty("tool_calls", {}).getArray()) {
+        toolCalls.reserve(static_cast<size_t>(calls->size()));
+        for (const auto& item : *calls) {
+            const auto function = item.getProperty("function", {});
+            ToolCall call;
+            call.id = item.getProperty("id", {}).toString().toStdString();
+            call.name = function.getProperty("name", {}).toString().toStdString();
+            call.argumentsJson = function.getProperty("arguments", {}).toString().toStdString();
+            if (!call.id.empty() && !call.name.empty())
+                toolCalls.push_back(std::move(call));
+        }
+    }
+    return { true, content.toStdString(), {}, std::move(toolCalls) };
 }
 
 ModelListResponse OpenAiProvider::listModels() {
