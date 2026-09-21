@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include "FrustTokeniser.h"
+#include "ZoomableEditors.h"
 
 class CodeEditorTab : public juce::Component,
                       private juce::CodeDocument::Listener,
@@ -36,8 +37,9 @@ private:
     juce::File targetFile;
     juce::CodeDocument document;
     FrustTokeniser tokeniser;
-    juce::CodeEditorComponent editor { document, &tokeniser };
+    ZoomableCodeEditor editor { document, &tokeniser };
     juce::Label statusBar;
+    float editorFontSize = 14.0f;
     juce::Time lastKnownModTime;
     bool isDirty = false;
     bool suppressDirtyTracking = false; // true only while WE are the ones changing document content (load/reload), not the user typing

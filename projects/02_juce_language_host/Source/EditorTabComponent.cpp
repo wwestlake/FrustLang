@@ -6,7 +6,11 @@
 CodeEditorTab::CodeEditorTab(const juce::File& file)
     : targetFile(file)
 {
-    editor.setFont(juce::Font("Consolas", 14.0f, juce::Font::plain));
+    editor.setFont(juce::Font("Consolas", editorFontSize, juce::Font::plain));
+    editor.onZoom = [this](float direction) {
+        editorFontSize = juce::jlimit(9.0f, 30.0f, editorFontSize + direction);
+        editor.setFont(juce::Font("Consolas", editorFontSize, juce::Font::plain));
+    };
     editor.setColourScheme(tokeniser.getDefaultColourScheme());
     editor.setColour(juce::CodeEditorComponent::backgroundColourId, juce::Colour(0xff1e1e1e));
     editor.setColour(juce::CodeEditorComponent::lineNumberBackgroundId, juce::Colour(0xff252526));

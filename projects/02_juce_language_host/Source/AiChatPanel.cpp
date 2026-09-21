@@ -95,10 +95,10 @@ void insertInlineMarkdown(juce::TextEditor& editor, const juce::String& line,
 }
 
 void insertMarkdown(juce::TextEditor& editor, const juce::String& markdown,
-                    juce::Colour baseColour)
+                    juce::Colour baseColour, float scale)
 {
-    const juce::Font bodyFont(14.0f);
-    const juce::Font codeFont("Consolas", 13.0f, juce::Font::plain);
+    const juce::Font bodyFont(14.0f * scale);
+    const juce::Font codeFont("Consolas", 13.0f * scale, juce::Font::plain);
     const auto lines = juce::StringArray::fromLines(markdown.replace("\r\n", "\n"));
     bool inCodeBlock = false;
 
@@ -111,7 +111,7 @@ void insertMarkdown(juce::TextEditor& editor, const juce::String& markdown,
             const auto language = trimmed.substring(3).trim();
             if (inCodeBlock && language.isNotEmpty())
                 insertStyled(editor, language.toUpperCase() + "\n",
-                             juce::Font(11.0f, juce::Font::bold), juce::Colour(0xff7f929c));
+                             juce::Font(11.0f * scale, juce::Font::bold), juce::Colour(0xff7f929c));
             continue;
         }
 
@@ -127,7 +127,7 @@ void insertMarkdown(juce::TextEditor& editor, const juce::String& markdown,
         if (headingLevel > 0 && headingLevel <= 6
             && headingLevel < trimmed.length() && trimmed[headingLevel] == ' ')
         {
-            const auto size = headingLevel == 1 ? 21.0f : headingLevel == 2 ? 18.0f : 16.0f;
+            const auto size = (headingLevel == 1 ? 21.0f : headingLevel == 2 ? 18.0f : 16.0f) * scale;
             insertInlineMarkdown(editor, trimmed.substring(headingLevel + 1),
                                  juce::Font(size, juce::Font::bold), juce::Colour(0xffe6f4f1));
             insertStyled(editor, "\n", bodyFont, baseColour);
@@ -172,7 +172,8 @@ void insertMarkdown(juce::TextEditor& editor, const juce::String& markdown,
     }
 }
 
-void insertMessage(juce::TextEditor& editor, const juce::String& role, const juce::String& text)
+void insertMessage(juce::TextEditor& editor, const juce::String& role,
+                   const juce::String& text, float scale)
 {
     const auto isUser = role == "user" || role == "you";
     const auto isAssistant = role == "assistant";
@@ -182,8 +183,8 @@ void insertMessage(juce::TextEditor& editor, const juce::String& role, const juc
     const auto textColour = role == "system" ? juce::Colour(0xffb8aa88)
                                                : juce::Colour(0xffd9e1e3);
     insertStyled(editor, "\n" + role.toUpperCase() + "\n",
-                 juce::Font(12.0f, juce::Font::bold), roleColour);
-    insertMarkdown(editor, text, textColour);
+                 juce::Font(12.0f * scale, juce::Font::bold), roleColour);
+    insertMarkdown(editor, text, textColour, scale);
 }
 }
 
@@ -233,6 +234,11 @@ AiChatPanel::AiChatPanel(juce::ApplicationProperties* properties)
     transcript.setFont(juce::Font("Consolas", 13.0f, juce::Font::plain));
     transcript.setColour(juce::TextEditor::backgroundColourId, juce::Colour(0xff141414));
     transcript.setColour(juce::TextEditor::textColourId, juce::Colour(0xffd4d4d4));
+    transcript.onZoom = [this](float direction) {
+        transcriptScale = juce::jlimit(0.7f, 2.0f, transcriptScale + direction * 0.1f);
+        inputBox.setFont(juce::Font("Consolas", 13.0f * transcriptScale, juce::Font::plain));
+        renderConversation();
+    };
     addAndMakeVisible(transcript);
 
     inputBox.setMultiLine(true, true);
@@ -464,7 +470,7 @@ void AiChatPanel::showAiSettingsDialog(const juce::String& profileName,
 void AiChatPanel::appendTranscript(const juce::String& speaker, const juce::String& text)
 {
     transcript.moveCaretToEnd();
-    insertMessage(transcript, speaker, text);
+    insertMessage(transcript, speaker, text, transcriptScale);
     transcript.moveCaretToEnd();
 }
 
@@ -592,11 +598,12 @@ void AiChatPanel::renderConversation()
     history.push_back({ "system", loadFrustSystemPrompt().toStdString() });
     transcript.clear();
     insertStyled(transcript, "Ask me anything about writing Frust code.\n",
-                 juce::Font(13.0f), juce::Colour(0xff92a0a4));
+                 juce::Font(13.0f * transcriptScale), juce::Colour(0xff92a0a4));
     for (const auto& block : currentConversation.blocks)
     {
         history.push_back({ block.role.toStdString(), block.content.toStdString() });
-        insertMessage(transcript, block.role == "user" ? "you" : block.role, block.content);
+        insertMessage(transcript, block.role == "user" ? "you" : block.role,
+                      block.content, transcriptScale);
     }
     transcript.moveCaretToEnd();
 }

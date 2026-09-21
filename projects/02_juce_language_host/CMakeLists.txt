@@ -98,6 +98,7 @@ target_sources(LagDaemonResearchIDE PRIVATE
     Source/EditorTabComponent.cpp
     Source/FrustTokeniser.h
     Source/FrustTokeniser.cpp
+    Source/ZoomableEditors.h
     Source/MetadataPanel.h
     Source/MetadataPanel.cpp
     Source/ConsolePanel.h
