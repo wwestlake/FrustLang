@@ -12,6 +12,179 @@ juce::File getConfigFile()
         .getChildFile("LagDaemonResearchIDE")
         .getChildFile("ai_config.json");
 }
+
+void insertStyled(juce::TextEditor& editor, const juce::String& text,
+                  const juce::Font& font, juce::Colour colour)
+{
+    editor.setFont(font);
+    editor.setColour(juce::TextEditor::textColourId, colour);
+    editor.insertTextAtCaret(text);
+}
+
+void insertInlineMarkdown(juce::TextEditor& editor, const juce::String& line,
+                          const juce::Font& baseFont, juce::Colour baseColour)
+{
+    int position = 0;
+    while (position < line.length())
+    {
+        if (line.substring(position).startsWith("**"))
+        {
+            const auto end = line.indexOf(position + 2, "**");
+            if (end >= 0)
+            {
+                insertStyled(editor, line.substring(position + 2, end),
+                             baseFont.boldened(), baseColour);
+                position = end + 2;
+                continue;
+            }
+        }
+
+        if (line[position] == '`')
+        {
+            const auto end = line.indexOfChar(position + 1, '`');
+            if (end >= 0)
+            {
+                insertStyled(editor, line.substring(position + 1, end),
+                             juce::Font("Consolas", baseFont.getHeight(), juce::Font::plain),
+                             juce::Colour(0xfff0c674));
+                position = end + 1;
+                continue;
+            }
+        }
+
+        if (line[position] == '[')
+        {
+            const auto labelEnd = line.indexOfChar(position + 1, ']');
+            if (labelEnd >= 0 && line.substring(labelEnd).startsWith("]("))
+            {
+                const auto urlEnd = line.indexOfChar(labelEnd + 2, ')');
+                if (urlEnd >= 0)
+                {
+                    auto linkFont = baseFont;
+                    linkFont.setUnderline(true);
+                    insertStyled(editor, line.substring(position + 1, labelEnd),
+                                 linkFont, juce::Colour(0xff70b7ff));
+                    insertStyled(editor, " (" + line.substring(labelEnd + 2, urlEnd) + ")",
+                                 baseFont, juce::Colour(0xff8fa3ad));
+                    position = urlEnd + 1;
+                    continue;
+                }
+            }
+        }
+
+        if (line[position] == '*' || line[position] == '_')
+        {
+            const auto marker = line[position];
+            const auto end = line.indexOfChar(position + 1, marker);
+            if (end > position + 1)
+            {
+                insertStyled(editor, line.substring(position + 1, end),
+                             baseFont.italicised(), baseColour);
+                position = end + 1;
+                continue;
+            }
+        }
+
+        auto next = position + 1;
+        while (next < line.length() && line[next] != '*' && line[next] != '_'
+               && line[next] != '`' && line[next] != '[')
+            ++next;
+        insertStyled(editor, line.substring(position, next), baseFont, baseColour);
+        position = next;
+    }
+}
+
+void insertMarkdown(juce::TextEditor& editor, const juce::String& markdown,
+                    juce::Colour baseColour)
+{
+    const juce::Font bodyFont(14.0f);
+    const juce::Font codeFont("Consolas", 13.0f, juce::Font::plain);
+    const auto lines = juce::StringArray::fromLines(markdown.replace("\r\n", "\n"));
+    bool inCodeBlock = false;
+
+    for (const auto& sourceLine : lines)
+    {
+        const auto trimmed = sourceLine.trimStart();
+        if (trimmed.startsWith("```"))
+        {
+            inCodeBlock = !inCodeBlock;
+            const auto language = trimmed.substring(3).trim();
+            if (inCodeBlock && language.isNotEmpty())
+                insertStyled(editor, language.toUpperCase() + "\n",
+                             juce::Font(11.0f, juce::Font::bold), juce::Colour(0xff7f929c));
+            continue;
+        }
+
+        if (inCodeBlock)
+        {
+            insertStyled(editor, "  " + sourceLine + "\n", codeFont, juce::Colour(0xffd7e4e8));
+            continue;
+        }
+
+        int headingLevel = 0;
+        while (headingLevel < trimmed.length() && trimmed[headingLevel] == '#')
+            ++headingLevel;
+        if (headingLevel > 0 && headingLevel <= 6
+            && headingLevel < trimmed.length() && trimmed[headingLevel] == ' ')
+        {
+            const auto size = headingLevel == 1 ? 21.0f : headingLevel == 2 ? 18.0f : 16.0f;
+            insertInlineMarkdown(editor, trimmed.substring(headingLevel + 1),
+                                 juce::Font(size, juce::Font::bold), juce::Colour(0xffe6f4f1));
+            insertStyled(editor, "\n", bodyFont, baseColour);
+            continue;
+        }
+
+        if (trimmed == "---" || trimmed == "***" || trimmed == "___")
+        {
+            insertStyled(editor, "----------------------------------------\n",
+                         bodyFont, juce::Colour(0xff52626a));
+            continue;
+        }
+
+        juce::String prefix;
+        juce::String content = trimmed;
+        if (trimmed.startsWith("> "))
+        {
+            prefix = "| ";
+            content = trimmed.substring(2);
+        }
+        else if (trimmed.startsWith("- ") || trimmed.startsWith("* ") || trimmed.startsWith("+ "))
+        {
+            prefix = "  - ";
+            content = trimmed.substring(2);
+        }
+        else
+        {
+            int digitCount = 0;
+            while (digitCount < trimmed.length() && juce::CharacterFunctions::isDigit(trimmed[digitCount]))
+                ++digitCount;
+            if (digitCount > 0 && trimmed.substring(digitCount).startsWith(". "))
+            {
+                prefix = "  " + trimmed.substring(0, digitCount + 2);
+                content = trimmed.substring(digitCount + 2);
+            }
+        }
+
+        if (prefix.isNotEmpty())
+            insertStyled(editor, prefix, bodyFont.boldened(), juce::Colour(0xff70c7b5));
+        insertInlineMarkdown(editor, content, bodyFont, baseColour);
+        insertStyled(editor, "\n", bodyFont, baseColour);
+    }
+}
+
+void insertMessage(juce::TextEditor& editor, const juce::String& role, const juce::String& text)
+{
+    const auto isUser = role == "user" || role == "you";
+    const auto isAssistant = role == "assistant";
+    const auto roleColour = isUser ? juce::Colour(0xff72d6c1)
+                                   : isAssistant ? juce::Colour(0xff79bfff)
+                                                 : juce::Colour(0xffc4a86b);
+    const auto textColour = role == "system" ? juce::Colour(0xffb8aa88)
+                                               : juce::Colour(0xffd9e1e3);
+    insertStyled(editor, "\n" + role.toUpperCase() + "\n",
+                 juce::Font(12.0f, juce::Font::bold), roleColour);
+    insertMarkdown(editor, text, textColour);
+}
 }
 
 AiChatPanel::AiChatPanel(juce::ApplicationProperties* properties)
@@ -291,7 +464,8 @@ void AiChatPanel::showAiSettingsDialog(const juce::String& profileName,
 void AiChatPanel::appendTranscript(const juce::String& speaker, const juce::String& text)
 {
     transcript.moveCaretToEnd();
-    transcript.insertTextAtCaret("\n" + speaker + ": " + text + "\n");
+    insertMessage(transcript, speaker, text);
+    transcript.moveCaretToEnd();
 }
 
 void AiChatPanel::refreshConversationList(bool loadMostRecent)
@@ -416,14 +590,14 @@ void AiChatPanel::renderConversation()
 {
     history.clear();
     history.push_back({ "system", loadFrustSystemPrompt().toStdString() });
-    juce::String rendered = "Ask me anything about writing Frust code.\n";
+    transcript.clear();
+    insertStyled(transcript, "Ask me anything about writing Frust code.\n",
+                 juce::Font(13.0f), juce::Colour(0xff92a0a4));
     for (const auto& block : currentConversation.blocks)
     {
         history.push_back({ block.role.toStdString(), block.content.toStdString() });
-        rendered += "\n" + juce::String(block.role == "user" ? "you" : "assistant")
-            + ": " + block.content + "\n";
+        insertMessage(transcript, block.role == "user" ? "you" : block.role, block.content);
     }
-    transcript.setText(rendered, false);
     transcript.moveCaretToEnd();
 }
 
@@ -502,10 +676,10 @@ void AiChatPanel::sendMessage()
         return;
     }
 
-    appendTranscript("you", userText);
     if (!appendAndSave("user", userText)) return;
     history.push_back({ "user", userText.toStdString() });
     inputBox.clear();
+    renderConversation();
 
     requestInFlight = true;
     updateConversationControls();
@@ -526,17 +700,12 @@ void AiChatPanel::sendMessage()
         juce::MessageManager::callAsync([safeThis, response] {
             if (safeThis == nullptr) return;
 
-            auto text = safeThis->transcript.getText();
-            const juce::String placeholder = "\nassistant: (thinking...)\n";
-            auto idx = text.lastIndexOf(placeholder);
-            if (idx >= 0) text = text.substring(0, idx) + text.substring(idx + placeholder.length());
-            safeThis->transcript.setText(text);
-
             if (response.ok) {
-                safeThis->appendTranscript("assistant", juce::String(response.content));
                 safeThis->history.push_back({ "assistant", response.content });
                 safeThis->appendAndSave("assistant", juce::String(response.content));
+                safeThis->renderConversation();
             } else {
+                safeThis->renderConversation();
                 safeThis->appendTranscript("system", "Error: " + juce::String(response.errorMessage));
             }
 
