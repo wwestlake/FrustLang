@@ -117,6 +117,8 @@ target_sources(LagDaemonResearchIDE PRIVATE
     Source/ConversationStore.cpp
     Source/AiChatPanel.h
     Source/AiChatPanel.cpp
+    Source/AiConversationView.h
+    Source/AiConversationView.cpp
     Source/FratePanel.h
     Source/FratePanel.cpp
     Source/PluginsPanel.h

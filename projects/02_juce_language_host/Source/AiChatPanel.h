@@ -2,8 +2,8 @@
 
 #include <JuceHeader.h>
 #include <ai_provider/AiConfig.h>
+#include "AiConversationView.h"
 #include "ConversationStore.h"
-#include "ZoomableEditors.h"
 #include <memory>
 #include <vector>
 
@@ -50,7 +50,7 @@ private:
     juce::TextButton newButton { "New" };
     juce::TextButton archiveButton { "Archive" };
     juce::TextButton foldersButton { "Folders..." };
-    ZoomableTextEditor transcript;
+    AiConversationView transcript;
     juce::TextEditor inputBox;
     juce::TextButton sendButton { "Send" };
 
@@ -64,7 +64,6 @@ private:
     bool changingModelSelection = false;
     bool modelRequestInFlight = false;
     unsigned int modelRequestGeneration = 0;
-    float transcriptScale = 1.0f;
 
     // Guards against overlapping requests; the network call runs on a
     // background std::thread and marshals its result back via
