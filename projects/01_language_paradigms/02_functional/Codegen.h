@@ -3908,6 +3908,208 @@ private:
         return builder.CreateFDiv(v, splat, "normalizetmp");
     }
 
+    // ---- Text comparison (LANGUAGE_GAPS: `==` on a String compared addresses, never contents) ----
+    //
+    // A String is a null-terminated i8*, and two equal texts sit at different addresses, so comparing text means walking the
+    // characters. The text_* functions below are compiler built-ins whose bodies are emitted into the module as small
+    // internal helpers (no C library call, so nothing to resolve at link time). A null String is treated as "". Comparison is
+    // by byte; the ignore-case forms fold only the ASCII letters A-Z.
+    static bool isTextBuiltinName(const std::string& n) {
+        return n == "text_equals" || n == "text_equals_ignore_case" || n == "text_compare" || n == "text_length"
+            || n == "text_starts_with" || n == "text_ends_with" || n == "text_contains";
+    }
+
+    // Emits `body` as the definition of an internal helper the first time it is asked for.
+    llvm::Function* getTextHelper(const char* name, llvm::Type* result, std::vector<llvm::Type*> params,
+                                  const std::function<void(llvm::Function*)>& body) {
+        if (auto* existing = module.getFunction(name)) return existing;
+        auto* fn = llvm::Function::Create(llvm::FunctionType::get(result, params, false), llvm::Function::InternalLinkage, name, &module);
+        llvm::IRBuilderBase::InsertPointGuard guard(builder);   // this may be emitted in the middle of another function
+        body(fn);
+        return fn;
+    }
+
+    llvm::Value* textOrEmpty(llvm::Value* p) {
+        return builder.CreateSelect(builder.CreateIsNull(p), builder.CreateGlobalString("", "frust_empty_text"), p);
+    }
+
+    llvm::Function* getTextLengthFn() {
+        llvm::Type* i8Ty = llvm::Type::getInt8Ty(context);
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(context);
+        llvm::Type* ptrTy = llvm::PointerType::getUnqual(context);
+        return getTextHelper("frust_text_length", i64Ty, {ptrTy}, [&](llvm::Function* fn) {
+            auto* entry = llvm::BasicBlock::Create(context, "entry", fn);
+            auto* loop = llvm::BasicBlock::Create(context, "loop", fn);
+            auto* step = llvm::BasicBlock::Create(context, "step", fn);
+            auto* done = llvm::BasicBlock::Create(context, "done", fn);
+            builder.SetInsertPoint(entry);
+            llvm::Value* p = textOrEmpty(fn->getArg(0));
+            builder.CreateBr(loop);
+            builder.SetInsertPoint(loop);
+            auto* i = builder.CreatePHI(i64Ty, 2, "i");
+            i->addIncoming(builder.getInt64(0), entry);
+            llvm::Value* c = builder.CreateLoad(i8Ty, builder.CreateGEP(i8Ty, p, i));
+            builder.CreateCondBr(builder.CreateICmpEQ(c, builder.getInt8(0)), done, step);
+            builder.SetInsertPoint(step);
+            auto* next = builder.CreateAdd(i, builder.getInt64(1));
+            i->addIncoming(next, step);
+            builder.CreateBr(loop);
+            builder.SetInsertPoint(done);
+            builder.CreateRet(i);
+        });
+    }
+
+    // (a, b, fold) -> -1, 0 or 1: the first differing byte decides, unsigned; a text that is a prefix of the other is smaller.
+    llvm::Function* getTextCompareFn() {
+        llvm::Type* i1Ty = llvm::Type::getInt1Ty(context);
+        llvm::Type* i8Ty = llvm::Type::getInt8Ty(context);
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(context);
+        llvm::Type* ptrTy = llvm::PointerType::getUnqual(context);
+        return getTextHelper("frust_text_compare", i64Ty, {ptrTy, ptrTy, i1Ty}, [&](llvm::Function* fn) {
+            auto* entry = llvm::BasicBlock::Create(context, "entry", fn);
+            auto* loop = llvm::BasicBlock::Create(context, "loop", fn);
+            auto* checkEnd = llvm::BasicBlock::Create(context, "checkend", fn);
+            auto* step = llvm::BasicBlock::Create(context, "step", fn);
+            auto* differ = llvm::BasicBlock::Create(context, "differ", fn);
+            auto* equal = llvm::BasicBlock::Create(context, "equal", fn);
+            builder.SetInsertPoint(entry);
+            llvm::Value* a = textOrEmpty(fn->getArg(0));
+            llvm::Value* b = textOrEmpty(fn->getArg(1));
+            llvm::Value* fold = fn->getArg(2);
+            builder.CreateBr(loop);
+            builder.SetInsertPoint(loop);
+            auto* i = builder.CreatePHI(i64Ty, 2, "i");
+            i->addIncoming(builder.getInt64(0), entry);
+            auto lower = [&](llvm::Value* c) {
+                llvm::Value* isUpper = builder.CreateAnd(builder.CreateICmpUGE(c, builder.getInt8('A')), builder.CreateICmpULE(c, builder.getInt8('Z')));
+                llvm::Value* lowered = builder.CreateSelect(isUpper, builder.CreateAdd(c, builder.getInt8('a' - 'A')), c);
+                return builder.CreateSelect(fold, lowered, c);
+            };
+            llvm::Value* ca = lower(builder.CreateLoad(i8Ty, builder.CreateGEP(i8Ty, a, i)));
+            llvm::Value* cb = lower(builder.CreateLoad(i8Ty, builder.CreateGEP(i8Ty, b, i)));
+            builder.CreateCondBr(builder.CreateICmpNE(ca, cb), differ, checkEnd);
+            builder.SetInsertPoint(checkEnd);
+            builder.CreateCondBr(builder.CreateICmpEQ(ca, builder.getInt8(0)), equal, step);
+            builder.SetInsertPoint(step);
+            i->addIncoming(builder.CreateAdd(i, builder.getInt64(1)), step);
+            builder.CreateBr(loop);
+            builder.SetInsertPoint(differ);
+            builder.CreateRet(builder.CreateSelect(builder.CreateICmpULT(ca, cb), builder.getInt64(-1), builder.getInt64(1)));
+            builder.SetInsertPoint(equal);
+            builder.CreateRet(builder.getInt64(0));
+        });
+    }
+
+    // (a, b) -> true if `a` begins with `b`.
+    llvm::Function* getTextStartsWithFn() {
+        llvm::Type* i1Ty = llvm::Type::getInt1Ty(context);
+        llvm::Type* i8Ty = llvm::Type::getInt8Ty(context);
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(context);
+        llvm::Type* ptrTy = llvm::PointerType::getUnqual(context);
+        return getTextHelper("frust_text_starts_with", i1Ty, {ptrTy, ptrTy}, [&](llvm::Function* fn) {
+            auto* entry = llvm::BasicBlock::Create(context, "entry", fn);
+            auto* loop = llvm::BasicBlock::Create(context, "loop", fn);
+            auto* checkA = llvm::BasicBlock::Create(context, "checka", fn);
+            auto* step = llvm::BasicBlock::Create(context, "step", fn);
+            auto* yes = llvm::BasicBlock::Create(context, "yes", fn);
+            auto* no = llvm::BasicBlock::Create(context, "no", fn);
+            builder.SetInsertPoint(entry);
+            llvm::Value* a = textOrEmpty(fn->getArg(0));
+            llvm::Value* b = textOrEmpty(fn->getArg(1));
+            builder.CreateBr(loop);
+            builder.SetInsertPoint(loop);
+            auto* i = builder.CreatePHI(i64Ty, 2, "i");
+            i->addIncoming(builder.getInt64(0), entry);
+            llvm::Value* cb = builder.CreateLoad(i8Ty, builder.CreateGEP(i8Ty, b, i));
+            builder.CreateCondBr(builder.CreateICmpEQ(cb, builder.getInt8(0)), yes, checkA);
+            builder.SetInsertPoint(checkA);
+            llvm::Value* ca = builder.CreateLoad(i8Ty, builder.CreateGEP(i8Ty, a, i));
+            builder.CreateCondBr(builder.CreateICmpEQ(ca, cb), step, no);
+            builder.SetInsertPoint(step);
+            i->addIncoming(builder.CreateAdd(i, builder.getInt64(1)), step);
+            builder.CreateBr(loop);
+            builder.SetInsertPoint(yes);
+            builder.CreateRet(builder.getInt1(true));
+            builder.SetInsertPoint(no);
+            builder.CreateRet(builder.getInt1(false));
+        });
+    }
+
+    // (a, b) -> true if `b` appears anywhere in `a` (an empty `b` is found everywhere).
+    llvm::Function* getTextContainsFn() {
+        llvm::Type* i1Ty = llvm::Type::getInt1Ty(context);
+        llvm::Type* i8Ty = llvm::Type::getInt8Ty(context);
+        llvm::Type* ptrTy = llvm::PointerType::getUnqual(context);
+        llvm::Function* startsWith = getTextStartsWithFn();
+        return getTextHelper("frust_text_contains", i1Ty, {ptrTy, ptrTy}, [&](llvm::Function* fn) {
+            auto* entry = llvm::BasicBlock::Create(context, "entry", fn);
+            auto* loop = llvm::BasicBlock::Create(context, "loop", fn);
+            auto* checkEnd = llvm::BasicBlock::Create(context, "checkend", fn);
+            auto* step = llvm::BasicBlock::Create(context, "step", fn);
+            auto* yes = llvm::BasicBlock::Create(context, "yes", fn);
+            auto* no = llvm::BasicBlock::Create(context, "no", fn);
+            builder.SetInsertPoint(entry);
+            llvm::Value* a = textOrEmpty(fn->getArg(0));
+            llvm::Value* b = textOrEmpty(fn->getArg(1));
+            builder.CreateBr(loop);
+            builder.SetInsertPoint(loop);
+            auto* p = builder.CreatePHI(ptrTy, 2, "p");
+            p->addIncoming(a, entry);
+            builder.CreateCondBr(builder.CreateCall(startsWith, {p, b}), yes, checkEnd);
+            builder.SetInsertPoint(checkEnd);
+            llvm::Value* c = builder.CreateLoad(i8Ty, p);
+            builder.CreateCondBr(builder.CreateICmpEQ(c, builder.getInt8(0)), no, step);
+            builder.SetInsertPoint(step);
+            p->addIncoming(builder.CreateGEP(i8Ty, p, builder.getInt64(1)), step);
+            builder.CreateBr(loop);
+            builder.SetInsertPoint(yes);
+            builder.CreateRet(builder.getInt1(true));
+            builder.SetInsertPoint(no);
+            builder.CreateRet(builder.getInt1(false));
+        });
+    }
+
+    llvm::Value* compileTextBuiltinCall(const std::string& name, const Expr& expr) {
+        const size_t wanted = name == "text_length" ? 1 : 2;
+        if (expr.args.size() != wanted) {
+            Diag() << "frust: codegen error: '" << name << "' takes " << wanted << " argument(s), got " << expr.args.size() << "\n";
+            hadCodegenError = true;
+            return nullptr;
+        }
+        std::vector<llvm::Value*> args;
+        for (auto* a : expr.args) {
+            llvm::Value* v = compileExpr(a);
+            if (!v) return nullptr;
+            if (!v->getType()->isPointerTy()) {
+                Diag() << "frust: codegen error: '" << name << "' works on text (String), not a number\n";
+                hadCodegenError = true;
+                return nullptr;
+            }
+            args.push_back(v);
+        }
+
+        llvm::Type* i8Ty = llvm::Type::getInt8Ty(context);
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(context);
+        if (name == "text_length") return builder.CreateCall(getTextLengthFn(), {args[0]}, "textlen");
+        if (name == "text_compare") return builder.CreateCall(getTextCompareFn(), {args[0], args[1], builder.getInt1(false)}, "textcmp");
+        if (name == "text_equals" || name == "text_equals_ignore_case") {
+            llvm::Value* r = builder.CreateCall(getTextCompareFn(), {args[0], args[1], builder.getInt1(name == "text_equals_ignore_case")}, "textcmp");
+            return builder.CreateICmpEQ(r, builder.getInt64(0), "texteq");
+        }
+        if (name == "text_starts_with") return builder.CreateCall(getTextStartsWithFn(), {args[0], args[1]}, "textstarts");
+        if (name == "text_contains") return builder.CreateCall(getTextContainsFn(), {args[0], args[1]}, "textcontains");
+
+        // text_ends_with: compare the tail of `a`, as long as `a` is at least as long as `b`.
+        llvm::Value* la = builder.CreateCall(getTextLengthFn(), {args[0]});
+        llvm::Value* lb = builder.CreateCall(getTextLengthFn(), {args[1]});
+        llvm::Value* longEnough = builder.CreateICmpUGE(la, lb);
+        llvm::Value* offset = builder.CreateSelect(longEnough, builder.CreateSub(la, lb), builder.getInt64(0));
+        llvm::Value* tail = builder.CreateGEP(i8Ty, args[0], offset);
+        llvm::Value* same = builder.CreateICmpEQ(builder.CreateCall(getTextCompareFn(), {tail, args[1], builder.getInt1(false)}), builder.getInt64(0));
+        (void) i64Ty;
+        return builder.CreateAnd(longEnough, same, "textends");
+    }
+
     llvm::Value* compileCall(const Expr& expr) {
         if (expr.lhs->kind == ExprKind::Member) return compileMethodCall(expr);
 
@@ -3933,6 +4135,9 @@ private:
             }
             if (targetName == "call_i64" || targetName == "call_f64" || targetName == "call_bool" || targetName == "call_str") {
                 return compileTypedIndirectCall(targetName, expr);
+            }
+            if (isTextBuiltinName(targetName) && !module.getFunction(targetName)) {
+                return compileTextBuiltinCall(targetName, expr);
             }
         } else if (expr.lhs->kind == ExprKind::Path) {
             targetName = expr.lhs->pathSegments.front();
@@ -3999,7 +4204,6 @@ private:
             }
             Diag() << "frust: codegen error: unknown function '" << targetName << "'\n";
             hadCodegenError = true;
-            Diag() << "DEBUG: blockTerminated is " << blockTerminated << "\n";
             return nullptr;
         }
         if (callee->arg_size() != expr.args.size()) {

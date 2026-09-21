@@ -398,6 +398,8 @@ private:
         }
     }
 
+    static bool isNullName(const Expr* e) { return e && e->kind == ExprKind::Identifier && e->text == "null"; }
+
     Kind binaryType(const Expr& x) {
         const Kind l = typeOf(x.lhs);
         const Kind r = typeOf(x.rhs);
@@ -412,6 +414,10 @@ private:
             if (equality) {
                 if (clash(l, r))
                     error(x.loc, std::string("cannot compare ") + describe(l) + " with " + describe(r));
+                else if (!isNullName(x.lhs) && !isNullName(x.rhs))   // `s == null` is a real pointer test; only text against text is wrong
+                    error(x.loc, std::string("'") + symbol(op) + "' on text compares where the texts are stored, not their characters, "
+                                     "so it is never what you mean; use " + (op == BinaryOp::Eq ? "text_equals(a, b)" : "!text_equals(a, b)")
+                                     + " (or text_equals_ignore_case(a, b))");
                 return Kind::Bool;
             }
             error(x.loc, std::string("the operator '") + symbol(op) + "' does not work on text; it works on numbers"
@@ -428,6 +434,26 @@ private:
         if (bitwise && l == Kind::Bool && r == Kind::Bool) return Kind::Bool;
         if (isNumber(l) && isNumber(r)) return Kind::Int;
         return Kind::Unknown;
+    }
+
+    // text_equals, text_equals_ignore_case, text_starts_with, text_ends_with and text_contains take two texts and give a bool;
+    // text_compare takes two and gives a number; text_length takes one and gives a number.
+    Kind textBuiltinType(const Expr& x, const std::vector<Kind>& argKinds) {
+        const std::string& name = x.lhs->text;
+        const bool one = name == "text_length";
+        const bool boolResult = name == "text_equals" || name == "text_equals_ignore_case" || name == "text_starts_with"
+                                || name == "text_ends_with" || name == "text_contains";
+        if (!one && !boolResult && name != "text_compare") return Kind::Unknown;
+
+        const size_t wanted = one ? 1 : 2;
+        if (argKinds.size() != wanted) {
+            error(x.loc, "'" + name + "' takes " + std::to_string(wanted) + " argument(s), but " + std::to_string(argKinds.size()) + " were given");
+        } else {
+            for (size_t i = 0; i < argKinds.size(); ++i)
+                if (isNumber(argKinds[i]) || argKinds[i] == Kind::Bool)
+                    error(x.args[i]->loc, "argument " + std::to_string(i + 1) + " of '" + name + "' must be text, not " + describe(argKinds[i]));
+        }
+        return boolResult ? Kind::Bool : Kind::Int;
     }
 
     Kind callType(const Expr& x) {
@@ -455,7 +481,12 @@ private:
         }
 
         const Signature* sig = x.lhs ? signatureOf(*x.lhs) : nullptr;
-        if (sig == nullptr) return Kind::Unknown;
+        if (sig == nullptr) {
+            // The built-in text functions (a program that defines one of its own is handled by its signature above).
+            if (x.lhs && x.lhs->kind == ExprKind::Identifier)
+                return textBuiltinType(x, argKinds);
+            return Kind::Unknown;
+        }
 
         const std::string name = x.lhs->kind == ExprKind::Identifier ? x.lhs->text : "function";
         if (x.explicitGenericArgs.empty() && argKinds.size() != sig->params.size()) {
