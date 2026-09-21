@@ -24,7 +24,11 @@ private:
     void sendMessage();
     void appendTranscript(const juce::String& speaker, const juce::String& text);
     void refreshProfileList();
+    void refreshModelList();
+    void saveSelectedModel();
     void showAiSettings();
+    void showAiSettingsDialog(const juce::String& profileName,
+                              const juce::String& apiKey);
     void refreshConversationList(bool loadMostRecent);
     void loadConversation(const juce::String& id);
     void startNewConversation();
@@ -32,12 +36,14 @@ private:
     void showFolderMenu();
     void chooseFolder(bool archiveFolder);
     void renderConversation();
+    void updateCurrentConversationListEntry();
     bool appendAndSave(const juce::String& role, const juce::String& content);
     void updateConversationControls();
     static juce::String loadFrustSystemPrompt();
 
     juce::Label headerLabel { "Header", "AI Assistant" };
     juce::ComboBox profileBox;
+    juce::ComboBox modelBox;
     juce::TextButton aiSettingsButton { "AI Settings..." };
     juce::ComboBox conversationBox;
     juce::TextButton newButton { "New" };
@@ -54,6 +60,9 @@ private:
     std::vector<ai_provider::ChatMessage> history; // includes the leading system message
     std::unique_ptr<juce::FileChooser> folderChooser;
     bool changingConversationSelection = false;
+    bool changingModelSelection = false;
+    bool modelRequestInFlight = false;
+    unsigned int modelRequestGeneration = 0;
 
     // Guards against overlapping requests; the network call runs on a
     // background std::thread and marshals its result back via

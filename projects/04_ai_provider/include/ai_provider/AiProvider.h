@@ -16,6 +16,12 @@ struct ChatResponse {
     std::string errorMessage; // human-readable failure reason, when !ok
 };
 
+struct ModelListResponse {
+    bool ok = false;
+    std::vector<std::string> models;
+    std::string errorMessage;
+};
+
 // Provider-agnostic chat interface. OpenAiProvider is the one real
 // implementation right now; a new provider (Anthropic, a local model, etc.)
 // is just another subclass plus a case in AiConfig::createProvider() - this
@@ -30,6 +36,7 @@ public:
     // background thread (see AiChatPanel's usage) rather than stall the UI
     // for the length of an HTTP round trip.
     virtual ChatResponse sendChat(const std::vector<ChatMessage>& messages) = 0;
+    virtual ModelListResponse listModels() = 0;
 };
 
 } // namespace ai_provider

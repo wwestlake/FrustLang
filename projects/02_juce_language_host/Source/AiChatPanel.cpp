@@ -1,5 +1,6 @@
 #include "AiChatPanel.h"
 #include "RAGQuery.h"
+#include <ai_provider/OpenAiProvider.h>
 
 #include <thread>
 
@@ -22,7 +23,13 @@ AiChatPanel::AiChatPanel(juce::ApplicationProperties* properties)
     addAndMakeVisible(headerLabel);
 
     addAndMakeVisible(profileBox);
-    refreshProfileList();
+    profileBox.setTooltip("AI account/profile");
+    profileBox.onChange = [this] { refreshModelList(); };
+
+    addAndMakeVisible(modelBox);
+    modelBox.setTooltip("Model used by the AI Assistant");
+    modelBox.setTextWhenNothingSelected("Loading models...");
+    modelBox.onChange = [this] { saveSelectedModel(); };
 
     aiSettingsButton.setTooltip("Configure the selected AI provider");
     aiSettingsButton.onClick = [this] { showAiSettings(); };
@@ -65,6 +72,7 @@ AiChatPanel::AiChatPanel(juce::ApplicationProperties* properties)
     sendButton.onClick = [this] { sendMessage(); };
     addAndMakeVisible(sendButton);
 
+    refreshProfileList();
     refreshConversationList(true);
 }
 
@@ -81,10 +89,12 @@ void AiChatPanel::resized()
 {
     auto bounds = getLocalBounds().reduced(6);
     auto topBar = bounds.removeFromTop(24);
-    headerLabel.setBounds(topBar.removeFromLeft(topBar.getWidth() / 2));
+    headerLabel.setBounds(topBar.removeFromLeft(96));
     aiSettingsButton.setBounds(topBar.removeFromRight(88));
     topBar.removeFromRight(4);
-    profileBox.setBounds(topBar);
+    profileBox.setBounds(topBar.removeFromLeft(150));
+    topBar.removeFromLeft(4);
+    modelBox.setBounds(topBar);
     bounds.removeFromTop(4);
 
     auto conversationBar = bounds.removeFromTop(24);
@@ -112,8 +122,103 @@ void AiChatPanel::refreshProfileList()
     for (auto& profile : aiConfig.profiles())
         profileBox.addItem(juce::String(profile.name), id++);
 
-    if (profileBox.getNumItems() > 0) profileBox.setSelectedItemIndex(0);
+    if (profileBox.getNumItems() > 0)
+    {
+        profileBox.setSelectedItemIndex(0, juce::dontSendNotification);
+        refreshModelList();
+    }
     else profileBox.setTextWhenNoChoicesAvailable("No AI profiles configured");
+}
+
+void AiChatPanel::refreshModelList()
+{
+    const auto profileName = profileBox.getText();
+    const ai_provider::AiProfile* selectedProfile = nullptr;
+    for (const auto& profile : aiConfig.profiles())
+        if (profile.name == profileName.toStdString())
+            selectedProfile = &profile;
+
+    changingModelSelection = true;
+    modelBox.clear(juce::dontSendNotification);
+    if (selectedProfile == nullptr)
+    {
+        modelBox.setTextWhenNothingSelected("No AI profile selected");
+        modelBox.setEnabled(false);
+        changingModelSelection = false;
+        return;
+    }
+
+    const auto savedModel = juce::String(selectedProfile->model);
+    if (savedModel.isNotEmpty())
+    {
+        modelBox.addItem(savedModel, 1);
+        modelBox.setSelectedItemIndex(0, juce::dontSendNotification);
+    }
+    modelBox.setTextWhenNothingSelected("Loading models...");
+    modelBox.setEnabled(false);
+    changingModelSelection = false;
+    modelRequestInFlight = true;
+    const auto requestGeneration = ++modelRequestGeneration;
+
+    auto provider = aiConfig.createProvider(profileName.toStdString());
+    if (provider == nullptr)
+    {
+        modelRequestInFlight = false;
+        modelBox.setTextWhenNothingSelected("Provider unavailable");
+        return;
+    }
+
+    juce::Component::SafePointer<AiChatPanel> safeThis(this);
+    auto* providerPtr = provider.release();
+    std::thread([safeThis, providerPtr, profileName, savedModel, requestGeneration] {
+        std::unique_ptr<ai_provider::AiProvider> owned(providerPtr);
+        auto response = owned->listModels();
+        juce::MessageManager::callAsync(
+            [safeThis, profileName, savedModel, requestGeneration, response = std::move(response)] {
+                if (safeThis == nullptr || requestGeneration != safeThis->modelRequestGeneration)
+                    return;
+
+                safeThis->modelRequestInFlight = false;
+                safeThis->changingModelSelection = true;
+                safeThis->modelBox.clear(juce::dontSendNotification);
+                juce::StringArray models;
+                if (savedModel.isNotEmpty()) models.add(savedModel);
+                for (const auto& model : response.models)
+                    models.addIfNotAlreadyThere(juce::String(model));
+                for (int index = 0; index < models.size(); ++index)
+                    safeThis->modelBox.addItem(models[index], index + 1);
+
+                if (savedModel.isNotEmpty())
+                    safeThis->modelBox.setText(savedModel, juce::dontSendNotification);
+                safeThis->modelBox.setTextWhenNothingSelected(
+                    response.ok ? "Select a model" : "Models unavailable");
+                safeThis->changingModelSelection = false;
+                safeThis->modelBox.setEnabled(!safeThis->requestInFlight && !models.isEmpty());
+
+                if (!response.ok)
+                    safeThis->appendTranscript("system", "Could not load models for "
+                        + profileName + ": " + juce::String(response.errorMessage));
+            });
+    }).detach();
+}
+
+void AiChatPanel::saveSelectedModel()
+{
+    if (changingModelSelection) return;
+
+    const auto profileName = profileBox.getText();
+    const auto model = modelBox.getText();
+    if (profileName.isEmpty() || model.isEmpty()) return;
+
+    for (const auto& profile : aiConfig.profiles())
+    {
+        if (profile.name != profileName.toStdString()) continue;
+        std::string error;
+        if (!aiConfig.updateProfileCredentials(profile.name, profile.apiKey,
+                                                model.toStdString(), error))
+            appendTranscript("system", "Could not save model selection: " + juce::String(error));
+        return;
+    }
 }
 
 void AiChatPanel::showAiSettings()
@@ -132,11 +237,18 @@ void AiChatPanel::showAiSettings()
         return;
     }
 
+    showAiSettingsDialog(profileName,
+                         juce::String(selectedProfile->apiKey));
+}
+
+void AiChatPanel::showAiSettingsDialog(const juce::String& profileName,
+                                       const juce::String& apiKey)
+{
     auto* dialog = new juce::AlertWindow("AI Settings",
                                          "Profile: " + profileName,
                                          juce::MessageBoxIconType::NoIcon);
-    dialog->addTextEditor("apiKey", juce::String(selectedProfile->apiKey), "API key:", true);
-    dialog->addTextEditor("model", juce::String(selectedProfile->model), "Model:");
+    dialog->addTextEditor("apiKey", apiKey, "API key:", true);
+
     dialog->addButton("Save", 1, juce::KeyPress(juce::KeyPress::returnKey));
     dialog->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
 
@@ -144,18 +256,20 @@ void AiChatPanel::showAiSettings()
     juce::Component::SafePointer<juce::AlertWindow> safeDialog(dialog);
     dialog->enterModalState(true, juce::ModalCallbackFunction::create(
         [safeThis, safeDialog, profileName] (int result) {
-            if (result != 1 || safeThis == nullptr || safeDialog == nullptr)
+            if (result == 0 || safeThis == nullptr || safeDialog == nullptr)
                 return;
 
             const auto apiKey = safeDialog->getTextEditorContents("apiKey").trim();
-            const auto model = safeDialog->getTextEditorContents("model").trim();
-            if (apiKey.isEmpty() || model.isEmpty())
+            if (apiKey.isEmpty())
             {
                 juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
                                                        "AI Settings",
-                                                       "API key and model are required.");
+                                                       "An API key is required.");
                 return;
             }
+
+            juce::String model = safeThis->modelBox.getText();
+            if (model.isEmpty()) model = "gpt-4o-mini";
 
             std::string error;
             if (!safeThis->aiConfig.updateProfileCredentials(profileName.toStdString(),
@@ -169,7 +283,8 @@ void AiChatPanel::showAiSettings()
                 return;
             }
 
-            safeThis->appendTranscript("system", "AI settings saved for " + profileName + ".");
+            safeThis->appendTranscript("system", "API key saved for " + profileName + ".");
+            safeThis->refreshModelList();
         }), true);
 }
 
@@ -301,13 +416,43 @@ void AiChatPanel::renderConversation()
 {
     history.clear();
     history.push_back({ "system", loadFrustSystemPrompt().toStdString() });
-    transcript.setText("Ask me anything about writing Frust code.\n");
+    juce::String rendered = "Ask me anything about writing Frust code.\n";
     for (const auto& block : currentConversation.blocks)
     {
         history.push_back({ block.role.toStdString(), block.content.toStdString() });
-        appendTranscript(block.role == "user" ? "you" : "assistant", block.content);
+        rendered += "\n" + juce::String(block.role == "user" ? "you" : "assistant")
+            + ": " + block.content + "\n";
     }
+    transcript.setText(rendered, false);
     transcript.moveCaretToEnd();
+}
+
+void AiChatPanel::updateCurrentConversationListEntry()
+{
+    changingConversationSelection = true;
+    for (size_t i = 0; i < conversationSummaries.size(); ++i)
+    {
+        auto& summary = conversationSummaries[i];
+        if (summary.id != currentConversation.id)
+            continue;
+
+        summary.title = currentConversation.title;
+        summary.updatedAt = currentConversation.updatedAt;
+        summary.integrityValid = true;
+        conversationBox.changeItemText(static_cast<int>(i) + 1, currentConversation.title);
+        conversationBox.setSelectedItemIndex(static_cast<int>(i), juce::dontSendNotification);
+        changingConversationSelection = false;
+        return;
+    }
+
+    conversationSummaries.push_back({ currentConversation.id,
+                                      currentConversation.title,
+                                      currentConversation.updatedAt,
+                                      true });
+    const auto itemId = static_cast<int>(conversationSummaries.size());
+    conversationBox.addItem(currentConversation.title, itemId);
+    conversationBox.setSelectedItemIndex(itemId - 1, juce::dontSendNotification);
+    changingConversationSelection = false;
 }
 
 bool AiChatPanel::appendAndSave(const juce::String& role, const juce::String& content)
@@ -322,12 +467,7 @@ bool AiChatPanel::appendAndSave(const juce::String& role, const juce::String& co
         return false;
     }
 
-    refreshConversationList(false);
-    changingConversationSelection = true;
-    for (size_t i = 0; i < conversationSummaries.size(); ++i)
-        if (conversationSummaries[i].id == currentConversation.id)
-            conversationBox.setSelectedItemIndex(static_cast<int>(i), juce::dontSendNotification);
-    changingConversationSelection = false;
+    updateCurrentConversationListEntry();
     updateConversationControls();
     return true;
 }
@@ -338,6 +478,8 @@ void AiChatPanel::updateConversationControls()
     newButton.setEnabled(!requestInFlight);
     archiveButton.setEnabled(!requestInFlight && !currentConversation.blocks.empty());
     foldersButton.setEnabled(!requestInFlight);
+    profileBox.setEnabled(!requestInFlight);
+    modelBox.setEnabled(!requestInFlight && !modelRequestInFlight && modelBox.getNumItems() > 0);
     sendButton.setEnabled(!requestInFlight);
 }
 

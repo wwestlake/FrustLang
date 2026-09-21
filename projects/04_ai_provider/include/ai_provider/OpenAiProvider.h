@@ -10,6 +10,7 @@ public:
 
     std::string providerName() const override { return "openai"; }
     ChatResponse sendChat(const std::vector<ChatMessage>& messages) override;
+    ModelListResponse listModels() override;
 
 private:
     std::string apiKey;
