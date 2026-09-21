@@ -43,6 +43,12 @@ bool isIgnored(const juce::String& relativePath)
         || normal.contains("/__pycache__/") || normal.startsWith("__pycache__/");
 }
 
+juce::String contentHash(const juce::String& text)
+{
+    return juce::SHA256(text.toRawUTF8(), static_cast<size_t>(text.getNumBytesAsUTF8()))
+        .toHexString();
+}
+
 EngineerTools::Result failure(const juce::String& message)
 {
     return { false, false, "Error: " + message };
@@ -151,6 +157,7 @@ EngineerTools::Result EngineerTools::execute(const ai_provider::ToolCall& call) 
     if (name == "workspace_search") return search(arguments);
     if (name == "workspace_create_directory") return createDirectory(arguments);
     if (name == "workspace_create_file") return createFile(arguments);
+    if (name == "workspace_write_file") return writeFile(arguments);
     if (name == "workspace_replace_text") return replaceText(arguments);
     if (name == "workspace_check_frust") return checkFrust(arguments);
     return failure("Unknown tool: " + name);
@@ -198,7 +205,8 @@ EngineerTools::Result EngineerTools::read(const juce::var& arguments) const
     for (int index = start; index <= end; ++index)
         output << juce::String(index).paddedLeft(' ', 6) << "  " << lines[index - 1] << "\n";
     return { true, false, file.getRelativePathFrom(root).replaceCharacter('\\', '/')
-        + " (" + juce::String(lines.size()) + " lines)\n" + output.trimEnd() };
+        + " (" + juce::String(lines.size()) + " lines, SHA-256: " + contentHash(file.loadFileAsString())
+        + ")\n" + output.trimEnd() };
 }
 
 EngineerTools::Result EngineerTools::search(const juce::var& arguments) const
@@ -257,6 +265,25 @@ EngineerTools::Result EngineerTools::createFile(const juce::var& arguments) cons
     if (!file.replaceWithText(stringProperty(arguments, "content")))
         return failure("Could not write the new file.");
     return { true, true, "Created " + file.getRelativePathFrom(root).replaceCharacter('\\', '/') };
+}
+
+EngineerTools::Result EngineerTools::writeFile(const juce::var& arguments) const
+{
+    juce::String error;
+    const auto file = resolveProjectPath(stringProperty(arguments, "path"), error);
+    if (error.isNotEmpty()) return failure(error);
+    if (!file.existsAsFile()) return failure("File does not exist; use workspace_create_file.");
+    if (file.getSize() > maxTextFileBytes) return failure("File exceeds the 2 MB write limit.");
+
+    const auto original = file.loadFileAsString();
+    const auto expectedHash = stringProperty(arguments, "expected_sha256").trim().toLowerCase();
+    const auto actualHash = contentHash(original);
+    if (expectedHash != actualHash)
+        return failure("File changed since it was read. Read it again and use its current SHA-256 value.");
+
+    if (!file.replaceWithText(stringProperty(arguments, "content")))
+        return failure("Could not write the file.");
+    return { true, true, "Rewrote " + file.getRelativePathFrom(root).replaceCharacter('\\', '/') };
 }
 
 EngineerTools::Result EngineerTools::replaceText(const juce::var& arguments) const

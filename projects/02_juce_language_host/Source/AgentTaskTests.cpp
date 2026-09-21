@@ -26,6 +26,10 @@ int main()
     expect(!early.ok, "Completion is rejected before work starts");
 
     task.recordEngineerResult("workspace_read", { true, false, "Read src/main.fr" });
+    auto prematurePlan = task.executeControl(call("agent_set_plan",
+        R"({"goal":"Update main.fr","steps":["Inspect existing code","Edit the command loop"]})"));
+    expect(!prematurePlan.ok, "Reading one file does not substitute for inspecting project structure");
+    task.recordEngineerResult("workspace_list", { true, false, "Listed project root" });
     auto plan = task.executeControl(call("agent_set_plan",
         R"({"goal":"Update main.fr","steps":["Inspect existing code","Edit the command loop","Compile-check the result"]})"));
     expect(plan.ok, "Plan is accepted after inspection");
@@ -59,6 +63,7 @@ int main()
 
     auto review = AgentTask::begin("review-conversation", "Review current code", "review",
                                    false, false, false);
+    review.recordEngineerResult("workspace_list", { true, false, "Listed project root" });
     review.recordEngineerResult("workspace_search", { true, false, "Found definitions" });
     expect(review.executeControl(call("agent_complete_task",
         R"({"summary":"One correctness issue found."})")).ok,

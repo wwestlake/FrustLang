@@ -62,7 +62,7 @@ MutationIntent mutationIntentFor(const juce::String& request)
 bool isWriteTool(const std::string& name)
 {
     return name == "workspace_create_directory" || name == "workspace_create_file"
-        || name == "workspace_replace_text";
+        || name == "workspace_write_file" || name == "workspace_replace_text";
 }
 
 bool requiresFrustVerification(const juce::String& request)

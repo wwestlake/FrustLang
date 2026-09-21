@@ -39,6 +39,7 @@ private:
     Result search(const juce::var& arguments) const;
     Result createDirectory(const juce::var& arguments) const;
     Result createFile(const juce::var& arguments) const;
+    Result writeFile(const juce::var& arguments) const;
     Result replaceText(const juce::var& arguments) const;
     Result checkFrust(const juce::var& arguments) const;
 

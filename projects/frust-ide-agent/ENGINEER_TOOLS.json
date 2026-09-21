@@ -84,6 +84,23 @@
       }
     },
     {
+      "name": "workspace_write_file",
+      "description": "Rewrite the complete contents of an existing UTF-8 project file using an optimistic revision check.",
+      "usage": "Use after reading the file when a full-file repair is safer than a sequence of exact replacements. Pass the SHA-256 value returned by workspace_read; the write is rejected if the file changed afterward.",
+      "access": "workspace",
+      "tokens": ["write", "rewrite", "repair", "overwrite", "code", "documentation"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string", "description": "Path relative to the open project." },
+          "content": { "type": "string" },
+          "expected_sha256": { "type": "string", "description": "SHA-256 revision returned by the most recent workspace_read of this file.", "pattern": "^[0-9a-fA-F]{64}$" }
+        },
+        "required": ["path", "content", "expected_sha256"]
+      }
+    },
+    {
       "name": "workspace_replace_text",
       "description": "Replace exact text in an existing UTF-8 project file.",
       "usage": "Use for focused edits after reading the file. By default the old text must occur exactly once.",

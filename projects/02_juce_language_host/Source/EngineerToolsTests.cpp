@@ -28,7 +28,7 @@ int main()
     EngineerTools observe(base, EngineerTools::AccessLevel::observe);
     EngineerTools workspace(base, EngineerTools::AccessLevel::workspace);
     expect(observe.definitions().size() == 4, "Observe exposes read-only and verification tools");
-    expect(workspace.definitions().size() == 7, "Workspace exposes all seven project tools");
+    expect(workspace.definitions().size() == 8, "Workspace exposes all eight project tools");
 
     auto denied = observe.execute(call(
         "workspace_create_file", R"({"path":"src/main.fr","content":"fn main() = 42"})"));
@@ -49,6 +49,19 @@ int main()
     expect(edited.ok, "Exact source edit succeeds");
     expect(base.getChildFile("src/main.fr").loadFileAsString().contains("84"),
            "Exact source edit reaches disk");
+
+    const auto currentText = base.getChildFile("src/main.fr").loadFileAsString();
+    const auto currentHash = juce::SHA256(currentText.toRawUTF8(),
+        static_cast<size_t>(currentText.getNumBytesAsUTF8())).toHexString();
+    auto staleWrite = workspace.execute(call(
+        "workspace_write_file",
+        R"({"path":"src/main.fr","content":"fn main() = 21","expected_sha256":"0000000000000000000000000000000000000000000000000000000000000000"})"));
+    expect(!staleWrite.ok, "Whole-file write rejects a stale revision");
+    auto rewritten = workspace.execute(call(
+        "workspace_write_file",
+        "{\"path\":\"src/main.fr\",\"content\":\"fn main() = 84\",\"expected_sha256\":\""
+            + currentHash.toStdString() + "\"}"));
+    expect(rewritten.ok && rewritten.workspaceChanged, "Whole-file write accepts the current revision");
 
     auto checked = workspace.execute(call(
         "workspace_check_frust", R"({"path":"src/main.fr"})"));

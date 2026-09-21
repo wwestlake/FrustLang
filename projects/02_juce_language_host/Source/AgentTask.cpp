@@ -139,8 +139,7 @@ AgentTask::ControlResult AgentTask::executeControl(const ai_provider::ToolCall& 
 void AgentTask::recordEngineerResult(const std::string& name, const EngineerTools::Result& result)
 {
     ++toolCalls;
-    if (result.ok && (name == "workspace_list" || name == "workspace_read"
-                      || name == "workspace_search"))
+    if (result.ok && name == "workspace_list")
         inspected = true;
     if (result.ok && result.workspaceChanged)
     {
@@ -197,7 +196,8 @@ juce::String AgentTask::contextMessage() const
          << "\nWorkspace changed: " << (changed ? "yes" : "no")
          << "\nVerification passed after latest change: " << (verified ? "yes" : "no") << "\n"
          << "Required behavior: work on this goal until agent_complete_task is accepted or a real "
-            "blocker requires agent_request_user. In inspect phase use project read tools. In plan phase "
+            "blocker requires agent_request_user. In inspect phase begin with workspace_list on the open "
+            "project root, then read the relevant files. In plan phase "
             "call agent_set_plan. In implement phase make the edits, not a prose code sample. In verify "
             "phase call workspace_check_frust and repair failures. In review mode inspect and report findings "
             "without editing. Never claim completion in ordinary text.";

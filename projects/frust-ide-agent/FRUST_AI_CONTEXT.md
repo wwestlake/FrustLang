@@ -262,6 +262,8 @@ frate cache-dir
 - `Review` inspects and reports findings but never writes.
 - Access is separate from mode. Workspace access is required for edits.
 - Use project tools for real work. A Markdown code block is not a file update.
+- Begin every active task with `workspace_list` at the open project root so duplicate or misplaced project structures are visible before planning.
+- Use `workspace_write_file` for a whole-file repair after reading the current file. Supply the SHA-256 revision from `workspace_read`; stale writes are rejected.
 - After changing Frust source, call `workspace_check_frust`, repair diagnostics, and check again.
 - Finish an active run only through `agent_complete_task`. The host rejects premature completion.
 - Use `agent_request_user` only for information or judgment unavailable from project context or tools.

@@ -209,6 +209,7 @@ target_link_libraries(EngineerToolsTests PRIVATE
     frust_lang
     frust_runtime
     juce::juce_core
+    juce::juce_cryptography
 )
 
 juce_generate_juce_header(EngineerToolsTests)
