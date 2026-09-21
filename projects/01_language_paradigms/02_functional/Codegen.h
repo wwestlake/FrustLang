@@ -15,6 +15,7 @@
 
 #include "AST.h"
 #include "Diagnostics.h"
+#include "TypeCheck.h"
 
 #include <map>
 
@@ -72,6 +73,17 @@ public:
     // failed (a message was already printed to stderr).
     bool compileProgram(const Program& prog) {
         hadCodegenError = false;
+
+        // Before anything is generated, make sure the program's basic types make sense (see TypeCheck.h). What does not
+        // is reported here as an ordinary error; the code below then never meets an operator or call it cannot build.
+        {
+            TypeChecker checker;
+            const bool sensible = checker.check(prog, [](const SourceLoc& loc, const std::string& message) {
+                Diag() << "frust: codegen error: " << loc.line << ":" << loc.col << ": " << message << "\n";
+            });
+            if (!sensible) return false;
+        }
+
         indexTypeAliases(prog);
         indexStructs(prog); // must precede signature declaration below - param/return types can name a struct
         if (hadCodegenError) return false;

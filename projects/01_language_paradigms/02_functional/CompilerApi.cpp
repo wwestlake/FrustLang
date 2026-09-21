@@ -281,7 +281,16 @@ CompileResult Compile(const CompileRequest& request) {
             } else if (line.rfind("frust: ", 0) == 0) {
                 message = line.substr(7);
             }
-            Add(result, Diagnostic::Phase::Codegen, {}, 0, 0, message, severity);
+            // The pre-generation check reports "line:column: message"; carry the position on the diagnostic.
+            int errorLine = 0, errorColumn = 0;
+            static const std::regex positioned(R"(^(\d+):(\d+):\s*(.*)$)");
+            std::smatch position;
+            if (std::regex_match(message, position, positioned)) {
+                errorLine = std::stoi(position[1].str());
+                errorColumn = std::stoi(position[2].str());
+                message = position[3].str();
+            }
+            Add(result, Diagnostic::Phase::Codegen, {}, errorLine, errorColumn, message, severity);
         }
     }
     if (!codegenOk) {
