@@ -51,6 +51,14 @@ target_link_libraries(ai_provider PUBLIC
     juce::juce_core
 )
 
+add_executable(ai_provider_tests
+    tests/AiConfigTests.cpp
+)
+
+target_link_libraries(ai_provider_tests PRIVATE
+    ai_provider
+)
+
 # Same gap as frate_lib (see its CMakeLists.txt for the full explanation):
 # OpenAiProvider's juce::URL HTTP calls compile against libcurl's headers
 # via JUCE's pkg-config detection, but JUCE doesn't propagate the actual

@@ -64,8 +64,16 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE "${REPO_ROOT_DIR}/bin/Release")
 # Add JUCE GUI Application Target
 # ------------------------------------------------------------------------------
 juce_add_gui_app(LagDaemonResearchIDE
-    PRODUCT_NAME "LagDaemon Language Research IDE"
+    PRODUCT_NAME "FrustIDE"
     VERSION 0.1.0
+    ICON_BIG "Resources/FrustIDE.png"
+    ICON_SMALL "Resources/FrustIDE.png"
+)
+
+juce_add_binary_data(FrustIDEAssets
+    HEADER_NAME FrustIDEAssets.h
+    NAMESPACE FrustIDEAssets
+    SOURCES Resources/FrustIDE.png
 )
 
 # juce_add_gui_app names the output binary after PRODUCT_NAME by default
@@ -128,6 +136,7 @@ target_compile_definitions(LagDaemonResearchIDE PRIVATE
 )
 
 target_link_libraries(LagDaemonResearchIDE PRIVATE
+    FrustIDEAssets
     CreationDock
     frust_lang
     frust_runtime

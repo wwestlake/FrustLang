@@ -1,4 +1,5 @@
 #include "WorkbenchComponent.h"
+#include <FrustIDEAssets.h>
 
 WorkbenchComponent::WorkbenchComponent()
 {
@@ -9,6 +10,18 @@ WorkbenchComponent::WorkbenchComponent()
     runButton.setTooltip("Run the active editor tab's code in the console (Project > Run in REPL)");
     runButton.onClick = [this] { runActiveFileInRepl(); };
     addAndMakeVisible(runButton);
+
+    brandLogo.setImage(juce::ImageFileFormat::loadFrom(FrustIDEAssets::FrustIDE_png,
+                                                       FrustIDEAssets::FrustIDE_pngSize),
+                       juce::RectanglePlacement::centred);
+    brandLogo.setInterceptsMouseClicks(false, false);
+    addAndMakeVisible(brandLogo);
+
+    brandName.setFont(juce::Font(15.0f, juce::Font::bold));
+    brandName.setColour(juce::Label::textColourId, juce::Colour(0xffdce9ee));
+    brandName.setJustificationType(juce::Justification::centredLeft);
+    brandName.setInterceptsMouseClicks(false, false);
+    addAndMakeVisible(brandName);
 
     authSession = std::make_unique<DesktopAuthSession>("ide");
 
@@ -118,6 +131,8 @@ void WorkbenchComponent::resized()
 
     auto toolbar = bounds.removeFromTop(32).reduced(4);
     runButton.setBounds(toolbar.removeFromLeft(80));
+    brandName.setBounds(toolbar.removeFromRight(64));
+    brandLogo.setBounds(toolbar.removeFromRight(28));
 
     if (dockManager) {
         dockManager->setBounds(bounds);
@@ -161,7 +176,7 @@ juce::PopupMenu WorkbenchComponent::getMenuForIndex(int topLevelMenuIndex, const
             menu.addItem(AccountSignIn, "Sign In...");
         }
     } else if (menuName == "Help") {
-        menu.addItem(HelpAbout, "About LagDaemon IDE");
+        menu.addItem(HelpAbout, "About FrustIDE");
     }
     return menu;
 }

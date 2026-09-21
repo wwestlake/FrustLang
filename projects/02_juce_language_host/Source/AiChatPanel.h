@@ -24,6 +24,7 @@ private:
     void sendMessage();
     void appendTranscript(const juce::String& speaker, const juce::String& text);
     void refreshProfileList();
+    void showAiSettings();
     void refreshConversationList(bool loadMostRecent);
     void loadConversation(const juce::String& id);
     void startNewConversation();
@@ -37,6 +38,7 @@ private:
 
     juce::Label headerLabel { "Header", "AI Assistant" };
     juce::ComboBox profileBox;
+    juce::TextButton aiSettingsButton { "AI Settings..." };
     juce::ComboBox conversationBox;
     juce::TextButton newButton { "New" };
     juce::TextButton archiveButton { "Archive" };

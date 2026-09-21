@@ -24,6 +24,10 @@ AiChatPanel::AiChatPanel(juce::ApplicationProperties* properties)
     addAndMakeVisible(profileBox);
     refreshProfileList();
 
+    aiSettingsButton.setTooltip("Configure the selected AI provider");
+    aiSettingsButton.onClick = [this] { showAiSettings(); };
+    addAndMakeVisible(aiSettingsButton);
+
     conversationBox.setTextWhenNothingSelected("New conversation");
     conversationBox.onChange = [this] {
         const auto index = conversationBox.getSelectedItemIndex();
@@ -78,6 +82,8 @@ void AiChatPanel::resized()
     auto bounds = getLocalBounds().reduced(6);
     auto topBar = bounds.removeFromTop(24);
     headerLabel.setBounds(topBar.removeFromLeft(topBar.getWidth() / 2));
+    aiSettingsButton.setBounds(topBar.removeFromRight(88));
+    topBar.removeFromRight(4);
     profileBox.setBounds(topBar);
     bounds.removeFromTop(4);
 
@@ -108,6 +114,63 @@ void AiChatPanel::refreshProfileList()
 
     if (profileBox.getNumItems() > 0) profileBox.setSelectedItemIndex(0);
     else profileBox.setTextWhenNoChoicesAvailable("No AI profiles configured");
+}
+
+void AiChatPanel::showAiSettings()
+{
+    const auto profileName = profileBox.getText();
+    const ai_provider::AiProfile* selectedProfile = nullptr;
+    for (const auto& profile : aiConfig.profiles())
+        if (profile.name == profileName.toStdString())
+            selectedProfile = &profile;
+
+    if (selectedProfile == nullptr)
+    {
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
+                                               "AI Settings",
+                                               "Select an AI profile first.");
+        return;
+    }
+
+    auto* dialog = new juce::AlertWindow("AI Settings",
+                                         "Profile: " + profileName,
+                                         juce::MessageBoxIconType::NoIcon);
+    dialog->addTextEditor("apiKey", juce::String(selectedProfile->apiKey), "API key:", true);
+    dialog->addTextEditor("model", juce::String(selectedProfile->model), "Model:");
+    dialog->addButton("Save", 1, juce::KeyPress(juce::KeyPress::returnKey));
+    dialog->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+
+    juce::Component::SafePointer<AiChatPanel> safeThis(this);
+    juce::Component::SafePointer<juce::AlertWindow> safeDialog(dialog);
+    dialog->enterModalState(true, juce::ModalCallbackFunction::create(
+        [safeThis, safeDialog, profileName] (int result) {
+            if (result != 1 || safeThis == nullptr || safeDialog == nullptr)
+                return;
+
+            const auto apiKey = safeDialog->getTextEditorContents("apiKey").trim();
+            const auto model = safeDialog->getTextEditorContents("model").trim();
+            if (apiKey.isEmpty() || model.isEmpty())
+            {
+                juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
+                                                       "AI Settings",
+                                                       "API key and model are required.");
+                return;
+            }
+
+            std::string error;
+            if (!safeThis->aiConfig.updateProfileCredentials(profileName.toStdString(),
+                                                               apiKey.toStdString(),
+                                                               model.toStdString(),
+                                                               error))
+            {
+                juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
+                                                       "AI Settings",
+                                                       juce::String(error));
+                return;
+            }
+
+            safeThis->appendTranscript("system", "AI settings saved for " + profileName + ".");
+        }), true);
 }
 
 void AiChatPanel::appendTranscript(const juce::String& speaker, const juce::String& text)
