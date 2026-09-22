@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <map>
 #include <mutex>
 #include <thread>
 
@@ -224,6 +225,7 @@ bool requiresFrustVerification(const juce::String& request)
     if (text.contains("documentation") || text.contains("readme") || text.contains("specification"))
         return false;
     return text.contains(".fr") || text.contains("frust code") || text.contains("frust project")
+        || text.contains(" in frust") || text.contains("must be frust")
         || text.contains("function") || text.contains("compile") || text.contains("compiler")
         || text.contains("source code") || text.contains("game loop");
 }
@@ -1269,6 +1271,7 @@ void AiChatPanel::startResolvedMessage(const juce::String& userText, AgentMode s
         ai_provider::ChatResponse response;
         bool workspaceChanged = false;
         juce::StringArray activity;
+        std::map<std::string, int> noProgressReads;
         for (int round = 0; !stopped; ++round)
         {
             if (run->stop)
@@ -1369,6 +1372,22 @@ void AiChatPanel::startResolvedMessage(const juce::String& userText, AgentMode s
                     result = engineerTools.execute(call);
                     if (agentRun)
                     {
+                        if (result.ok && !result.workspaceChanged && !result.verificationPerformed
+                            && (call.name == "workspace_list" || call.name == "workspace_read"
+                                || call.name == "workspace_search" || call.name == "registry_search"))
+                        {
+                            auto key = call.name + std::string("|") + call.argumentsJson;
+                            if (call.name == "workspace_read")
+                            {
+                                const auto arguments = juce::JSON::parse(juce::String(call.argumentsJson));
+                                key = call.name + std::string("|")
+                                    + arguments.getProperty("path", {}).toString().toStdString();
+                            }
+                            if (++noProgressReads[key] > 2)
+                                result = { false, false,
+                                    "Error: This read-only action already succeeded twice without advancing the task. "
+                                    "Use the evidence already returned and take the next distinct step." };
+                        }
                         task.recordEngineerResult(call.name, result);
                         const auto reason = task.budgetExceeded(
                             providerCallBudget, toolCallBudget, tokenBudget);

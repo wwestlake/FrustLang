@@ -207,6 +207,18 @@ int main()
     release.recordEngineerResult("run_command", { true, false, "Ran in PowerShell in .: frate publish\nExit code 0", false });
     expect(release.executeControl(call("agent_complete_task", R"({"summary":"released"})")).ok,
            "Completion is accepted only after every requested release gate succeeds");
+
+    auto noPublish = AgentTask::begin("no-publish", "Build and test the pod, but do not publish it",
+                                      "execute", true, true, true);
+    noPublish.recordEngineerResult("workspace_list", { true, false, "Listed project" });
+    assess(noPublish);
+    plan(noPublish, "Build and test without publishing");
+    noPublish.recordEngineerResult("workspace_replace_text", { true, true, "Updated src/lib.fr" });
+    noPublish.recordEngineerResult("workspace_check_frust", { true, false, "Frust check passed", true });
+    noPublish.recordEngineerResult("run_command", { true, false, "Ran in PowerShell in .: frate build\nExit code 0", true });
+    noPublish.recordEngineerResult("run_command", { true, false, "Ran in PowerShell in .: frate test\nExit code 0", true });
+    expect(noPublish.executeControl(call("agent_complete_task", R"({"summary":"ready for review"})")).ok,
+           "A negated publication request does not create a publication completion gate");
     folder.deleteRecursively();
 
     if (failures == 0) std::cout << "AgentTaskTests: all checks passed\n";

@@ -39,6 +39,13 @@ bool containsAny(const juce::String& text, std::initializer_list<const char*> ne
         if (text.contains(needle)) return true;
     return false;
 }
+
+bool publicationRequested(const juce::String& text)
+{
+    if (!containsAny(text, { "publish", "deploy to the registry", "deploy to server" })) return false;
+    return !containsAny(text, { "do not publish", "don't publish", "must not publish",
+                                "without publishing", "not publish" });
+}
 }
 
 AgentTask AgentTask::begin(const juce::String& conversation,
@@ -61,7 +68,7 @@ AgentTask AgentTask::begin(const juce::String& conversation,
     task.capabilitiesAssessed = !initialPlan.isEmpty();
     task.requiresBuildEvidence = containsAny(task.goal.toLowerCase(), { "build", "compile", "package" });
     task.requiresTestEvidence = task.goal.toLowerCase().contains("test");
-    task.requiresPublishEvidence = containsAny(task.goal.toLowerCase(), { "publish", "deploy to the registry", "deploy to server" });
+    task.requiresPublishEvidence = publicationRequested(task.goal.toLowerCase());
     return task;
 }
 
@@ -105,7 +112,7 @@ bool AgentTask::continuePlanAsExecution(bool verificationRequired)
     const auto lowerGoal = goal.toLowerCase();
     requiresBuildEvidence = containsAny(lowerGoal, { "build", "compile", "package" });
     requiresTestEvidence = lowerGoal.contains("test");
-    requiresPublishEvidence = containsAny(lowerGoal, { "publish", "deploy to the registry", "deploy to server" });
+    requiresPublishEvidence = publicationRequested(lowerGoal);
     changed = false;
     acted = false;
     verified = false;
@@ -383,7 +390,7 @@ void AgentTask::recordCommandEvidence(const juce::String& message)
     const auto command = message.upToFirstOccurrenceOf("\n", false, false).toLowerCase();
     if (containsAny(command, { "frate build", "frate.exe build", "frate package", "cmake --build", "msbuild ", "dotnet build", "cargo build" }))
         buildVerified = true;
-    if (containsAny(command, { "frate run", "frate.exe run", "ctest", "dotnet test", "cargo test", "agenttasktests", "tests\\", "tests/" }))
+    if (containsAny(command, { "frate run", "frate.exe run", "frate test", "frate.exe test", "ctest", "dotnet test", "cargo test", "agenttasktests", "tests\\", "tests/" }))
         testsVerified = true;
     if (containsAny(command, { "frate publish", "frate.exe publish" }))
         published = true;
