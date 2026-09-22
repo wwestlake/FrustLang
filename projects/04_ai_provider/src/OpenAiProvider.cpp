@@ -1,8 +1,10 @@
 #include "ai_provider/OpenAiProvider.h"
+#include "ai_provider/Json.h"
 
 #include <juce_core/juce_core.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -202,7 +204,8 @@ ChatResponse OpenAiProvider::sendChat(const std::vector<ChatMessage>& messages,
     juce::Array<juce::var> input;
     for (const auto& message : messages) {
         if (!message.providerItemsJson.empty()) {
-            const auto savedItems = juce::JSON::parse(juce::String(message.providerItemsJson));
+            const auto savedItems = json::repaired(juce::JSON::parse(juce::String::fromUTF8(message.providerItemsJson.c_str(),
+                                                                                      (int) message.providerItemsJson.size())));
             if (auto* items = savedItems.getArray())
                 for (const auto& item : *items) input.add(item);
             continue;
@@ -261,9 +264,10 @@ ChatResponse OpenAiProvider::sendChat(const std::vector<ChatMessage>& messages,
             toolChoice == ToolChoice::required ? "required" : "auto");
     }
 
-    auto bodyText = juce::JSON::toString(juce::var(bodyObj), true);
-    juce::MemoryBlock postData(bodyText.toRawUTF8(), bodyText.getNumBytesAsUTF8());
-    const auto estimatedInputTokens = static_cast<int>(std::ceil(bodyText.length() / 4.0));
+    const juce::var body(bodyObj);
+    const auto bodyText = json::toJson(body);
+    juce::MemoryBlock postData(bodyText.data(), bodyText.size());
+    const auto estimatedInputTokens = static_cast<int>(std::ceil((double) bodyText.size() / 4.0));
     const auto estimatedRequestTokens = estimatedInputTokens + 8192;
     const auto limiterKey = rateKey(apiKey, selectedModel);
 
@@ -286,7 +290,7 @@ ChatResponse OpenAiProvider::sendChat(const std::vector<ChatMessage>& messages,
             return { false, {}, "Could not reach api.openai.com (network/DNS failure)." };
         responseText = stream->readEntireStreamAsString();
         updateRateState(limiterKey, responseHeaders);
-        parsed = juce::JSON::parse(responseText);
+        parsed = json::repaired(juce::JSON::parse(responseText));
         if (statusCode == 200) break;
 
         const auto error = parsed.getProperty("error", {});
@@ -299,8 +303,18 @@ ChatResponse OpenAiProvider::sendChat(const std::vector<ChatMessage>& messages,
         if (statusCode == 429)
             return { false, {}, "The selected model is temporarily rate-limited. FrustIDE retried "
                 "automatically, but the account still needs a moment. Please send again shortly." };
+        // Keep a rejected request, so the cause can be read instead of guessed (the key is in a header, not in this file).
+        juce::String savedNote;
+        if (statusCode == 400)
+        {
+            const auto saved = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+                                   .getChildFile("LagDaemonResearchIDE").getChildFile("last-rejected-request.json");
+            saved.getParentDirectory().createDirectory();
+            if (saved.replaceWithText("// OpenAI answered HTTP 400: " + message + "\n" + juce::String::fromUTF8(bodyText.data(), (int) bodyText.size())))
+                savedNote = " (the request was saved to " + saved.getFullPathName() + ")";
+        }
         return { false, {}, "OpenAI request failed (HTTP " + std::to_string(statusCode)
-            + "): " + message.toStdString() };
+            + "): " + message.toStdString() + savedNote.toStdString() };
     }
 
     auto* output = parsed.getProperty("output", {}).getArray();
@@ -352,7 +366,7 @@ ChatResponse OpenAiProvider::sendChat(const std::vector<ChatMessage>& messages,
             content << "- [" << sourceTitles[index] << "](" << sourceUrls[index] << ")\n";
     }
     return { true, content.toStdString(), {}, std::move(toolCalls),
-             juce::JSON::toString(parsed.getProperty("output", {}), false).toStdString(),
+             json::toJson(parsed.getProperty("output", {})),
              hostedToolUsed };
 }
 
