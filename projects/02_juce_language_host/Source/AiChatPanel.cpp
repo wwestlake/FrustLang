@@ -1410,7 +1410,7 @@ void AiChatPanel::startResolvedMessage(const juce::String& userText, AgentMode s
                     if (brief.length() > 110) brief = brief.substring(0, 107) + "...";
                     postLiveStatus(safeThis, run, {}, result.ok ? doing : doing + ": failed (" + brief + ")");
                 }
-                activity.add("- `" + juce::String(call.name) + "`: " + summary);
+                activity.add("- `" + juce::String(call.name) + "` (" + doing + "): " + summary);
                 const auto taskLine = agentRun ? task.statusLine() : juce::String();
                 juce::MessageManager::callAsync([safeThis,
                                                   changed = result.workspaceChanged, taskLine] {

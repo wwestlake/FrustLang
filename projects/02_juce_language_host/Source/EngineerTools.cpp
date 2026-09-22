@@ -247,7 +247,8 @@ EngineerTools::Result EngineerTools::list(const juce::var& arguments) const
     if (suppliedPath.isEmpty()) suppliedPath = ".";
     const auto directory = resolveProjectPath(suppliedPath, PathPurpose::read, error);
     if (error.isNotEmpty()) return failure(error);
-    if (!directory.isDirectory()) return failure("Directory does not exist.");
+    if (!directory.isDirectory())
+        return failure("Directory does not exist: " + directory.getFullPathName());
 
     const auto recursive = boolProperty(arguments, "recursive", false);
     const auto limit = juce::jlimit(1, 1000, intProperty(arguments, "limit", 200));

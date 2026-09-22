@@ -241,6 +241,11 @@ fn main() -> i64 = {
         auto outside = approving.execute(call("run_command", R"({"command":"Get-Location","cwd":"..","reason":"test"})"));
         expect(!outside.ok, "it cannot run outside the project");
 
+        auto missingDirectory = approving.execute(call(
+            "workspace_list", R"({"path":"missing-folder"})"));
+        expect(!missingDirectory.ok && missingDirectory.message.contains("missing-folder"),
+               "a missing directory error identifies the resolved path");
+
         auto slow = approving.execute(call("run_command", R"({"command":"Start-Sleep -Seconds 30","reason":"test","timeout_seconds":5})"));
         expect(!slow.ok && slow.message.contains("time limit"), "a command that runs too long is stopped");
 
