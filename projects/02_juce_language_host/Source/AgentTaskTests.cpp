@@ -143,11 +143,21 @@ int main()
 
     auto blocked = AgentTask::begin("blocked", "Implement parser", "execute", true, true, true);
     blocked.recordEngineerResult("workspace_list", { true, false, "Listed project" });
+    blocked.recordEngineerResult("workspace_search", { true, false, "No linker implementation found" });
+    blocked.recordEngineerResult("registry_search", { true, false, "No linker pod found" });
     auto missing = blocked.executeControl(call("agent_assess_capabilities",
         R"({"required":["working library linker"],"available":[],"missing":["working library linker"],"evidence":["known-good library test reproduces duplicate symbol"],"options":["repair the linker","change the library boundary"]})"));
     expect(missing.ok && missing.terminal && blocked.isResumable(),
            "Missing prerequisites pause the task before edits");
     expect(blocked.resume(), "A user continuation resumes the same task packet");
+
+    auto unsupportedMissing = AgentTask::begin(
+        "unsupported-missing", "Implement file input", "execute", true, true, true);
+    unsupportedMissing.recordEngineerResult("workspace_list", { true, false, "Listed project" });
+    const auto unsupportedClaim = unsupportedMissing.executeControl(call("agent_assess_capabilities",
+        R"({"required":["file I/O"],"available":[],"missing":["file I/O"],"evidence":["I did not see it"],"options":["build it"]})"));
+    expect(!unsupportedClaim.ok && unsupportedMissing.currentPhase() == "inspect",
+           "A missing-capability claim without local and registry searches returns to inspection");
 
     auto falsePermissionBlock = AgentTask::begin("permission", "Update main.fr", "execute", true, true, true);
     falsePermissionBlock.recordEngineerResult("workspace_list", { true, false, "Listed project" });

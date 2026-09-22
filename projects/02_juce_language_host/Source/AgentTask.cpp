@@ -166,11 +166,13 @@ AgentTask::ControlResult AgentTask::executeControl(const ai_provider::ToolCall& 
         const auto lowerGoal = goal.toLowerCase();
         const bool namesExternalEvidence = goal.contains(":\\") || goal.contains(":/");
         bool readEvidence = false;
+        bool searchEvidence = false;
         bool registryEvidence = false;
         for (const auto& observation : observations)
         {
             readEvidence = readEvidence || observation.startsWith("workspace_read:")
                 || observation.startsWith("workspace_search:");
+            searchEvidence = searchEvidence || observation.startsWith("workspace_search:");
             registryEvidence = registryEvidence || observation.startsWith("registry_search:");
         }
         if ((namesExternalEvidence && !readEvidence)
@@ -181,22 +183,38 @@ AgentTask::ControlResult AgentTask::executeControl(const ai_provider::ToolCall& 
                 "Error: Capability assessment is premature. Inspect the external evidence and every explicitly "
                 "requested capability source, including the pod registry, before deciding what is missing." };
         }
+        const auto proposedMissing = stringArrayProperty(arguments, "missing");
+        auto isHostGrantedCapability = [](const juce::String& missing) {
+            const auto lower = missing.toLowerCase();
+            return lower == "write" || containsAny(lower,
+                { "write access", "write permission", "permission to write", "workspace write",
+                  "project file access", "workspace_", "run_command", "create file", "file creation",
+                  "edit file", "file editing" });
+        };
+        bool hasGenuineMissingClaim = false;
+        for (const auto& missing : proposedMissing)
+            hasGenuineMissingClaim = hasGenuineMissingClaim || !isHostGrantedCapability(missing);
+        if (hasGenuineMissingClaim && (!searchEvidence || !registryEvidence))
+        {
+            inspected = false;
+            return { true, false, false,
+                "Error: A missing-capability claim needs absence evidence from both a workspace_search of the "
+                "local code or documentation and a registry_search. Return to inspection and search for the "
+                "claimed capability before asking the user." };
+        }
         const auto evidence = stringArrayProperty(arguments, "evidence");
         if (evidence.isEmpty())
             return { true, false, false, "Error: Capability assessment requires concrete project or tool evidence." };
         requiredCapabilities = stringArrayProperty(arguments, "required");
         availableCapabilities = stringArrayProperty(arguments, "available");
         capabilityEvidence = evidence;
-        missingCapabilities = stringArrayProperty(arguments, "missing");
+        missingCapabilities = proposedMissing;
         if (requiresWrite)
         {
             juce::StringArray genuineMissing;
             for (const auto& missing : missingCapabilities)
             {
-                const auto lower = missing.toLowerCase();
-                if (lower == "write" || containsAny(lower, { "write access", "write permission", "permission to write",
-                                         "workspace write", "project file access", "workspace_", "run_command",
-                                         "create file", "file creation", "edit file", "file editing" }))
+                if (isHostGrantedCapability(missing))
                 {
                     if (!availableCapabilities.contains(missing))
                         availableCapabilities.add(missing);
