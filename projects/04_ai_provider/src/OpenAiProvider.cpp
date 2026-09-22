@@ -2,10 +2,154 @@
 
 #include <juce_core/juce_core.h>
 #include <algorithm>
+#include <cmath>
+#include <functional>
+#include <map>
+#include <mutex>
 
 namespace ai_provider {
 
 namespace {
+
+struct RateWindow
+{
+    double limit = -1.0;
+    double remaining = -1.0;
+    double resetAtMs = 0.0;
+};
+
+struct RateState
+{
+    RateWindow requests;
+    RateWindow tokens;
+};
+
+std::mutex rateMutex;
+std::map<juce::String, RateState> rateStates;
+
+juce::String headerValueIgnoreCase(const juce::StringPairArray& headers,
+                                   const juce::String& requestedName)
+{
+    const auto& keys = headers.getAllKeys();
+    const auto& values = headers.getAllValues();
+    for (int index = 0; index < keys.size(); ++index)
+        if (keys[index].equalsIgnoreCase(requestedName))
+            return values[index];
+    return {};
+}
+
+double durationMs(const juce::String& value)
+{
+    const auto text = value.trim().toLowerCase();
+    double total = 0.0;
+    int position = 0;
+    while (position < text.length())
+    {
+        const auto numberStart = position;
+        while (position < text.length()
+               && (juce::CharacterFunctions::isDigit(text[position]) || text[position] == '.'))
+            ++position;
+        if (position == numberStart) return 0.0;
+        const auto amount = text.substring(numberStart, position).getDoubleValue();
+        if (text.substring(position).startsWith("ms"))
+        {
+            total += amount;
+            position += 2;
+        }
+        else if (position < text.length() && text[position] == 's')
+        {
+            total += amount * 1000.0;
+            ++position;
+        }
+        else if (position < text.length() && text[position] == 'm')
+        {
+            total += amount * 60000.0;
+            ++position;
+        }
+        else if (position < text.length() && text[position] == 'h')
+        {
+            total += amount * 3600000.0;
+            ++position;
+        }
+        else
+        {
+            return 0.0;
+        }
+    }
+    return total;
+}
+
+juce::String rateKey(const std::string& apiKey, const std::string& model)
+{
+    const auto hash = std::hash<std::string> {}(apiKey + "\n" + model);
+    return juce::String::toHexString(static_cast<juce::int64>(hash));
+}
+
+void refreshWindow(RateWindow& window, double nowMs)
+{
+    if (window.limit >= 0.0 && window.resetAtMs > 0.0 && nowMs >= window.resetAtMs)
+    {
+        window.remaining = window.limit;
+        window.resetAtMs = 0.0;
+    }
+}
+
+void waitForRateCapacity(const juce::String& key, int estimatedTokens)
+{
+    for (;;)
+    {
+        double waitMs = 0.0;
+        {
+            std::lock_guard lock(rateMutex);
+            const auto now = juce::Time::getMillisecondCounterHiRes();
+            auto& state = rateStates[key];
+            refreshWindow(state.requests, now);
+            refreshWindow(state.tokens, now);
+
+            if (state.requests.remaining >= 0.0 && state.requests.remaining < 1.0
+                && state.requests.resetAtMs > now)
+                waitMs = juce::jmax(waitMs, state.requests.resetAtMs - now);
+            if (state.tokens.remaining >= 0.0
+                && (state.tokens.limit < 0.0 || estimatedTokens <= state.tokens.limit)
+                && state.tokens.remaining < static_cast<double>(estimatedTokens)
+                && state.tokens.resetAtMs > now)
+                waitMs = juce::jmax(waitMs, state.tokens.resetAtMs - now);
+
+            if (waitMs <= 0.0)
+            {
+                if (state.requests.remaining >= 0.0) state.requests.remaining -= 1.0;
+                if (state.tokens.remaining >= 0.0) state.tokens.remaining -= estimatedTokens;
+                return;
+            }
+        }
+        juce::Thread::sleep(juce::jlimit(100, 120000, static_cast<int>(std::ceil(waitMs)) + 100));
+    }
+}
+
+void updateRateWindow(RateWindow& window, const juce::StringPairArray& headers,
+                      const juce::String& limitName, const juce::String& remainingName,
+                      const juce::String& resetName, double nowMs)
+{
+    const auto limit = headerValueIgnoreCase(headers, limitName);
+    const auto remaining = headerValueIgnoreCase(headers, remainingName);
+    const auto reset = headerValueIgnoreCase(headers, resetName);
+    if (limit.isNotEmpty()) window.limit = limit.getDoubleValue();
+    if (remaining.isNotEmpty()) window.remaining = remaining.getDoubleValue();
+    if (reset.isNotEmpty()) window.resetAtMs = nowMs + durationMs(reset);
+}
+
+void updateRateState(const juce::String& key, const juce::StringPairArray& headers)
+{
+    std::lock_guard lock(rateMutex);
+    const auto now = juce::Time::getMillisecondCounterHiRes();
+    auto& state = rateStates[key];
+    updateRateWindow(state.requests, headers,
+                     "x-ratelimit-limit-requests", "x-ratelimit-remaining-requests",
+                     "x-ratelimit-reset-requests", now);
+    updateRateWindow(state.tokens, headers,
+                     "x-ratelimit-limit-tokens", "x-ratelimit-remaining-tokens",
+                     "x-ratelimit-reset-tokens", now);
+}
 
 bool shouldEnableWebSearch(const std::vector<ChatMessage>& messages)
 {
@@ -21,15 +165,18 @@ bool shouldEnableWebSearch(const std::vector<ChatMessage>& messages)
 
 int retryDelayMs(const juce::StringPairArray& headers, const juce::String& message, int attempt)
 {
-    auto retryAfter = headers.getValue("retry-after", {}).getDoubleValue();
+    auto retryAfter = headerValueIgnoreCase(headers, "retry-after").getDoubleValue();
     if (retryAfter <= 0.0) {
         const auto marker = message.indexOfIgnoreCase("try again in ");
         if (marker >= 0)
             retryAfter = message.substring(marker + 13).upToFirstOccurrenceOf("s", false, false)
                 .getDoubleValue();
     }
-    if (retryAfter <= 0.0) retryAfter = 1.5 * static_cast<double>(attempt + 1);
-    return juce::jlimit(500, 10000, static_cast<int>(retryAfter * 1000.0) + 250);
+    auto delayMs = retryAfter * 1000.0;
+    if (delayMs <= 0.0)
+        delayMs = durationMs(headerValueIgnoreCase(headers, "x-ratelimit-reset-tokens"));
+    if (delayMs <= 0.0) delayMs = 1500.0 * static_cast<double>(attempt + 1);
+    return juce::jlimit(500, 120000, static_cast<int>(delayMs) + 250);
 }
 
 void appendMessageItem(juce::Array<juce::var>& input, const ChatMessage& message)
@@ -80,8 +227,10 @@ ChatResponse OpenAiProvider::sendChat(const std::vector<ChatMessage>& messages,
     }
 
     auto* bodyObj = new juce::DynamicObject();
-    bodyObj->setProperty("model", juce::String(model.empty() ? "gpt-4o-mini" : model));
+    const auto selectedModel = model.empty() ? std::string("gpt-4o-mini") : model;
+    bodyObj->setProperty("model", juce::String(selectedModel));
     bodyObj->setProperty("input", input);
+    bodyObj->setProperty("max_output_tokens", 8192);
 
     juce::Array<juce::var> toolArray;
     const bool webSearchEnabled = shouldEnableWebSearch(messages);
@@ -114,12 +263,16 @@ ChatResponse OpenAiProvider::sendChat(const std::vector<ChatMessage>& messages,
 
     auto bodyText = juce::JSON::toString(juce::var(bodyObj), true);
     juce::MemoryBlock postData(bodyText.toRawUTF8(), bodyText.getNumBytesAsUTF8());
+    const auto estimatedInputTokens = static_cast<int>(std::ceil(bodyText.length() / 4.0));
+    const auto estimatedRequestTokens = estimatedInputTokens + 8192;
+    const auto limiterKey = rateKey(apiKey, selectedModel);
 
     juce::String headers = "Content-Type: application/json\r\nAuthorization: Bearer " + juce::String(apiKey);
     int statusCode = 0;
     juce::String responseText;
     juce::var parsed;
     for (int attempt = 0; attempt < 3; ++attempt) {
+        waitForRateCapacity(limiterKey, estimatedRequestTokens);
         juce::StringPairArray responseHeaders;
         auto url = juce::URL("https://api.openai.com/v1/responses").withPOSTData(postData);
         auto stream = url.createInputStream(
@@ -132,6 +285,7 @@ ChatResponse OpenAiProvider::sendChat(const std::vector<ChatMessage>& messages,
         if (stream == nullptr)
             return { false, {}, "Could not reach api.openai.com (network/DNS failure)." };
         responseText = stream->readEntireStreamAsString();
+        updateRateState(limiterKey, responseHeaders);
         parsed = juce::JSON::parse(responseText);
         if (statusCode == 200) break;
 
