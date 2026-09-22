@@ -27,6 +27,12 @@ Start the newly built FrustIDE, sign in or configure the API profile, and run:
 py tools\agent-eval\agent_eval.py run tools\agent-eval\baseline.json --model gpt-4o-mini
 ```
 
+Run one case while iterating on a specific behavior:
+
+```powershell
+py tools\agent-eval\agent_eval.py run tools\agent-eval\baseline.json --model gpt-4o-mini --case repair-frust
+```
+
 The runner discovers the active IDE through `%APPDATA%\LagDaemonResearchIDE\agent-api.json`. Results are written under `tools\agent-eval\runs\<run-id>\` as `run.json`, `report.md`, per-case JSON, and the resulting workspaces.
 
 Use the exact same suite for every model comparison. A result is evidence about the complete model-plus-FrustIDE system at that commit, not about the model in isolation.

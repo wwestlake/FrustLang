@@ -210,7 +210,11 @@ def run_suite(args) -> int:
     defaults = suite.get("defaults", {})
     case_results = []
 
-    for case in suite["cases"]:
+    selected_cases = [case for case in suite["cases"] if not args.case or case["id"] == args.case]
+    if not selected_cases:
+        raise ValueError(f"Unknown case id: {args.case}")
+
+    for case in selected_cases:
         case_output = output / safe_name(case["id"])
         workspace = case_output / "workspace"
         case_output.mkdir(parents=True)
@@ -282,6 +286,7 @@ def main() -> int:
     run = subcommands.add_parser("run", help="run a suite through the active FrustIDE")
     run.add_argument("suite", type=Path)
     run.add_argument("--model", help="override the suite model with an exact model ID")
+    run.add_argument("--case", help="run only the case with this exact id")
     run.add_argument("--output", type=Path, help="write this run to a specific new directory")
     run.add_argument(
         "--discovery",

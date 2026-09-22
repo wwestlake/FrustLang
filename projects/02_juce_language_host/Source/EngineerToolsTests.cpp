@@ -86,9 +86,31 @@ int main()
         "workspace_check_frust", R"({"path":"src/main.fr"})"));
     expect(checked.ok && checked.verificationPerformed, "Valid Frust source passes verification");
 
+    expect(base.getChildFile("frate.json").replaceWithText(R"({
+  "name": "engineer_tools_test",
+  "version": "1.0.0",
+  "type": "bin",
+  "dependencies": [
+    { "name": "core", "version": "1.0.3" }
+  ]
+})"), "dependency manifest is created");
+    expect(base.getChildFile("src/main.fr").replaceWithText(R"(import core, "current";
+
+fn main() -> i64 = {
+    core::println_str("ready");
+    0
+}
+)"), "pod-dependent source is created");
+    checked = workspace.execute(call(
+        "workspace_check_frust", R"({"path":"src/main.fr"})"));
+    if (!checked.ok)
+        std::cerr << checked.message << "\n";
+    expect(checked.ok && checked.verificationPerformed,
+           "Frust verification resolves pods declared by the project manifest");
+
     auto broken = workspace.execute(call(
         "workspace_replace_text",
-        R"({"path":"src/main.fr","old_text":"84","new_text":"{"})"));
+        R"({"path":"src/main.fr","old_text":"core::println_str(\"ready\");","new_text":"{"})"));
     expect(broken.ok, "Test can introduce invalid Frust source");
     checked = workspace.execute(call(
         "workspace_check_frust", R"({"path":"src/main.fr"})"));

@@ -48,7 +48,7 @@
       "fixture": "fixtures/repair-frust",
       "prompt": "Repair src/main.fr so it is valid Frust and prints ready. Keep the existing function shape, make the smallest correction, and verify it with workspace_check_frust before completing.",
       "assertions": [
-        { "type": "file_contains", "path": "src/main.fr", "value": "println(\"ready\");" },
+        { "type": "file_contains", "path": "src/main.fr", "value": "core::println_str(\"ready\");" },
         { "type": "task_field", "field": "status", "equals": "completed" },
         { "type": "task_field", "field": "verified", "equals": true },
         { "type": "max_tool_calls", "value": 16 },

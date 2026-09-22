@@ -1,4 +1,6 @@
+import core, "current";
+
 fn main() -> i64 = {
-    println("ready")
+    core::println_str("ready")
     0
 }

@@ -1,0 +1,10 @@
+{
+  "name": "agent_repair_fixture",
+  "version": "1.0.0",
+  "type": "bin",
+  "description": "FrustIDE agent repair evaluation fixture",
+  "exports": [],
+  "dependencies": [
+    { "name": "core", "version": "1.0.3" }
+  ]
+}

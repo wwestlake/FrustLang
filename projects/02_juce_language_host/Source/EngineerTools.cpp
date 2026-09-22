@@ -1,6 +1,8 @@
 #include "EngineerTools.h"
 
 #include <CompilerApi.h>
+#include <frate/FrateCache.h>
+#include <frate/FrateConfig.h>
 
 #include <filesystem>
 #include <mutex>
@@ -448,6 +450,59 @@ EngineerTools::Result EngineerTools::checkFrust(const juce::var& arguments) cons
         if (!sibling.existsAsFile()) return false;
         text = sibling.loadFileAsString().toStdString();
         return true;
+    };
+    request.pods = [projectRoot = root](const std::string& name, const std::string& requested,
+                                        frust::PodSource& pod) {
+        frate::FrateConfig projectConfig;
+        if (!projectConfig.load(projectRoot.getChildFile("frate.json"))) return false;
+
+        std::string version = requested;
+        if (version.empty() || version == "current")
+        {
+            version.clear();
+            for (const auto& dependency : projectConfig.getDependencies())
+                if (dependency.name == name) { version = dependency.version; break; }
+        }
+        if (version.empty()) return false;
+
+        frate::FrateCache cache;
+        cache.installBundledPodIfAvailable(name, version);
+        auto podDirectory = cache.getCachedPodDir(name, version);
+
+#if defined(FRUST_REPO_ROOT_DIR)
+        if (!cache.isCached(name, version))
+        {
+            const auto sourcePod = juce::File(FRUST_REPO_ROOT_DIR)
+                .getChildFile("projects/06_frust_library")
+                .getChildFile(juce::String(name));
+            frate::FrateConfig sourceConfig;
+            if (sourceConfig.load(sourcePod.getChildFile("frate.json"))
+                && sourceConfig.getMetadata().name == name
+                && sourceConfig.getMetadata().version == version)
+                podDirectory = sourcePod;
+            else
+                return false;
+        }
+#else
+        if (!cache.isCached(name, version)) return false;
+#endif
+
+        frate::FrateConfig podConfig;
+        if (!podConfig.load(podDirectory.getChildFile("frate.json"))) return false;
+        pod.ns = podConfig.getMetadata().namespacePath;
+
+        const auto sourceDirectory = podDirectory.getChildFile("src");
+        juce::Array<juce::File> files;
+        sourceDirectory.findChildFiles(files, juce::File::findFiles, true, "*.fr;*.frust");
+        for (const auto& source : files)
+        {
+            frust::SourceFile podFile;
+            podFile.name = source.getRelativePathFrom(sourceDirectory)
+                .replaceCharacter('\\', '/').toStdString();
+            podFile.text = source.loadFileAsString().toStdString();
+            pod.sources.push_back(std::move(podFile));
+        }
+        return !pod.sources.empty();
     };
 
     const auto result = frust::Compile(request);

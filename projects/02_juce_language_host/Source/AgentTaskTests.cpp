@@ -121,6 +121,15 @@ int main()
            "Missing prerequisites pause the task before edits");
     expect(blocked.resume(), "A user continuation resumes the same task packet");
 
+    auto falsePermissionBlock = AgentTask::begin("permission", "Update main.fr", "execute", true, true, true);
+    falsePermissionBlock.recordEngineerResult("workspace_list", { true, false, "Listed project" });
+    const auto rejectedPermission = falsePermissionBlock.executeControl(call("agent_assess_capabilities",
+        R"({"required":["Write access to project files"],"available":[],"missing":["Write access to project files"],"evidence":["A write was rejected before planning"],"options":["ask user"]})"));
+    expect(!rejectedPermission.ok && !rejectedPermission.terminal && !falsePermissionBlock.isTerminal(),
+           "A sequencing rejection cannot be misreported as missing workspace write access");
+    expect(assess(falsePermissionBlock).ok,
+           "The model can recover by recording host-granted workspace access as available");
+
     auto converging = AgentTask::begin("converging", "Fix linker issue", "execute", true, true, true);
     converging.recordEngineerResult("workspace_list", { true, false, "Listed project" });
     assess(converging);

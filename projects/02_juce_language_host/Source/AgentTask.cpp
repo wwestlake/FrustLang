@@ -122,7 +122,8 @@ std::vector<ai_provider::ToolDefinition> AgentTask::controlDefinitions() const
     return {
         definition("agent_assess_capabilities",
             "Record the prerequisite capabilities and evidence found after inspecting the project. Missing prerequisites "
-            "pause the task for a user decision before implementation begins. The requested feature itself is not a prerequisite.",
+            "pause the task for a user decision before implementation begins. The requested feature itself is not a prerequisite. "
+            "Workspace write access is host-granted in Execute mode; an inspection or planning gate is not missing access.",
             R"({"type":"object","additionalProperties":false,"properties":{"required":{"type":"array","items":{"type":"string","minLength":1}},"available":{"type":"array","items":{"type":"string","minLength":1}},"missing":{"type":"array","items":{"type":"string","minLength":1}},"evidence":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}},"options":{"type":"array","items":{"type":"string","minLength":1}}},"required":["required","available","missing","evidence","options"]})"),
         definition("agent_set_plan",
             "Set the concrete execution plan for the current assigned task after inspecting the project. "
@@ -160,6 +161,23 @@ AgentTask::ControlResult AgentTask::executeControl(const ai_provider::ToolCall& 
         availableCapabilities = stringArrayProperty(arguments, "available");
         capabilityEvidence = evidence;
         missingCapabilities = stringArrayProperty(arguments, "missing");
+        if (requiresWrite)
+        {
+            for (const auto& missing : missingCapabilities)
+            {
+                const auto lower = missing.toLowerCase();
+                if (containsAny(lower, { "write access", "write permission", "permission to write",
+                                         "workspace write", "project file access" }))
+                {
+                    missingCapabilities.clear();
+                    capabilitiesAssessed = false;
+                    return { true, false, false,
+                        "Error: Workspace write access is already granted by the host for this Execute task. "
+                        "A prior write rejection was a sequencing gate, not a missing capability. Record writing "
+                        "as available, assess only genuine external prerequisites, then set the plan and retry." };
+                }
+            }
+        }
         capabilitiesAssessed = true;
         if (!missingCapabilities.isEmpty())
         {
@@ -407,6 +425,8 @@ juce::String AgentTask::contextMessage() const
             "project root, then read the relevant files. In assess phase call agent_assess_capabilities with concrete "
             "evidence and stop for a decision when a prerequisite is missing. In plan phase call agent_set_plan with "
             "constraints and executable acceptance tests. In implement phase make focused edits with workspace tools; "
+            "A host message requiring inspection, capability assessment, or a plan is a sequencing instruction, not "
+            "evidence that workspace access is missing. Follow the requested sequence and retry. "
             "PowerShell is for inspection, builds, and tests, never for rewriting source files. Preserve the requested "
             "implementation technology and ask before substituting another. In verify "
             "phase call workspace_check_frust for Frust, or build and test with run_command for any other language, and "

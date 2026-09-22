@@ -220,6 +220,7 @@ target_compile_definitions(EngineerToolsTests PRIVATE
 
 target_link_libraries(EngineerToolsTests PRIVATE
     ai_provider
+    frate_lib
     frust_lang
     frust_runtime
     juce::juce_core
