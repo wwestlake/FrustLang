@@ -9,8 +9,20 @@ namespace {
 
 juce::StringArray queryTokens(const juce::String& query)
 {
+    const auto lowerQuery = query.toLowerCase();
     juce::StringArray rawTokens;
-    rawTokens.addTokens(query.toLowerCase(), " \t\r\n.,!?;:()[]{}<>+-=*/\\|&^%\"'", "");
+    if (lowerQuery.contains("string")) rawTokens.add("string");
+    if (lowerQuery.contains("vector") || lowerQuery.contains("collection"))
+    {
+        rawTokens.add("vector");
+        rawTokens.add("collections");
+    }
+    if (lowerQuery.contains("print") || lowerQuery.contains("console"))
+        rawTokens.add("println_str");
+    if (lowerQuery.contains("input") || lowerQuery.contains("read line")
+        || lowerQuery.contains("repl"))
+        rawTokens.add("read_line");
+    rawTokens.addTokens(lowerQuery, " \t\r\n.,!?;:()[]{}<>+-=*/\\|&^%\"'", "");
     rawTokens.trim();
     rawTokens.removeEmptyStrings();
 

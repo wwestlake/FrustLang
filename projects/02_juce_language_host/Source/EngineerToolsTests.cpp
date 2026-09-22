@@ -1,5 +1,6 @@
 #include "EngineerTools.h"
 
+#include <algorithm>
 #include <iostream>
 
 namespace
@@ -27,8 +28,16 @@ int main()
 
     EngineerTools observe(base, EngineerTools::AccessLevel::observe);
     EngineerTools workspace(base, EngineerTools::AccessLevel::workspace);
-    expect(observe.definitions().size() == 4, "Observe exposes read-only and verification tools");
-    expect(workspace.definitions().size() == 8, "Workspace exposes all eight project tools");
+    const auto observeDefinitions = observe.definitions();
+    expect(observeDefinitions.size() == 5, "Observe exposes read-only, registry, and verification tools");
+    expect(workspace.definitions().size() == 9, "Workspace exposes all nine engineering tools");
+    expect(std::any_of(observeDefinitions.begin(), observeDefinitions.end(), [](const auto& tool) {
+        return tool.name == "registry_search";
+    }), "Registry search is available at Observe access");
+    EngineerTools noProject({}, EngineerTools::AccessLevel::observe);
+    expect(noProject.definitions().size() == 1
+           && noProject.definitions().front().name == "registry_search",
+           "Registry search remains available without an open project");
 
     auto denied = observe.execute(call(
         "workspace_create_file", R"({"path":"src/main.fr","content":"fn main() = 42"})"));

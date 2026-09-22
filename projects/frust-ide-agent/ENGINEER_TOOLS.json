@@ -53,6 +53,21 @@
       }
     },
     {
+      "name": "registry_search",
+      "description": "List or search the public Frate pod registry and return published pod metadata and exports.",
+      "usage": "Use before inventing a dependency or asking the user which pods exist. An empty query lists all published pods; a query filters pod names by substring.",
+      "access": "observe",
+      "tokens": ["registry", "pod", "package", "dependency", "exports", "available", "search"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "query": { "type": "string", "description": "Optional case-insensitive pod-name substring. Empty lists all pods.", "default": "" },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 }
+        }
+      }
+    },
+    {
       "name": "workspace_create_directory",
       "description": "Create a directory inside the project currently open in FrustIDE, including missing parents.",
       "usage": "Use to establish a requested project or module layout. It succeeds when the directory already exists.",

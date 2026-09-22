@@ -85,6 +85,7 @@ WorkbenchComponent::WorkbenchComponent()
     };
 
     auto aiChat = std::make_unique<AiChatPanel>(appProperties.get());
+    auto* aiChatPanel = aiChat.get();
     aiChat->getProjectRoot = [this] { return fileTreePanel->getRootDirectory(); };
     aiChat->onFileSystemChanged = [this] {
         if (fileTreePanel != nullptr) fileTreePanel->refresh();
@@ -106,6 +107,19 @@ WorkbenchComponent::WorkbenchComponent()
     dockManager->registerPanel("terminal", "OS Terminal", std::move(terminal), CreationDock::DockTargetZone::Bottom);
 
     dockManager->loadLayoutFromFile(getLayoutFile());
+
+    localAgentApi = std::make_unique<LocalAgentApi>();
+    localAgentApi->onMessage = [safeChat = juce::Component::SafePointer<AiChatPanel>(aiChatPanel)]
+        (const juce::String& content, LocalAgentApi::Completion completion) mutable {
+        if (safeChat == nullptr)
+        {
+            completion(false, "The AI Assistant panel is unavailable.");
+            return;
+        }
+        if (!safeChat->submitExternalMessage(content, completion))
+            completion(false, "The AI Assistant is busy. Try again after its current request finishes.");
+    };
+    localAgentApi->start();
     
     // Restore last opened folder
     if (appProperties) {
@@ -124,6 +138,7 @@ WorkbenchComponent::WorkbenchComponent()
 
 WorkbenchComponent::~WorkbenchComponent()
 {
+    localAgentApi = nullptr;
     if (dockManager) {
         dockManager->saveLayoutToFile(getLayoutFile());
     }

@@ -27,6 +27,9 @@ struct ChatMessage {
     std::string content;
     std::vector<ToolCall> toolCalls;
     std::string toolCallId;
+    // Exact typed output items returned by stateful provider APIs. Keeping
+    // these between tool rounds preserves reasoning and hosted-tool state.
+    std::string providerItemsJson;
 };
 
 struct ChatResponse {
@@ -34,6 +37,8 @@ struct ChatResponse {
     std::string content;      // the assistant's reply, when ok
     std::string errorMessage; // human-readable failure reason, when !ok
     std::vector<ToolCall> toolCalls;
+    std::string providerItemsJson;
+    bool hostedToolUsed = false;
 };
 
 struct ModelListResponse {

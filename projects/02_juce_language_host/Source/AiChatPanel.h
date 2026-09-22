@@ -18,11 +18,15 @@
 class AiChatPanel : public juce::Component
 {
 public:
+    using ExternalCompletion = std::function<void(bool, const juce::String&)>;
+
     explicit AiChatPanel(juce::ApplicationProperties* properties);
     ~AiChatPanel() override;
 
     void paint(juce::Graphics& g) override;
     void resized() override;
+
+    bool submitExternalMessage(const juce::String& content, ExternalCompletion completion);
 
     std::function<juce::File()> getProjectRoot;
     std::function<void()> onFileSystemChanged;
@@ -47,6 +51,7 @@ private:
     bool appendAndSave(const juce::String& role, const juce::String& content);
     void updateConversationControls();
     void refreshTaskStatus();
+    void completeExternalRequest(bool ok, const juce::String& response);
     static juce::String loadFrustSystemPrompt();
 
     juce::Label headerLabel { "Header", "AI Assistant" };
@@ -80,6 +85,7 @@ private:
     // background std::thread and marshals its result back via
     // MessageManager::callAsync, since JUCE UI is message-thread-only.
     bool requestInFlight = false;
+    ExternalCompletion externalCompletion;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AiChatPanel)
 };

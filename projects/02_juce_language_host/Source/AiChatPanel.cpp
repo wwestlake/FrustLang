@@ -46,11 +46,25 @@ bool isPlanContinuation(const juce::String& request)
 
 MutationIntent mutationIntentFor(const juce::String& request)
 {
-    const auto text = request.toLowerCase();
-    const bool action = text.contains("create") || text.contains("write")
-        || text.contains("update") || text.contains("edit") || text.contains("change")
-        || text.contains("add") || text.contains("implement") || text.contains("fix")
-        || text.contains("make") || text.contains("rename");
+    const auto text = request.trim().toLowerCase();
+    const bool directRequest = text.startsWith("please ") || text.startsWith("can you ")
+        || text.startsWith("could you ") || text.startsWith("would you ")
+        || text.startsWith("i want you to ") || text.startsWith("let's ")
+        || text.startsWith("lets ");
+    const bool statusStatement = text.startsWith("we are ") || text.startsWith("we're ")
+        || text.startsWith("i am ") || text.startsWith("i'm ")
+        || text.startsWith("they are ") || text.startsWith("they're ")
+        || text.startsWith("production is ") || text.startsWith("it is being ");
+    if (statusStatement && !directRequest)
+        return MutationIntent::none;
+
+    juce::StringArray words;
+    words.addTokens(text, " \t\r\n.,!?;:()[]{}<>+-=*/\\|&^%\"'", "");
+    const auto hasWord = [&words](const juce::String& word) { return words.contains(word); };
+    const bool action = hasWord("create") || hasWord("write") || hasWord("rewrite")
+        || hasWord("update") || hasWord("edit") || hasWord("change") || hasWord("add")
+        || hasWord("implement") || hasWord("fix") || hasWord("make") || hasWord("rename")
+        || hasWord("remove") || hasWord("delete");
     if (!action) return MutationIntent::none;
 
     const bool directoryOnly = (text.contains("folder") || text.contains("directory"))
@@ -396,6 +410,26 @@ void AiChatPanel::appendTranscript(const juce::String& speaker, const juce::Stri
     transcript.appendMessage(speaker, text);
 }
 
+bool AiChatPanel::submitExternalMessage(const juce::String& content,
+                                        ExternalCompletion completion)
+{
+    if (requestInFlight || inputBox.getText().trim().isNotEmpty() || content.trim().isEmpty())
+        return false;
+
+    externalCompletion = std::move(completion);
+    inputBox.setText(content, false);
+    sendMessage();
+    return true;
+}
+
+void AiChatPanel::completeExternalRequest(bool ok, const juce::String& response)
+{
+    if (!externalCompletion) return;
+    auto completion = std::move(externalCompletion);
+    externalCompletion = {};
+    completion(ok, response);
+}
+
 void AiChatPanel::refreshConversationList(bool loadMostRecent)
 {
     conversationSummaries = conversationStore.listConversations();
@@ -603,7 +637,9 @@ void AiChatPanel::sendMessage()
 
     auto profileName = profileBox.getText();
     if (profileName.isEmpty()) {
-        appendTranscript("system", "No AI profile selected - add one to ai_config.json first.");
+        const juce::String message = "No AI profile selected - add one in AI Settings first.";
+        appendTranscript("system", message);
+        completeExternalRequest(false, message);
         return;
     }
 
@@ -612,11 +648,17 @@ void AiChatPanel::sendMessage()
 
     auto provider = aiConfig.createProvider(profileName.toStdString());
     if (!provider) {
-        appendTranscript("system", "Could not create a provider for '" + profileName + "'.");
+        const auto message = "Could not create a provider for '" + profileName + "'.";
+        appendTranscript("system", message);
+        completeExternalRequest(false, message);
         return;
     }
 
-    if (!appendAndSave("user", userText)) return;
+    if (!appendAndSave("user", userText))
+    {
+        completeExternalRequest(false, "The message could not be saved.");
+        return;
+    }
     history.push_back({ "user", userText.toStdString() });
     inputBox.clear();
     renderConversation();
@@ -635,11 +677,16 @@ void AiChatPanel::sendMessage()
     const auto access = accessBox.getSelectedId() == 2
         ? EngineerTools::AccessLevel::workspace : EngineerTools::AccessLevel::observe;
     const auto selectedMode = static_cast<AgentMode>(modeBox.getSelectedId());
-    const auto effectiveAccess = selectedMode == AgentMode::plan || selectedMode == AgentMode::review
-        ? EngineerTools::AccessLevel::observe : access;
+    const auto requestedMutation = mutationIntentFor(userText);
+    const bool continuation = selectedMode == AgentMode::execute && isPlanContinuation(userText);
+    const bool executeRequested = (selectedMode == AgentMode::automatic
+                                    && requestedMutation != MutationIntent::none)
+        || (selectedMode == AgentMode::execute
+            && (requestedMutation != MutationIntent::none || continuation));
+    const auto effectiveAccess = executeRequested
+        ? access : EngineerTools::AccessLevel::observe;
     EngineerTools engineerTools(projectRoot, effectiveAccess);
-    auto toolDefinitions = projectRoot.isDirectory()
-        ? engineerTools.definitions() : std::vector<ai_provider::ToolDefinition> {};
+    auto toolDefinitions = engineerTools.definitions();
     if (!historySnapshot.empty())
     {
         historySnapshot.front().content +=
@@ -652,16 +699,13 @@ void AiChatPanel::sendMessage()
             "write. Treat the open root as the current project: when its folder name matches the requested "
             "project, initialize files directly in that root rather than creating a duplicate named folder. "
             "Never present proposed code as though it was written; report only paths confirmed by tool results. "
+            "When tools write code or documentation into project files, keep the completion summary concise and "
+            "do not repeat the file contents or code in chat. The IDE preserves detailed tool activity in a "
+            "collapsed disclosure section. "
             "Current project root: " + projectRoot.getFullPathName().toStdString()
             + ". Current mode: " + modeName(selectedMode).toStdString()
             + ". Current access ceiling: " + EngineerTools::accessName(access).toStdString() + ".";
     }
-    const auto requestedMutation = mutationIntentFor(userText);
-    const bool continuation = selectedMode == AgentMode::execute && isPlanContinuation(userText);
-    const bool executeRequested = (selectedMode == AgentMode::automatic
-                                    && requestedMutation != MutationIntent::none)
-        || (selectedMode == AgentMode::execute
-            && (requestedMutation != MutationIntent::none || continuation));
     if ((executeRequested || selectedMode == AgentMode::plan || selectedMode == AgentMode::review)
         && !projectRoot.isDirectory())
     {
@@ -671,6 +715,7 @@ void AiChatPanel::sendMessage()
         renderConversation();
         requestInFlight = false;
         updateConversationControls();
+        completeExternalRequest(false, message);
         return;
     }
     if (executeRequested && access != EngineerTools::AccessLevel::workspace)
@@ -681,6 +726,7 @@ void AiChatPanel::sendMessage()
         renderConversation();
         requestInFlight = false;
         updateConversationControls();
+        completeExternalRequest(false, message);
         return;
     }
 
@@ -729,11 +775,26 @@ void AiChatPanel::sendMessage()
                 toolDefinitions,
                 agentRun ? ai_provider::ToolChoice::required
                          : ai_provider::ToolChoice::autoSelect);
-            if (!response.ok || response.toolCalls.empty())
+            if (!response.ok)
                 break;
 
+            if (response.toolCalls.empty())
+            {
+                if (agentRun && response.hostedToolUsed)
+                {
+                    workingHistory.push_back(
+                        { "assistant", response.content, {}, {}, response.providerItemsJson });
+                    workingHistory.push_back({ "system",
+                        (task.contextMessage() + "\nContinue the assigned task after using web search. "
+                         "Use the project and task-control tools; do not stop at a prose answer.")
+                            .toStdString() });
+                    continue;
+                }
+                break;
+            }
+
             workingHistory.push_back(
-                { "assistant", response.content, response.toolCalls, {} });
+                { "assistant", response.content, response.toolCalls, {}, response.providerItemsJson });
             for (const auto& call : response.toolCalls)
             {
                 EngineerTools::Result result;
@@ -757,10 +818,9 @@ void AiChatPanel::sendMessage()
                 const auto summary = result.message.upToFirstOccurrenceOf("\n", false, false);
                 activity.add("- `" + juce::String(call.name) + "`: " + summary);
                 const auto taskLine = agentRun ? task.statusLine() : juce::String();
-                juce::MessageManager::callAsync([safeThis, callName = juce::String(call.name), summary,
+                juce::MessageManager::callAsync([safeThis,
                                                   changed = result.workspaceChanged, taskLine] {
                     if (safeThis == nullptr) return;
-                    safeThis->appendTranscript("tool", "`" + callName + "`: " + summary);
                     if (taskLine.isNotEmpty())
                         safeThis->taskStatusLabel.setText(taskLine, juce::dontSendNotification);
                     if (changed && safeThis->onFileSystemChanged)
@@ -800,17 +860,22 @@ void AiChatPanel::sendMessage()
                                                 : response.content);
                 juce::String report;
                 if (!activity.isEmpty())
-                    report = "**Project activity**\n\n" + activity.joinIntoString("\n") + "\n\n";
+                    report = "\n\n:::details Project activity ("
+                        + juce::String(activity.size()) + " steps)\n"
+                        + activity.joinIntoString("\n") + "\n:::";
                 if (report.isNotEmpty())
-                    finalContent = (report + juce::String(finalContent)).toStdString();
+                    finalContent = (juce::String(finalContent) + report).toStdString();
                 safeThis->history.push_back({ "assistant", finalContent });
                 safeThis->appendAndSave("assistant", juce::String(finalContent));
                 safeThis->renderConversation();
+                safeThis->completeExternalRequest(true, juce::String(finalContent));
                 if (agentRun)
                     safeThis->taskStatusLabel.setText(task.statusLine(), juce::dontSendNotification);
             } else {
                 safeThis->renderConversation();
-                safeThis->appendTranscript("system", "Error: " + juce::String(response.errorMessage));
+                const auto message = "Error: " + juce::String(response.errorMessage);
+                safeThis->appendTranscript("system", message);
+                safeThis->completeExternalRequest(false, message);
             }
 
             safeThis->transcript.scrollToBottom();

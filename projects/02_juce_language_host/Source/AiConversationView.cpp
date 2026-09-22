@@ -166,9 +166,24 @@ void renderMarkdown(juce::TextEditor& editor, const juce::String& markdown,
 class MessageBubble : public juce::Component
 {
 public:
-    MessageBubble(AiConversationView::Message value, std::function<void(float)> zoomCallback)
-        : message(std::move(value))
+    MessageBubble(AiConversationView::Message value, std::function<void(float)> zoomCallback,
+                  std::function<void()> layoutCallbackIn)
+        : message(std::move(value)), layoutCallback(std::move(layoutCallbackIn))
     {
+        const auto marker = message.content.indexOf("\n\n:::details ");
+        if (marker >= 0)
+        {
+            const auto titleStart = marker + 13;
+            const auto titleEnd = message.content.indexOfChar(titleStart, '\n');
+            const auto detailsEnd = message.content.lastIndexOf("\n:::");
+            if (titleEnd > titleStart && detailsEnd > titleEnd)
+            {
+                detailsTitle = message.content.substring(titleStart, titleEnd).trim();
+                detailsContent = message.content.substring(titleEnd + 1, detailsEnd).trim();
+                message.content = message.content.substring(0, marker).trimEnd();
+            }
+        }
+
         text.setMultiLine(true);
         text.setReadOnly(true);
         text.setScrollbarsShown(false);
@@ -179,6 +194,34 @@ public:
         text.setColour(juce::TextEditor::focusedOutlineColourId, juce::Colours::transparentBlack);
         text.onZoom = std::move(zoomCallback);
         addAndMakeVisible(text);
+
+        detailsText.setMultiLine(true);
+        detailsText.setReadOnly(true);
+        detailsText.setScrollbarsShown(false);
+        detailsText.setBorder(juce::BorderSize<int>());
+        detailsText.setIndents(0, 0);
+        detailsText.setColour(juce::TextEditor::backgroundColourId, juce::Colour(0xff101721));
+        detailsText.setColour(juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
+        detailsText.setColour(juce::TextEditor::focusedOutlineColourId, juce::Colours::transparentBlack);
+        detailsText.onZoom = [this](float direction) {
+            if (text.onZoom) text.onZoom(direction);
+        };
+
+        detailsButton.setButtonText("> " + detailsTitle);
+        detailsButton.setTooltip("Show project activity");
+        detailsButton.setColour(juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+        detailsButton.setColour(juce::TextButton::buttonOnColourId, juce::Colours::transparentBlack);
+        detailsButton.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff91b7c9));
+        detailsButton.onClick = [this] {
+            detailsExpanded = !detailsExpanded;
+            detailsButton.setButtonText((detailsExpanded ? "v " : "> ") + detailsTitle);
+            detailsButton.setTooltip(detailsExpanded ? "Hide project activity" : "Show project activity");
+            detailsText.setVisible(detailsExpanded);
+            if (layoutCallback) layoutCallback();
+        };
+        if (detailsTitle.isNotEmpty())
+            addAndMakeVisible(detailsButton);
+        addChildComponent(detailsText);
     }
 
     bool isUser() const { return message.role == "user" || message.role == "you"; }
@@ -194,9 +237,24 @@ public:
         const auto textColour = isSystem() ? juce::Colour(0xffc8b98e) : juce::Colour(0xffedf3f5);
         renderMarkdown(text, message.content, textColour, scale);
         const auto bodyHeight = juce::jmax(20, text.getTextHeight() + 5);
-        const auto totalHeight = bodyHeight + 39;
+        int totalHeight = bodyHeight + 39;
         setSize(bubbleWidth, totalHeight);
         text.setBounds(14, 27, bubbleWidth - 28, bodyHeight);
+
+        if (detailsTitle.isNotEmpty())
+        {
+            detailsButton.setBounds(11, 29 + bodyHeight, bubbleWidth - 22, 24);
+            totalHeight += 28;
+            if (detailsExpanded)
+            {
+                renderMarkdown(detailsText, detailsContent, juce::Colour(0xffc7d6dc), scale * 0.92f);
+                const auto detailsHeight = juce::jmax(24, detailsText.getTextHeight() + 12);
+                detailsText.setBounds(14, 55 + bodyHeight, bubbleWidth - 28, detailsHeight);
+                detailsText.setVisible(true);
+                totalHeight += detailsHeight + 4;
+            }
+        }
+        setSize(bubbleWidth, totalHeight);
         return totalHeight;
     }
 
@@ -225,6 +283,12 @@ public:
 private:
     AiConversationView::Message message;
     ZoomableTextEditor text;
+    ZoomableTextEditor detailsText;
+    juce::TextButton detailsButton;
+    juce::String detailsTitle;
+    juce::String detailsContent;
+    std::function<void()> layoutCallback;
+    bool detailsExpanded = false;
 };
 }
 
@@ -238,9 +302,10 @@ public:
         bubbles.clear();
         for (const auto& message : messages)
         {
-            auto bubble = std::make_unique<MessageBubble>(message, [this](float direction) {
-                owner.changeScale(direction);
-            });
+            auto bubble = std::make_unique<MessageBubble>(
+                message,
+                [this](float direction) { owner.changeScale(direction); },
+                [this] { layout(getWidth()); });
             addAndMakeVisible(*bubble);
             bubbles.push_back(std::move(bubble));
         }

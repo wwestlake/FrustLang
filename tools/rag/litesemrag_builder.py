@@ -126,6 +126,22 @@ def parse_pods(cursor):
                 text=True,
             ).splitlines()
             tracked_paths = {REPO_ROOT / path for path in tracked}
+            submodule_paths = subprocess.check_output(
+                ["git", "submodule", "foreach", "--recursive", "--quiet", "echo $sm_path"],
+                cwd=REPO_ROOT,
+                text=True,
+            ).splitlines()
+            for submodule_path in submodule_paths:
+                submodule_path = submodule_path.strip()
+                if not submodule_path:
+                    continue
+                submodule_root = REPO_ROOT / submodule_path
+                manifests = subprocess.check_output(
+                    ["git", "ls-files", "--", "**/frate.json", "frate.json"],
+                    cwd=submodule_root,
+                    text=True,
+                ).splitlines()
+                tracked_paths.update(submodule_root / path for path in manifests if path.strip())
             frate_files = [path for path in frate_files if path in tracked_paths]
         except Exception as e:
             print(f"Warning: could not filter pods to tracked files only: {e}")
@@ -158,14 +174,14 @@ def parse_frust_file(cursor, fr_file, pod_id):
     for match in struct_pattern.finditer(content):
         name = match.group(1)
         body = match.group(0)
-        node_id = f"struct:{name}"
+        node_id = f"{pod_id}:struct:{name}"
         upsert_node(cursor, node_id, "STRUCT", name, body, rel_path)
         upsert_edge(cursor, node_id, pod_id, "DEFINED_IN")
 
     for match in fn_pattern.finditer(content):
         name = match.group(1)
         body = match.group(0) # Just the signature for now
-        node_id = f"fn:{name}"
+        node_id = f"{pod_id}:fn:{name}"
         upsert_node(cursor, node_id, "FUNCTION", name, body, rel_path)
         upsert_edge(cursor, node_id, pod_id, "DEFINED_IN")
 

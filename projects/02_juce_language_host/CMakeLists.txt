@@ -125,6 +125,8 @@ target_sources(LagDaemonResearchIDE PRIVATE
     Source/AgentTask.cpp
     Source/AiConversationView.h
     Source/AiConversationView.cpp
+    Source/LocalAgentApi.h
+    Source/LocalAgentApi.cpp
     Source/FratePanel.h
     Source/FratePanel.cpp
     Source/PluginsPanel.h
@@ -230,3 +232,24 @@ target_link_libraries(AgentTaskTests PRIVATE
 )
 
 juce_generate_juce_header(AgentTaskTests)
+
+juce_add_console_app(LocalAgentApiTests
+    PRODUCT_NAME "Local Agent API Tests"
+)
+
+target_sources(LocalAgentApiTests PRIVATE
+    Source/LocalAgentApi.h
+    Source/LocalAgentApi.cpp
+    Source/LocalAgentApiTests.cpp
+)
+
+target_compile_definitions(LocalAgentApiTests PRIVATE
+    JUCE_MODAL_LOOPS_PERMITTED=1
+)
+
+target_link_libraries(LocalAgentApiTests PRIVATE
+    juce::juce_core
+    juce::juce_events
+)
+
+juce_generate_juce_header(LocalAgentApiTests)

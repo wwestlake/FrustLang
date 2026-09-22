@@ -13,6 +13,7 @@
 #include "TerminalPanel.h"
 #include "ErrorListPanel.h"
 #include "Auth/DesktopAuthSession.h"
+#include "LocalAgentApi.h"
 
 class WorkbenchComponent  : public juce::Component,
                            public juce::MenuBarModel
@@ -38,6 +39,7 @@ private:
     juce::Label brandName { "Brand", "FrustIDE" };
     std::unique_ptr<juce::ApplicationProperties> appProperties;
     std::unique_ptr<DesktopAuthSession> authSession;
+    std::unique_ptr<LocalAgentApi> localAgentApi;
     std::unique_ptr<CreationDock::DockManager> dockManager;
     FileTreePanel* fileTreePanel = nullptr;
     EditorTabComponent* editorTabComponent = nullptr;

@@ -48,6 +48,15 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(CodeEditorTab)
 };
 
+class ClosableEditorTabs : public juce::TabbedComponent
+{
+public:
+    ClosableEditorTabs() : juce::TabbedComponent(juce::TabbedButtonBar::TabsAtTop) {}
+    std::function<void(int)> onCloseRequested;
+
+    void popupMenuClickOnTab(int tabIndex, const juce::String&) override;
+};
+
 class EditorTabComponent : public juce::Component
 {
 public:
@@ -71,7 +80,10 @@ public:
     std::function<void(const juce::File&)> onActiveFileChanged;
 
 private:
-    juce::TabbedComponent tabs { juce::TabbedButtonBar::TabsAtTop };
+    void addCloseButton(int tabIndex);
+    void closeTab(int tabIndex);
+
+    ClosableEditorTabs tabs;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(EditorTabComponent)
 };

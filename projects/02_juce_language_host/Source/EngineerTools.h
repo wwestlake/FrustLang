@@ -37,6 +37,7 @@ private:
     Result list(const juce::var& arguments) const;
     Result read(const juce::var& arguments) const;
     Result search(const juce::var& arguments) const;
+    Result searchRegistry(const juce::var& arguments) const;
     Result createDirectory(const juce::var& arguments) const;
     Result createFile(const juce::var& arguments) const;
     Result writeFile(const juce::var& arguments) const;

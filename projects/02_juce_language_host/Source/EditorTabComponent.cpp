@@ -117,11 +117,23 @@ void CodeEditorTab::timerCallback()
 // ------------------------------------------------------------------------------
 // Multi-Tab Container
 // ------------------------------------------------------------------------------
+void ClosableEditorTabs::popupMenuClickOnTab(int tabIndex, const juce::String&)
+{
+    juce::PopupMenu menu;
+    menu.addItem(1, "Close");
+    menu.showMenuAsync(juce::PopupMenu::Options(),
+        [safeThis = juce::Component::SafePointer<ClosableEditorTabs>(this), tabIndex](int result) {
+            if (safeThis != nullptr && result == 1 && safeThis->onCloseRequested)
+                safeThis->onCloseRequested(tabIndex);
+        });
+}
+
 EditorTabComponent::EditorTabComponent()
 {
     tabs.setColour(juce::TabbedComponent::outlineColourId, juce::Colour(0xff333333));
     tabs.setColour(juce::TabbedButtonBar::tabTextColourId, juce::Colours::lightgrey);
     tabs.setColour(juce::TabbedButtonBar::frontTextColourId, juce::Colours::cyan);
+    tabs.onCloseRequested = [this](int index) { closeTab(index); };
     addAndMakeVisible(tabs);
 
     // An editor with zero tabs just looks broken/empty, not like an editor
@@ -154,6 +166,7 @@ void EditorTabComponent::openFile(const juce::File& file)
 
     auto newTab = std::make_unique<CodeEditorTab>(file);
     tabs.addTab(file.getFileName(), juce::Colour(0xff2d2d2d), newTab.release(), true);
+    addCloseButton(tabs.getNumTabs() - 1);
     tabs.setCurrentTabIndex(tabs.getNumTabs() - 1);
 
     if (onActiveFileChanged) onActiveFileChanged(file);
@@ -178,6 +191,7 @@ void EditorTabComponent::newUntitledTab()
 
     auto newTab = std::make_unique<CodeEditorTab>(juce::File());
     tabs.addTab(label, juce::Colour(0xff2d2d2d), newTab.release(), true);
+    addCloseButton(tabs.getNumTabs() - 1);
     tabs.setCurrentTabIndex(tabs.getNumTabs() - 1);
 }
 
@@ -204,10 +218,29 @@ void EditorTabComponent::saveActiveFileAs(const juce::File& newFile)
 
 void EditorTabComponent::closeActiveTab()
 {
-    int current = tabs.getCurrentTabIndex();
-    if (current >= 0) {
-        tabs.removeTab(current);
-    }
+    closeTab(tabs.getCurrentTabIndex());
+}
+
+void EditorTabComponent::addCloseButton(int tabIndex)
+{
+    auto* tabButton = tabs.getTabbedButtonBar().getTabButton(tabIndex);
+    if (tabButton == nullptr) return;
+
+    auto* closeButton = new juce::TextButton("x");
+    closeButton->setTooltip("Close tab");
+    closeButton->setColour(juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+    closeButton->setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xff593333));
+    closeButton->setColour(juce::TextButton::textColourOffId, juce::Colours::lightgrey);
+    closeButton->onClick = [this, tabButton] {
+        closeTab(tabs.getTabbedButtonBar().indexOfTabButton(tabButton));
+    };
+    tabButton->setExtraComponent(closeButton, juce::TabBarButton::afterText);
+}
+
+void EditorTabComponent::closeTab(int tabIndex)
+{
+    if (tabIndex >= 0 && tabIndex < tabs.getNumTabs())
+        tabs.removeTab(tabIndex);
 }
 
 juce::String EditorTabComponent::getActiveFileContent() const

@@ -82,12 +82,15 @@ std::vector<ai_provider::ToolDefinition> EngineerTools::definitions() const
 
     for (const auto& tool : *tools)
     {
+        const auto name = stringProperty(tool, "name");
+        if (!root.isDirectory() && name != "registry_search")
+            continue;
         const auto required = stringProperty(tool, "access");
         if (required == "workspace" && access != AccessLevel::workspace)
             continue;
 
         ai_provider::ToolDefinition definition;
-        definition.name = stringProperty(tool, "name").toStdString();
+        definition.name = name.toStdString();
         definition.description = (stringProperty(tool, "description") + " "
             + stringProperty(tool, "usage")).trim().toStdString();
         definition.parametersJson = juce::JSON::toString(
@@ -155,6 +158,7 @@ EngineerTools::Result EngineerTools::execute(const ai_provider::ToolCall& call) 
     if (name == "workspace_list") return list(arguments);
     if (name == "workspace_read") return read(arguments);
     if (name == "workspace_search") return search(arguments);
+    if (name == "registry_search") return searchRegistry(arguments);
     if (name == "workspace_create_directory") return createDirectory(arguments);
     if (name == "workspace_create_file") return createFile(arguments);
     if (name == "workspace_write_file") return writeFile(arguments);
@@ -241,6 +245,48 @@ EngineerTools::Result EngineerTools::search(const juce::var& arguments) const
         }
     }
     return { true, false, "Found " + juce::String(matches) + " matches.\n" + output.trimEnd() };
+}
+
+EngineerTools::Result EngineerTools::searchRegistry(const juce::var& arguments) const
+{
+    const auto query = stringProperty(arguments, "query").trim();
+    const auto limit = juce::jlimit(1, 100, intProperty(arguments, "limit", 25));
+    auto url = juce::URL("https://lagdaemon.com/djehuti/api/frate/pods");
+    if (query.isNotEmpty())
+        url = url.withParameter("q", query);
+
+    int statusCode = 0;
+    auto stream = url.createInputStream(
+        juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
+            .withConnectionTimeoutMs(15000)
+            .withStatusCode(&statusCode));
+    if (stream == nullptr)
+        return failure("Could not reach the public Frate pod registry.");
+
+    const auto response = stream->readEntireStreamAsString();
+    if (statusCode != 200)
+        return failure("Frate registry request failed with HTTP " + juce::String(statusCode) + ".");
+
+    const auto parsed = juce::JSON::parse(response);
+    auto* pods = parsed.getArray();
+    if (pods == nullptr)
+        return failure("The Frate registry returned an invalid response.");
+
+    juce::Array<juce::var> selected;
+    for (const auto& pod : *pods)
+    {
+        if (!pod.isObject()) continue;
+        selected.add(pod);
+        if (selected.size() >= limit) break;
+    }
+
+    auto* result = new juce::DynamicObject();
+    result->setProperty("registry", "https://lagdaemon.com/djehuti/api/frate");
+    result->setProperty("query", query);
+    result->setProperty("matchCount", pods->size());
+    result->setProperty("returnedCount", selected.size());
+    result->setProperty("pods", selected);
+    return { true, false, juce::JSON::toString(juce::var(result), true) };
 }
 
 EngineerTools::Result EngineerTools::createDirectory(const juce::var& arguments) const
