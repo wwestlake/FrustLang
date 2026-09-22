@@ -46,6 +46,88 @@ bool publicationRequested(const juce::String& text)
     return !containsAny(text, { "do not publish", "don't publish", "must not publish",
                                 "without publishing", "not publish" });
 }
+
+juce::String withoutComments(const juce::String& source)
+{
+    juce::String result;
+    bool inString = false;
+    bool escaped = false;
+    bool lineComment = false;
+    bool blockComment = false;
+    for (int index = 0; index < source.length(); ++index)
+    {
+        const auto current = source[index];
+        const auto next = index + 1 < source.length() ? source[index + 1] : juce::juce_wchar();
+        if (lineComment)
+        {
+            if (current == '\n') { lineComment = false; result += current; }
+            continue;
+        }
+        if (blockComment)
+        {
+            if (current == '*' && next == '/') { blockComment = false; ++index; }
+            continue;
+        }
+        if (!inString && current == '/' && next == '/') { lineComment = true; ++index; continue; }
+        if (!inString && current == '/' && next == '*') { blockComment = true; ++index; continue; }
+        result += current;
+        if (inString && current == '\\' && !escaped) { escaped = true; continue; }
+        if (current == '"' && !escaped) inString = !inString;
+        escaped = false;
+    }
+    return result;
+}
+
+bool hasCommentOnlyFunction(const juce::String& source)
+{
+    const auto code = withoutComments(source);
+    int position = 0;
+    while ((position = code.indexOf(position, "fn")) >= 0)
+    {
+        const bool leftBoundary = position == 0
+            || !(juce::CharacterFunctions::isLetterOrDigit(code[position - 1]) || code[position - 1] == '_');
+        const int afterFn = position + 2;
+        const bool rightBoundary = afterFn >= code.length()
+            || !(juce::CharacterFunctions::isLetterOrDigit(code[afterFn]) || code[afterFn] == '_');
+        if (!leftBoundary || !rightBoundary) { position = afterFn; continue; }
+
+        const int openingBrace = code.indexOfChar(afterFn, '{');
+        const int semicolon = code.indexOfChar(afterFn, ';');
+        if (openingBrace < 0 || (semicolon >= 0 && semicolon < openingBrace))
+        {
+            position = semicolon >= 0 ? semicolon + 1 : afterFn;
+            continue;
+        }
+        int depth = 1;
+        int closingBrace = openingBrace + 1;
+        for (; closingBrace < code.length() && depth > 0; ++closingBrace)
+        {
+            if (code[closingBrace] == '{') ++depth;
+            else if (code[closingBrace] == '}') --depth;
+        }
+        if (depth == 0 && code.substring(openingBrace + 1, closingBrace - 1).trim().isEmpty())
+            return true;
+        position = closingBrace;
+    }
+    return false;
+}
+}
+
+bool AgentTask::proposedWriteHasUnresolvedImplementation(const ai_provider::ToolCall& call)
+{
+    if (call.name != "workspace_create_file" && call.name != "workspace_write_file"
+        && call.name != "workspace_replace_text")
+        return false;
+    const auto arguments = juce::JSON::parse(juce::String(call.argumentsJson));
+    const auto propertyName = call.name == "workspace_replace_text" ? "new_text" : "content";
+    const auto content = arguments.getProperty(propertyName, {}).toString();
+    const auto lower = content.toLowerCase();
+    if (containsAny(lower, { "implementation will go here", "further implementation will go here",
+                             "placeholder implementation", "add functionality here",
+                             "implement using core functions when available" }))
+        return true;
+    const auto path = arguments.getProperty("path", {}).toString().toLowerCase();
+    return path.endsWith(".fr") && hasCommentOnlyFunction(content);
 }
 
 AgentTask AgentTask::begin(const juce::String& conversation,

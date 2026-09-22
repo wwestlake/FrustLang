@@ -219,22 +219,6 @@ bool isWriteTool(const std::string& name)
         || name == "workspace_write_file" || name == "workspace_replace_text";
 }
 
-bool containsUnresolvedPlaceholder(const ai_provider::ToolCall& call)
-{
-    if (call.name != "workspace_create_file" && call.name != "workspace_write_file"
-        && call.name != "workspace_replace_text")
-        return false;
-
-    const auto arguments = juce::JSON::parse(juce::String(call.argumentsJson));
-    const auto property = call.name == "workspace_replace_text" ? "new_text" : "content";
-    const auto content = arguments.getProperty(property, {}).toString().toLowerCase();
-    return content.contains("implementation will go here")
-        || content.contains("further implementation will go here")
-        || content.contains("placeholder implementation")
-        || content.contains("add functionality here")
-        || content.contains("implement using core functions when available");
-}
-
 bool requiresFrustVerification(const juce::String& request)
 {
     const auto text = request.toLowerCase();
@@ -1383,7 +1367,7 @@ void AiChatPanel::startResolvedMessage(const juce::String& userText, AgentMode s
                         "Error: The host requires a successful project inspection and an explicit "
                         "agent_set_plan call before any project write." };
                 }
-                else if (agentRun && containsUnresolvedPlaceholder(call))
+                else if (agentRun && AgentTask::proposedWriteHasUnresolvedImplementation(call))
                 {
                     result = { false, false,
                         "Error: The proposed file contains an unresolved placeholder instead of working "

@@ -34,6 +34,19 @@ AgentTask::ControlResult plan(AgentTask& task, const char* goal = "Update main.f
 
 int main()
 {
+    expect(AgentTask::proposedWriteHasUnresolvedImplementation(call(
+               "workspace_create_file",
+               R"({"path":"src/parser.fr","content":"fn parse() { // Logic goes here\n}"})")),
+           "A comment-only Frust function is rejected as unresolved implementation");
+    expect(!AgentTask::proposedWriteHasUnresolvedImplementation(call(
+               "workspace_create_file",
+               R"({"path":"src/parser.fr","content":"fn parse() { return 1; }"})")),
+           "A Frust function with executable code is accepted");
+    expect(!AgentTask::proposedWriteHasUnresolvedImplementation(call(
+               "workspace_create_file",
+               R"({"path":"src/types.fr","content":"struct Item { value: i64, }"})")),
+           "A declaration-only Frust source file is accepted");
+
     auto task = AgentTask::begin("conversation", "Update main.fr", "execute", true, true, true);
     auto early = task.executeControl(call("agent_complete_task", R"({"summary":"done"})"));
     expect(!early.ok, "Completion is rejected before work starts");

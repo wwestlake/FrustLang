@@ -56,6 +56,7 @@ public:
     const juce::String& taskMode() const;
     juce::String currentPhase() const;
     juce::var evaluationSnapshot() const;
+    static bool proposedWriteHasUnresolvedImplementation(const ai_provider::ToolCall& call);
 
 private:
     juce::String phase() const;
