@@ -225,6 +225,11 @@ fn main() -> i64 = {
                "a read-only command runs without asking and its output comes back");
         expect(!echoed.workspaceChanged && !echoed.verificationPerformed, "a read-only command is neither a change nor verification");
 
+        const auto companion = command_tool::run(
+            "(Get-Command frate -ErrorAction Stop).Source", base, 10);
+        expect(companion.started && companion.exitCode == 0 && companion.output.containsIgnoreCase("frate.exe"),
+               "the command environment exposes companion tools beside the IDE executable");
+
         auto failing = approving.execute(call("run_command", R"({"command":"cmd /c exit 3","reason":"test exit codes"})"));
         expect(!failing.ok && failing.message.contains("Exit code 3") && asked == 1, "an unknown command is asked, and its exit code comes back");
 

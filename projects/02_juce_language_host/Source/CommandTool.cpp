@@ -482,8 +482,11 @@ std::wstring encodedCommand(const juce::String& command)
 {
     // The script is passed encoded (UTF-16LE, base64) so no quoting in it can break the command line. It reports the exit
     // code of the last program that failed, or 1 when a PowerShell command failed.
+    const auto toolsDirectory = juce::File::getSpecialLocation(
+        juce::File::currentExecutableFile).getParentDirectory().getFullPathName().replace("'", "''");
     const juce::String script = "$ProgressPreference = 'SilentlyContinue'\n"
                                 "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n"
+                                "$env:PATH = '" + toolsDirectory + ";' + $env:PATH\n"
                                 "$global:LASTEXITCODE = 0\n"
                                 + command + "\n"
                                 "$__ok = $?\n"
