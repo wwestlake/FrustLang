@@ -17,6 +17,33 @@ juce::String AgentModeRouter::modeName(AgentMode mode)
     return "auto";
 }
 
+AgentModeDecision AgentModeRouter::obviousDecision(const juce::String& userPrompt)
+{
+    auto prompt = userPrompt.trim().toLowerCase();
+    while (prompt.startsWith("please ")) prompt = prompt.substring(7).trimStart();
+
+    const juce::StringArray executeStarts {
+        "add ", "build ", "change ", "create ", "delete ", "fix ", "implement ",
+        "launch ", "make ", "remove ", "run ", "start ", "test ", "update ", "write "
+    };
+    bool execute = prompt.contains("this is an execute task")
+        || prompt.startsWith("execute the plan") || prompt.startsWith("go ahead")
+        || prompt.startsWith("go fix ");
+    for (const auto& prefix : executeStarts)
+        execute = execute || prompt.startsWith(prefix)
+            || prompt.startsWith("i want you to " + prefix)
+            || prompt.startsWith("i need you to " + prefix);
+
+    if (!execute) return {};
+    AgentModeDecision decision;
+    decision.ok = true;
+    decision.mode = AgentMode::execute;
+    decision.continuation = prompt.startsWith("execute the plan") || prompt.startsWith("go ahead");
+    decision.confidence = 1.0;
+    decision.reason = "explicit project action";
+    return decision;
+}
+
 std::vector<ai_provider::ChatMessage> AgentModeRouter::messagesFor(
     const juce::String& userPrompt,
     const juce::String& previousTaskSummary)
@@ -28,6 +55,8 @@ std::vector<ai_provider::ChatMessage> AgentModeRouter::messagesFor(
         "- review: inspect, research, read, diagnose, compare, or report without changing project files.\n"
         "- plan: produce or revise a concrete implementation plan without changing project files.\n"
         "- execute: create, edit, delete, build, run, test, launch, or otherwise act on the project.\n"
+        "Choose execute when inspection or planning is requested as preparation for an implementation in the same request; "
+        "the requested final outcome controls the mode. "
         "A question such as 'why did you do that?' is answer, not execute. A request to read a file is review. "
         "Use continuation=true only when the request clearly asks to carry out the saved plan, such as 'execute the plan' "
         "or 'go ahead'. Return only one JSON object with this exact shape and no Markdown: "

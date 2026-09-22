@@ -2,6 +2,7 @@
 #include "RAGQuery.h"
 #include <ai_provider/OpenAiProvider.h>
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -222,9 +223,9 @@ bool requiresFrustVerification(const juce::String& request)
     const auto text = request.toLowerCase();
     if (text.contains("documentation") || text.contains("readme") || text.contains("specification"))
         return false;
-    return text.contains("code") || text.contains("frust") || text.contains(".fr")
-        || text.contains("function") || text.contains("compile") || text.contains("command")
-        || text.contains("game loop") || text.contains("source") || text.contains("project");
+    return text.contains(".fr") || text.contains("frust code") || text.contains("frust project")
+        || text.contains("function") || text.contains("compile") || text.contains("compiler")
+        || text.contains("source code") || text.contains("game loop");
 }
 }
 
@@ -1024,6 +1025,15 @@ void AiChatPanel::sendMessage()
         return;
     }
 
+    const auto obviousDecision = AgentModeRouter::obviousDecision(userText);
+    if (obviousDecision.ok)
+    {
+        taskStatusLabel.setText("Auto selected execute", juce::dontSendNotification);
+        startResolvedMessage(userText, obviousDecision.mode,
+                             obviousDecision.continuation, obviousDecision.reason);
+        return;
+    }
+
     auto provider = aiConfig.createProvider(profileName.toStdString());
     if (!provider)
     {
@@ -1254,6 +1264,8 @@ void AiChatPanel::startResolvedMessage(const juce::String& userText, AgentMode s
         bool stopped = false;
         std::unique_ptr<ai_provider::AiProvider> owned(providerPtr);
         auto workingHistory = historySnapshot;
+        const auto taskStateIndex = agentRun && !workingHistory.empty()
+            ? workingHistory.size() - 1 : 0;
         ai_provider::ChatResponse response;
         bool workspaceChanged = false;
         juce::StringArray activity;
@@ -1266,7 +1278,8 @@ void AiChatPanel::startResolvedMessage(const juce::String& userText, AgentMode s
             }
             if (agentRun)
             {
-                const auto reason = task.budgetExceeded(providerCallBudget, toolCallBudget, tokenBudget);
+                const auto reason = task.budgetBeforeProviderCall(
+                    providerCallBudget, toolCallBudget, tokenBudget);
                 if (reason.isNotEmpty())
                 {
                     task.fail(reason);
@@ -1276,9 +1289,27 @@ void AiChatPanel::startResolvedMessage(const juce::String& userText, AgentMode s
             }
             postLiveStatus(safeThis, run, round == 0 ? juce::String("Thinking...")
                                                      : "Thinking about the next step (step " + juce::String(round + 1) + ")...");
+            auto toolsForRound = toolDefinitions;
+            if (agentRun && task.currentPhase() == "inspect")
+            {
+                toolsForRound.erase(std::remove_if(toolsForRound.begin(), toolsForRound.end(),
+                    [](const auto& tool) {
+                        return tool.name != "workspace_list" && tool.name != "workspace_read"
+                            && tool.name != "workspace_search" && tool.name != "registry_search";
+                    }), toolsForRound.end());
+            }
+            else if (agentRun && (task.currentPhase() == "assess" || task.currentPhase() == "plan"))
+            {
+                const auto required = task.currentPhase() == "assess"
+                    ? std::string("agent_assess_capabilities") : std::string("agent_set_plan");
+                toolsForRound.erase(std::remove_if(toolsForRound.begin(), toolsForRound.end(),
+                    [&required](const auto& tool) {
+                        return tool.name != required;
+                    }), toolsForRound.end());
+            }
             response = owned->sendChat(
                 workingHistory,
-                toolDefinitions,
+                toolsForRound,
                 agentRun ? ai_provider::ToolChoice::required
                          : ai_provider::ToolChoice::autoSelect);
             if (agentRun) task.recordProviderUsage(response);
@@ -1301,10 +1332,10 @@ void AiChatPanel::startResolvedMessage(const juce::String& userText, AgentMode s
                 {
                     workingHistory.push_back(
                         { "assistant", response.content, {}, {}, response.providerItemsJson });
-                    workingHistory.push_back({ "system",
+                    workingHistory[taskStateIndex].content =
                         (task.contextMessage() + "\nContinue the assigned task after using web search. "
                          "Use the project and task-control tools; do not stop at a prose answer.")
-                            .toStdString() });
+                            .toStdString();
                     continue;
                 }
                 break;
@@ -1374,7 +1405,7 @@ void AiChatPanel::startResolvedMessage(const juce::String& userText, AgentMode s
             {
                 task.save(conversationFolder);
                 if (task.isTerminal()) break;
-                workingHistory.push_back({ "system", task.contextMessage().toStdString() });
+                workingHistory[taskStateIndex].content = task.contextMessage().toStdString();
             }
         }
 

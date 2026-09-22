@@ -243,7 +243,9 @@ EngineerTools::Result EngineerTools::execute(const ai_provider::ToolCall& call) 
 EngineerTools::Result EngineerTools::list(const juce::var& arguments) const
 {
     juce::String error;
-    const auto directory = resolveProjectPath(stringProperty(arguments, "path", "."), PathPurpose::read, error);
+    auto suppliedPath = stringProperty(arguments, "path", ".").trim();
+    if (suppliedPath.isEmpty()) suppliedPath = ".";
+    const auto directory = resolveProjectPath(suppliedPath, PathPurpose::read, error);
     if (error.isNotEmpty()) return failure(error);
     if (!directory.isDirectory()) return failure("Directory does not exist.");
 

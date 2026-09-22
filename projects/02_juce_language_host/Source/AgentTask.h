@@ -39,6 +39,8 @@ public:
     void recordProviderUsage(const ai_provider::ChatResponse& response);
     juce::String budgetExceeded(int maxProviderCalls, int maxToolCalls,
                                 int maxTotalTokens) const;
+    juce::String budgetBeforeProviderCall(int maxProviderCalls, int maxToolCalls,
+                                          int maxTotalTokens) const;
     void fail(const juce::String& reason);
     bool continuePlanAsExecution(bool verificationRequired);
 
@@ -52,6 +54,7 @@ public:
     const juce::StringArray& planSteps() const;
     const juce::String& taskGoal() const;
     const juce::String& taskMode() const;
+    juce::String currentPhase() const;
     juce::var evaluationSnapshot() const;
 
 private:
@@ -102,4 +105,5 @@ private:
     int inputTokens = 0;
     int outputTokens = 0;
     int totalTokens = 0;
+    int lastInputTokens = 0;
 };

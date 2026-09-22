@@ -46,6 +46,23 @@ bool anyWordStartsWith(const juce::StringArray& list, std::initializer_list<cons
     return false;
 }
 
+bool hasUnquotedRedirection(const juce::String& text)
+{
+    juce::juce_wchar quote = 0;
+    for (int i = 0; i < text.length(); ++i)
+    {
+        const auto c = text[i];
+        if (quote != 0)
+        {
+            if (c == quote) quote = 0;
+            continue;
+        }
+        if (c == '"' || c == '\'') quote = c;
+        else if (c == '>' || c == '<') return true;
+    }
+    return false;
+}
+
 // A parallel-build flag other than the single-core one.
 bool hasParallelFlag(const juce::StringArray& list)
 {
@@ -115,6 +132,9 @@ Part judge(juce::String text, const juce::StringArray& allowedPrefixes, juce::St
             return deny("'" + program + "' changes the machine, not the project, and is never run from the IDE.");
     if (hasWord(w, { "-encodedcommand", "-enc", "-ec" }))
         return deny("An encoded command cannot be read, so it is never run. Write the command out.");
+    if (hasUnquotedRedirection(text))
+        return deny("Shell redirection cannot write project files. Use the workspace tools so changes are revision-checked "
+                    "and visible to the task process.");
     if (lower.contains("set-content") || lower.contains("add-content") || lower.contains("out-file")
         || lower.contains("writealltext") || lower.contains("writealllines") || lower.contains("appendalltext"))
         return deny("The shell is not a source-code editor. Read and edit project files with the workspace tools so changes "

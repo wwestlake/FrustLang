@@ -62,6 +62,9 @@ int main()
         "workspace_read", R"({"path":"src/main.fr"})"));
     expect(read.ok && read.message.contains("fn main() = 42"), "Read returns source content");
 
+    auto emptyRootList = workspace.execute(call("workspace_list", R"({"path":""})"));
+    expect(emptyRootList.ok, "An empty list path means the open project root");
+
     auto edited = workspace.execute(call(
         "workspace_replace_text",
         R"({"path":"src/main.fr","old_text":"42","new_text":"84"})"));
@@ -182,6 +185,10 @@ fn main() -> i64 = {
         expect(verdictOf("powershell -EncodedCommand AAAA").verdict == Verdict::deny, "an encoded command is refused");
         expect(verdictOf("(Get-Content src/main.fr) -replace 'a','b' | Set-Content src/main.fr").verdict == Verdict::deny,
                "the shell cannot be used as an untracked source editor");
+        expect(verdictOf("echo ready > NOTES.md").verdict == Verdict::deny,
+               "shell redirection cannot bypass revision-checked workspace edits");
+        expect(verdictOf("echo \"a > b\"").verdict == Verdict::allow,
+               "a redirection character inside a quoted argument remains ordinary text");
         expect(verdictOf("Remove-Item C:\\Windows\\foo").verdict == Verdict::deny, "deleting outside the project is refused");
         expect(verdictOf("Remove-Item build\\obj -Recurse").verdict == Verdict::ask, "deleting inside the project is asked");
         expect(verdictOf("Remove-Item build", { "remove-item" }).verdict == Verdict::ask, "and a saved rule never allows a deletion");

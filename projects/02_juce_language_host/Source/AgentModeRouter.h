@@ -28,6 +28,7 @@ class AgentModeRouter
 {
 public:
     static juce::String modeName(AgentMode mode);
+    static AgentModeDecision obviousDecision(const juce::String& userPrompt);
     static std::vector<ai_provider::ChatMessage> messagesFor(
         const juce::String& userPrompt,
         const juce::String& previousTaskSummary);

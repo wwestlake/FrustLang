@@ -31,6 +31,16 @@ int main()
     expect(!AgentModeRouter::parse(R"({"mode":"destroy","continuation":false})").ok,
            "Rejects unknown modes");
 
+    const auto obviousBuild = AgentModeRouter::obviousDecision(
+        "Build the Conversation Analyzer. Inspect the project first, then implement and test it.");
+    expect(obviousBuild.ok && obviousBuild.mode == AgentMode::execute,
+           "An explicit build request bypasses ambiguous model routing");
+    const auto politeFix = AgentModeRouter::obviousDecision("Please fix the parser and run its tests.");
+    expect(politeFix.ok && politeFix.mode == AgentMode::execute,
+           "A polite explicit edit request is deterministically Execute");
+    expect(!AgentModeRouter::obviousDecision("How does the parser build its AST?").ok,
+           "A question containing build terminology is not forced to Execute");
+
     const auto messages = AgentModeRouter::messagesFor("execute the plan", "Previous mode: plan");
     expect(messages.size() == 2, "Router uses a minimal two-message context");
     expect(messages[1].content.find("execute the plan") != std::string::npos,

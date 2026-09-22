@@ -125,10 +125,15 @@ int main()
     falsePermissionBlock.recordEngineerResult("workspace_list", { true, false, "Listed project" });
     const auto rejectedPermission = falsePermissionBlock.executeControl(call("agent_assess_capabilities",
         R"({"required":["Write access to project files"],"available":[],"missing":["Write access to project files"],"evidence":["A write was rejected before planning"],"options":["ask user"]})"));
-    expect(!rejectedPermission.ok && !rejectedPermission.terminal && !falsePermissionBlock.isTerminal(),
-           "A sequencing rejection cannot be misreported as missing workspace write access");
-    expect(assess(falsePermissionBlock).ok,
-           "The model can recover by recording host-granted workspace access as available");
+    expect(rejectedPermission.ok && !rejectedPermission.terminal && !falsePermissionBlock.isTerminal(),
+           "Host-granted workspace access is normalized to available in one assessment call");
+
+    auto hiddenToolBlock = AgentTask::begin("hidden-tool", "Create NOTES.md", "execute", true, true, false);
+    hiddenToolBlock.recordEngineerResult("workspace_list", { true, false, "Listed 0 entries." });
+    const auto rejectedHiddenTool = hiddenToolBlock.executeControl(call("agent_assess_capabilities",
+        R"({"required":["workspace_create_file"],"available":[],"missing":["workspace_create_file"],"evidence":["Tool is not shown during assessment"],"options":["Create a file"]})"));
+    expect(rejectedHiddenTool.ok && !hiddenToolBlock.isTerminal(),
+           "A tool hidden by phase gating is normalized to available in one assessment call");
 
     auto converging = AgentTask::begin("converging", "Fix linker issue", "execute", true, true, true);
     converging.recordEngineerResult("workspace_list", { true, false, "Listed project" });
@@ -163,6 +168,17 @@ int main()
            "Provider-call budget is enforced");
     expect(budgeted.budgetExceeded(10, 10, 1000).contains("tokens"),
            "Token budget is enforced");
+
+    AgentTask predictiveBudget = AgentTask::begin("predictive", "Avoid an overrun", "execute", true, true, false);
+    ai_provider::ChatResponse costlyRound;
+    costlyRound.inputTokens = 24000;
+    costlyRound.outputTokens = 500;
+    costlyRound.totalTokens = 24500;
+    predictiveBudget.recordProviderUsage(costlyRound);
+    expect(predictiveBudget.budgetBeforeProviderCall(64, 128, 50000).contains("before another model request"),
+           "The host reserves room before a provider call that would likely exceed the token budget");
+    expect(predictiveBudget.budgetBeforeProviderCall(64, 128, 100000).isEmpty(),
+           "A provider call proceeds when the remaining token budget is sufficient");
 
     auto release = AgentTask::begin("release", "Build, test, and publish the JSON pod", "execute", true, true, true);
     release.recordEngineerResult("workspace_list", { true, false, "Listed project" });

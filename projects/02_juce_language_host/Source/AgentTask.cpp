@@ -123,7 +123,9 @@ std::vector<ai_provider::ToolDefinition> AgentTask::controlDefinitions() const
         definition("agent_assess_capabilities",
             "Record the prerequisite capabilities and evidence found after inspecting the project. Missing prerequisites "
             "pause the task for a user decision before implementation begins. The requested feature itself is not a prerequisite. "
-            "Workspace write access is host-granted in Execute mode; an inspection or planning gate is not missing access.",
+            "Workspace write access is host-granted in Execute mode; an inspection or planning gate is not missing access. "
+            "Implementation tools are temporarily hidden during this phase and become available after the plan; never list a "
+            "workspace_* tool, run_command, file creation, or file editing as missing.",
             R"({"type":"object","additionalProperties":false,"properties":{"required":{"type":"array","items":{"type":"string","minLength":1}},"available":{"type":"array","items":{"type":"string","minLength":1}},"missing":{"type":"array","items":{"type":"string","minLength":1}},"evidence":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}},"options":{"type":"array","items":{"type":"string","minLength":1}}},"required":["required","available","missing","evidence","options"]})"),
         definition("agent_set_plan",
             "Set the concrete execution plan for the current assigned task after inspecting the project. "
@@ -163,20 +165,21 @@ AgentTask::ControlResult AgentTask::executeControl(const ai_provider::ToolCall& 
         missingCapabilities = stringArrayProperty(arguments, "missing");
         if (requiresWrite)
         {
+            juce::StringArray genuineMissing;
             for (const auto& missing : missingCapabilities)
             {
                 const auto lower = missing.toLowerCase();
                 if (containsAny(lower, { "write access", "write permission", "permission to write",
-                                         "workspace write", "project file access" }))
+                                         "workspace write", "project file access", "workspace_", "run_command",
+                                         "create file", "file creation", "edit file", "file editing" }))
                 {
-                    missingCapabilities.clear();
-                    capabilitiesAssessed = false;
-                    return { true, false, false,
-                        "Error: Workspace write access is already granted by the host for this Execute task. "
-                        "A prior write rejection was a sequencing gate, not a missing capability. Record writing "
-                        "as available, assess only genuine external prerequisites, then set the plan and retry." };
+                    if (!availableCapabilities.contains(missing))
+                        availableCapabilities.add(missing);
                 }
+                else
+                    genuineMissing.add(missing);
             }
+            missingCapabilities = std::move(genuineMissing);
         }
         capabilitiesAssessed = true;
         if (!missingCapabilities.isEmpty())
@@ -310,9 +313,29 @@ void AgentTask::recordEngineerResult(const std::string& name, const EngineerTool
 void AgentTask::recordProviderUsage(const ai_provider::ChatResponse& response)
 {
     ++providerCalls;
+    lastInputTokens = response.inputTokens;
     inputTokens += response.inputTokens;
     outputTokens += response.outputTokens;
     totalTokens += response.totalTokens;
+}
+
+juce::String AgentTask::budgetBeforeProviderCall(int maxProviderCalls, int maxToolCalls,
+                                                 int maxTotalTokens) const
+{
+    if (const auto hardLimit = budgetExceeded(maxProviderCalls, maxToolCalls, maxTotalTokens);
+        hardLimit.isNotEmpty())
+        return hardLimit;
+
+    if (maxTotalTokens > 0 && providerCalls > 0)
+    {
+        const auto estimatedNextRequest = juce::jmax(4096, lastInputTokens) + 4096;
+        if (totalTokens + estimatedNextRequest > maxTotalTokens)
+            return "Task budget reserve reached before another model request: "
+                + juce::String(totalTokens) + " tokens used, approximately "
+                + juce::String(estimatedNextRequest) + " needed, limit "
+                + juce::String(maxTotalTokens) + ".";
+    }
+    return {};
 }
 
 juce::String AgentTask::budgetExceeded(int maxProviderCalls, int maxToolCalls,
@@ -423,7 +446,9 @@ juce::String AgentTask::contextMessage() const
          << "Required behavior: work on this goal until agent_complete_task is accepted or a real "
             "blocker requires agent_request_user. In inspect phase begin with workspace_list on the open "
             "project root, then read the relevant files. In assess phase call agent_assess_capabilities with concrete "
-            "evidence and stop for a decision when a prerequisite is missing. In plan phase call agent_set_plan with "
+            "evidence and stop for a decision when a prerequisite is missing. Host implementation tools are deliberately "
+            "hidden during assess and plan; they become available in implement, so never report a workspace tool or file "
+            "operation as a missing prerequisite. In plan phase call agent_set_plan with "
             "constraints and executable acceptance tests. In implement phase make focused edits with workspace tools; "
             "A host message requiring inspection, capability assessment, or a plan is a sequencing instruction, not "
             "evidence that workspace access is missing. Follow the requested sequence and retry. "
@@ -481,6 +506,7 @@ bool AgentTask::canWrite() const
 const juce::StringArray& AgentTask::planSteps() const { return plan; }
 const juce::String& AgentTask::taskGoal() const { return goal; }
 const juce::String& AgentTask::taskMode() const { return mode; }
+juce::String AgentTask::currentPhase() const { return phase(); }
 
 juce::var AgentTask::evaluationSnapshot() const
 {
@@ -495,6 +521,7 @@ juce::var AgentTask::evaluationSnapshot() const
     object->setProperty("inputTokens", inputTokens);
     object->setProperty("outputTokens", outputTokens);
     object->setProperty("totalTokens", totalTokens);
+    object->setProperty("lastInputTokens", lastInputTokens);
     object->setProperty("inspected", inspected);
     object->setProperty("capabilitiesAssessed", capabilitiesAssessed);
     object->setProperty("changed", changed);
@@ -552,6 +579,7 @@ juce::var AgentTask::toJson() const
     object->setProperty("inputTokens", inputTokens);
     object->setProperty("outputTokens", outputTokens);
     object->setProperty("totalTokens", totalTokens);
+    object->setProperty("lastInputTokens", lastInputTokens);
     return juce::var(object);
 }
 
@@ -599,5 +627,6 @@ bool AgentTask::fromJson(const juce::var& value, AgentTask& task)
     task.inputTokens = static_cast<int>(value.getProperty("inputTokens", 0));
     task.outputTokens = static_cast<int>(value.getProperty("outputTokens", 0));
     task.totalTokens = static_cast<int>(value.getProperty("totalTokens", 0));
+    task.lastInputTokens = static_cast<int>(value.getProperty("lastInputTokens", 0));
     return task.taskId.isNotEmpty() && task.conversationId.isNotEmpty() && task.goal.isNotEmpty();
 }
