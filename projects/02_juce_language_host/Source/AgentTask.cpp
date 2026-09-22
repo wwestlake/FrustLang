@@ -126,7 +126,8 @@ bool AgentTask::proposedWriteHasUnresolvedImplementation(const ai_provider::Tool
                              "placeholder implementation", "add functionality here",
                              "implement using core functions when available",
                              "basic implementation to illustrate", "logic to validate",
-                             "validation logic here", "test logic here", "setup test fixtures" }))
+                             "validation logic here", "test logic here", "setup test fixtures",
+                             "placeholder for actual" }))
         return true;
     const auto path = arguments.getProperty("path", {}).toString().toLowerCase();
     return path.endsWith(".fr") && hasCommentOnlyFunction(content);

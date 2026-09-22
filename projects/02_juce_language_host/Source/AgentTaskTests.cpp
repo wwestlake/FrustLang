@@ -46,6 +46,10 @@ int main()
                "workspace_create_file",
                R"({"path":"src/types.fr","content":"struct Item { value: i64, }"})")),
            "A declaration-only Frust source file is accepted");
+    expect(AgentTask::proposedWriteHasUnresolvedImplementation(call(
+               "workspace_create_file",
+               R"({"path":"src/validator.fr","content":"fn validate() { // Placeholder for actual validation.\n return true; }"})")),
+           "A trivial body advertised as a placeholder is rejected");
 
     auto task = AgentTask::begin("conversation", "Update main.fr", "execute", true, true, true);
     auto early = task.executeControl(call("agent_complete_task", R"({"summary":"done"})"));
