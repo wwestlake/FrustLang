@@ -177,7 +177,9 @@ juce::String AgentTask::completionBlocker() const
     if (!inspected) return "No project inspection has succeeded.";
     if (requiresPlan && plan.isEmpty()) return "No execution plan has been recorded.";
     if (requiresWrite && !changed) return "No project change has succeeded.";
-    if (requiresVerification && !verified) return "The changed Frust code has not passed verification.";
+    if (requiresVerification && !verified)
+        return "The changed code has not passed verification since the last change (a Frust check, or a build or test "
+               "run with run_command).";
     return {};
 }
 
@@ -199,7 +201,8 @@ juce::String AgentTask::contextMessage() const
             "blocker requires agent_request_user. In inspect phase begin with workspace_list on the open "
             "project root, then read the relevant files. In plan phase "
             "call agent_set_plan. In implement phase make the edits, not a prose code sample. In verify "
-            "phase call workspace_check_frust and repair failures. In review mode inspect and report findings "
+            "phase call workspace_check_frust for Frust, or build and test with run_command for any other language, and "
+            "repair failures. In review mode inspect and report findings "
             "without editing. Never claim completion in ordinary text.";
     return text;
 }

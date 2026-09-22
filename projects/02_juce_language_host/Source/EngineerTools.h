@@ -3,6 +3,8 @@
 #include <JuceHeader.h>
 #include <ai_provider/AiProvider.h>
 
+#include "CommandTool.h"
+
 #include <vector>
 
 class EngineerTools
@@ -24,6 +26,17 @@ public:
 
     EngineerTools(juce::File projectRoot, AccessLevel accessLevel);
 
+    // What run_command needs from the application: a way to ask the user (without one, every command the rules do not
+    // simply allow is refused), where to keep full command logs, and where the user's "always allow" rules live (empty =
+    // the IDE's own settings folder).
+    struct CommandServices
+    {
+        command_tool::Approver approve;
+        juce::File logFolder;
+        juce::File rulesFolder;
+    };
+    void setCommandServices(CommandServices services) { commands = std::move(services); }
+
     std::vector<ai_provider::ToolDefinition> definitions() const;
     Result execute(const ai_provider::ToolCall& call) const;
 
@@ -43,7 +56,9 @@ private:
     Result writeFile(const juce::var& arguments) const;
     Result replaceText(const juce::var& arguments) const;
     Result checkFrust(const juce::var& arguments) const;
+    Result runCommand(const juce::var& arguments) const;
 
     juce::File root;
     AccessLevel access;
+    CommandServices commands;
 };

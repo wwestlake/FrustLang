@@ -121,6 +121,8 @@ target_sources(LagDaemonResearchIDE PRIVATE
     Source/AiChatPanel.cpp
     Source/EngineerTools.h
     Source/EngineerTools.cpp
+    Source/CommandTool.h
+    Source/CommandTool.cpp
     Source/AgentTask.h
     Source/AgentTask.cpp
     Source/AiConversationView.h
@@ -199,6 +201,8 @@ juce_add_console_app(EngineerToolsTests
 target_sources(EngineerToolsTests PRIVATE
     Source/EngineerTools.h
     Source/EngineerTools.cpp
+    Source/CommandTool.h
+    Source/CommandTool.cpp
     Source/EngineerToolsTests.cpp
 )
 

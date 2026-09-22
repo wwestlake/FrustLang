@@ -2,6 +2,9 @@
 #include "RAGQuery.h"
 #include <ai_provider/OpenAiProvider.h>
 
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <thread>
 
 namespace
@@ -71,6 +74,61 @@ MutationIntent mutationIntentFor(const juce::String& request)
         && !text.contains("file") && !text.contains("code") && !text.contains("project")
         && !text.contains("source") && !text.contains("document");
     return directoryOnly ? MutationIntent::anyWrite : MutationIntent::fileWrite;
+}
+
+// Asks the user whether a command may run, and waits for the answer. Called on the assistant's worker thread; the dialog runs on
+// the message thread. If the panel is gone, or nobody answers within ten minutes, the answer is no.
+command_tool::Approval askUserToRunCommand(juce::Component::SafePointer<juce::Component> owner,
+                                           const command_tool::ApprovalRequest& request)
+{
+    struct Wait
+    {
+        std::mutex mutex;
+        std::condition_variable answered;
+        bool done = false;
+        command_tool::Approval answer = command_tool::Approval::deny;
+    };
+    auto wait = std::make_shared<Wait>();
+    auto finish = [wait](command_tool::Approval answer) {
+        std::lock_guard<std::mutex> lock(wait->mutex);
+        wait->done = true;
+        wait->answer = answer;
+        wait->answered.notify_all();
+    };
+
+    juce::MessageManager::callAsync([owner, request, finish] {
+        if (owner == nullptr)
+        {
+            finish(command_tool::Approval::deny);
+            return;
+        }
+        juce::String message;
+        message << "The Engineer wants to run:\n\n    " << request.command << "\n\nin: " << request.workingDirectory << "\n";
+        if (request.reason.isNotEmpty())
+            message << "\nWhy: " << request.reason << "\n";
+        if (request.whyAsked.isNotEmpty())
+            message << "\n(Asked because: " << request.whyAsked << ")\n";
+        const bool offerAlways = request.rulePrefix.isNotEmpty();
+        auto options = juce::MessageBoxOptions()
+            .withIconType(juce::MessageBoxIconType::QuestionIcon)
+            .withTitle("Run this command?")
+            .withMessage(message)
+            .withButton("Run once");
+        if (offerAlways)
+            options = options.withButton("Always allow \"" + request.rulePrefix + "\" here");
+        options = options.withButton("Don't run").withAssociatedComponent(owner.getComponent());
+        // JUCE numbers the buttons 1, 2, ... with the last one 0.
+        juce::AlertWindow::showAsync(options, [finish, offerAlways](int result) {
+            if (result == 1) finish(command_tool::Approval::once);
+            else if (offerAlways && result == 2) finish(command_tool::Approval::always);
+            else finish(command_tool::Approval::deny);
+        });
+    });
+
+    std::unique_lock<std::mutex> lock(wait->mutex);
+    if (!wait->answered.wait_for(lock, std::chrono::minutes(10), [&wait] { return wait->done; }))
+        return command_tool::Approval::deny;
+    return wait->answer;
 }
 
 bool isWriteTool(const std::string& name)
@@ -686,6 +744,14 @@ void AiChatPanel::sendMessage()
     const auto effectiveAccess = executeRequested
         ? access : EngineerTools::AccessLevel::observe;
     EngineerTools engineerTools(projectRoot, effectiveAccess);
+    {
+        EngineerTools::CommandServices services;
+        services.approve = [owner = juce::Component::SafePointer<juce::Component>(this)](const command_tool::ApprovalRequest& request) {
+            return askUserToRunCommand(owner, request);
+        };
+        services.logFolder = conversationStore.getConversationFolder().getChildFile(".agent-state").getChildFile("command-logs");
+        engineerTools.setCommandServices(std::move(services));
+    }
     auto toolDefinitions = engineerTools.definitions();
     if (!historySnapshot.empty())
     {

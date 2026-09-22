@@ -147,6 +147,24 @@
         },
         "required": ["path"]
       }
+    },
+    {
+      "name": "run_command",
+      "description": "Run a command in PowerShell inside the open project: compile, build and test any language (C++ with CMake or MSBuild, C# and F# with dotnet, Rust with cargo, Frust with frate), run a script, or look at the project with git. The host judges every command first: some run at once, some are shown to the user to approve, some are refused with the reason. It returns the exit code and the output (the start and the end of long output, with the full log kept).",
+      "usage": "Use it to build and test after changing code in any language other than Frust, and repair what the compiler reports until the build and tests pass. On this machine builds are single-core and name their target: use 'cmake --build <dir> --config Debug --target <name>', 'msbuild <project> /t:<target> /p:Configuration=Debug' (never /m), and 'dotnet build' or 'dotnet test' (the host adds -m:1). Never build or install LLVM and never run vcpkg install. Say in 'reason' what the command is for, so the user can decide quickly. If the user does not allow a command, do not try to get around it; ask with agent_request_user.",
+      "access": "workspace",
+      "tokens": ["run", "command", "shell", "powershell", "terminal", "build", "compile", "test", "cmake", "msbuild", "dotnet", "cargo", "git", "c++", "csharp", "fsharp", "rust"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "command": { "type": "string", "description": "The PowerShell command to run." },
+          "cwd": { "type": "string", "description": "The folder to run it in, relative to the open project. Default: the project root." },
+          "reason": { "type": "string", "description": "What the command is for, in a sentence the user can read." },
+          "timeout_seconds": { "type": "integer", "minimum": 5, "maximum": 1800, "description": "Stop it after this long. Default 120, or 900 for a build or test." }
+        },
+        "required": ["command", "reason"]
+      }
     }
   ]
 }

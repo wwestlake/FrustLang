@@ -3,6 +3,7 @@
 #include <CompilerApi.h>
 
 #include <filesystem>
+#include <mutex>
 
 namespace
 {
@@ -164,6 +165,7 @@ EngineerTools::Result EngineerTools::execute(const ai_provider::ToolCall& call) 
     if (name == "workspace_write_file") return writeFile(arguments);
     if (name == "workspace_replace_text") return replaceText(arguments);
     if (name == "workspace_check_frust") return checkFrust(arguments);
+    if (name == "run_command") return runCommand(arguments);
     return failure("Unknown tool: " + name);
 }
 
@@ -382,4 +384,74 @@ EngineerTools::Result EngineerTools::checkFrust(const juce::var& arguments) cons
     for (const auto& diagnostic : result.diagnostics)
         output << "\n" << juce::String(frust::FormatDiagnostic(diagnostic));
     return { result.ok, false, output, true };
+}
+
+EngineerTools::Result EngineerTools::runCommand(const juce::var& arguments) const
+{
+    const auto command = stringProperty(arguments, "command").trim();
+    if (command.isEmpty())
+        return failure("Give the command to run.");
+    const auto reason = stringProperty(arguments, "reason").trim();
+
+    juce::String error;
+    const auto folder = resolveProjectPath(stringProperty(arguments, "cwd", "."), error);
+    if (error.isNotEmpty())
+        return failure(error);
+    if (!folder.isDirectory())
+        return failure("The folder to run in does not exist.");
+    const auto relative = folder == root ? juce::String(".")
+                                         : folder.getRelativePathFrom(root).replaceCharacter('\\', '/');
+
+    command_tool::RuleStore rules(root, commands.rulesFolder);
+    const auto verdict = command_tool::assess(command, rules.allowedPrefixes());
+    if (verdict.verdict == command_tool::Verdict::deny)
+        return failure("The host refused this command: " + verdict.reason);
+
+    if (verdict.verdict == command_tool::Verdict::ask)
+    {
+        if (!commands.approve)
+            return failure("This command needs the user's approval and there is no one to ask here (" + verdict.reason + ").");
+        command_tool::ApprovalRequest request { verdict.command, relative, reason, verdict.reason,
+                                                verdict.alwaysAsk ? juce::String() : verdict.rulePrefix };
+        const auto decision = commands.approve(request);
+        if (decision == command_tool::Approval::deny)
+            return failure("The user did not allow this command. Do not try to get around that: if you need it, say why and "
+                           "ask with agent_request_user.");
+        if (decision == command_tool::Approval::always && request.rulePrefix.isNotEmpty())
+            rules.allow(request.rulePrefix);
+    }
+
+    // One build at a time on this machine: not while another build runs anywhere, and never two from this IDE.
+    static std::mutex buildLock;
+    std::unique_lock<std::mutex> lock(buildLock, std::defer_lock);
+    if (verdict.build || verdict.test)
+    {
+        juce::String which;
+        if (command_tool::otherBuildRunning(which))
+            return failure("Another build is running on this machine (" + which + "). Only one build runs at a time: "
+                           "try again when it has finished, or ask the user.");
+        lock.lock();
+    }
+
+    const int defaultTimeout = (verdict.build || verdict.test) ? 900 : 120;
+    const int timeout = juce::jlimit(5, 1800, intProperty(arguments, "timeout_seconds", defaultTimeout));
+    const auto ran = command_tool::run(verdict.command, folder, timeout, commands.logFolder);
+    if (!ran.started)
+        return failure(ran.error);
+
+    juce::String text;
+    text << "Ran in " << ran.shell << " in " << relative << ": " << verdict.command << "\n";
+    for (const auto& amendment : verdict.amendments)
+        text << "Note: the host " << amendment << ".\n";
+    if (ran.timedOut)
+        text << "It was stopped at the time limit of " << timeout << " seconds (the whole process tree was ended).\n";
+    else
+        text << "Exit code " << ran.exitCode << " after " << juce::String(ran.seconds, 1) << " s.\n";
+    if (ran.truncated && ran.logFile != juce::File())
+        text << "The output was long; the start and the end are below, the whole of it is in " << ran.logFile.getFullPathName() << "\n";
+    text << "\n" << (ran.output.trim().isEmpty() ? juce::String("(no output)") : ran.output);
+
+    const bool ok = ran.exitCode == 0 && !ran.timedOut;
+    // A build or a test run is verification evidence. Anything else that is not read-only may have changed the project.
+    return { ok, !verdict.readOnly && !verdict.build && !verdict.test, text, verdict.build || verdict.test };
 }
