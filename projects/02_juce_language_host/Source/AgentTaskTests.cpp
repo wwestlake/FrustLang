@@ -123,6 +123,24 @@ int main()
     expect(externalEvidence.currentPhase() == "assess",
            "Reading named external evidence advances the task to capability assessment");
 
+    auto populatedExternal = AgentTask::begin(
+        "populated-external", "Build using D:\\reference\\format.json", "execute",
+        true, true, true);
+    populatedExternal.recordEngineerResult("workspace_list", { true, false, "Listed 1 entries." });
+    expect(populatedExternal.currentPhase() == "inspect",
+           "A non-empty project listing does not substitute for named external evidence");
+
+    auto registryRequired = AgentTask::begin(
+        "registry-required", "Inspect the pod registry and build the parser", "execute",
+        true, true, true);
+    registryRequired.recordEngineerResult("workspace_list", { true, false, "Listed project" });
+    const auto prematureAssessment = assess(registryRequired);
+    expect(!prematureAssessment.ok && registryRequired.currentPhase() == "inspect",
+           "Premature capability assessment returns to inspection when registry evidence was requested");
+    registryRequired.recordEngineerResult("registry_search", { true, false, "Found JSON pods" });
+    expect(assess(registryRequired).ok,
+           "Capability assessment proceeds after the requested registry inspection");
+
     auto blocked = AgentTask::begin("blocked", "Implement parser", "execute", true, true, true);
     blocked.recordEngineerResult("workspace_list", { true, false, "Listed project" });
     auto missing = blocked.executeControl(call("agent_assess_capabilities",

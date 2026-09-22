@@ -163,6 +163,24 @@ AgentTask::ControlResult AgentTask::executeControl(const ai_provider::ToolCall& 
     {
         if (!inspected)
             return { true, false, false, "Error: Inspect the current project before assessing capabilities." };
+        const auto lowerGoal = goal.toLowerCase();
+        const bool namesExternalEvidence = goal.contains(":\\") || goal.contains(":/");
+        bool readEvidence = false;
+        bool registryEvidence = false;
+        for (const auto& observation : observations)
+        {
+            readEvidence = readEvidence || observation.startsWith("workspace_read:")
+                || observation.startsWith("workspace_search:");
+            registryEvidence = registryEvidence || observation.startsWith("registry_search:");
+        }
+        if ((namesExternalEvidence && !readEvidence)
+            || (lowerGoal.contains("registry") && !registryEvidence))
+        {
+            inspected = false;
+            return { true, false, false,
+                "Error: Capability assessment is premature. Inspect the external evidence and every explicitly "
+                "requested capability source, including the pod registry, before deciding what is missing." };
+        }
         const auto evidence = stringArrayProperty(arguments, "evidence");
         if (evidence.isEmpty())
             return { true, false, false, "Error: Capability assessment requires concrete project or tool evidence." };
@@ -176,7 +194,7 @@ AgentTask::ControlResult AgentTask::executeControl(const ai_provider::ToolCall& 
             for (const auto& missing : missingCapabilities)
             {
                 const auto lower = missing.toLowerCase();
-                if (containsAny(lower, { "write access", "write permission", "permission to write",
+                if (lower == "write" || containsAny(lower, { "write access", "write permission", "permission to write",
                                          "workspace write", "project file access", "workspace_", "run_command",
                                          "create file", "file creation", "edit file", "file editing" }))
                 {
@@ -253,13 +271,21 @@ void AgentTask::recordEngineerResult(const std::string& name, const EngineerTool
     ++toolCalls;
     if (result.ok && name == "workspace_list")
     {
-        const bool emptyProject = result.message.startsWith("Listed 0 entries");
         const bool goalNamesExternalEvidence = goal.contains(":\\") || goal.contains(":/");
-        inspected = !emptyProject || !goalNamesExternalEvidence;
+        inspected = !goalNamesExternalEvidence;
     }
     if (result.ok && name == "workspace_read" && !inspected
         && (goal.contains(":\\") || goal.contains(":/")))
         inspected = true;
+    if (result.ok && name == "registry_search" && !inspected)
+    {
+        const bool goalNamesExternalEvidence = goal.contains(":\\") || goal.contains(":/");
+        bool readEvidence = false;
+        for (const auto& observation : observations)
+            readEvidence = readEvidence || observation.startsWith("workspace_read:")
+                || observation.startsWith("workspace_search:");
+        inspected = !goalNamesExternalEvidence || readEvidence;
+    }
     const auto commandLine = result.message.upToFirstOccurrenceOf("\n", false, false).toLowerCase();
     const bool releaseCommand = name == "run_command"
         && containsAny(commandLine, { "frate package", "frate install-local", "frate publish",
