@@ -124,7 +124,9 @@ bool AgentTask::proposedWriteHasUnresolvedImplementation(const ai_provider::Tool
     const auto lower = content.toLowerCase();
     if (containsAny(lower, { "implementation will go here", "further implementation will go here",
                              "placeholder implementation", "add functionality here",
-                             "implement using core functions when available" }))
+                             "implement using core functions when available",
+                             "basic implementation to illustrate", "logic to validate",
+                             "validation logic here", "test logic here", "setup test fixtures" }))
         return true;
     const auto path = arguments.getProperty("path", {}).toString().toLowerCase();
     return path.endsWith(".fr") && hasCommentOnlyFunction(content);

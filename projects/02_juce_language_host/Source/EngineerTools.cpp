@@ -400,7 +400,8 @@ EngineerTools::Result EngineerTools::writeFile(const juce::var& arguments) const
     const auto expectedHash = stringProperty(arguments, "expected_sha256").trim().toLowerCase();
     const auto actualHash = contentHash(original);
     if (expectedHash != actualHash)
-        return failure("File changed since it was read. Read it again and use its current SHA-256 value.");
+        return failure("File revision does not match. Supplied SHA-256: " + expectedHash
+            + "; current SHA-256: " + actualHash + ". Use the current value exactly.");
 
     if (!file.replaceWithText(stringProperty(arguments, "content")))
         return failure("Could not write the file.");

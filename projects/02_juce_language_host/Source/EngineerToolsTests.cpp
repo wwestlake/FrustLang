@@ -78,7 +78,8 @@ int main()
     auto staleWrite = workspace.execute(call(
         "workspace_write_file",
         R"({"path":"src/main.fr","content":"fn main() = 21","expected_sha256":"0000000000000000000000000000000000000000000000000000000000000000"})"));
-    expect(!staleWrite.ok, "Whole-file write rejects a stale revision");
+    expect(!staleWrite.ok && staleWrite.message.contains(currentHash),
+           "Whole-file write rejects a stale revision and returns the current hash");
     auto rewritten = workspace.execute(call(
         "workspace_write_file",
         "{\"path\":\"src/main.fr\",\"content\":\"fn main() = 84\",\"expected_sha256\":\""
