@@ -336,9 +336,7 @@ AiChatPanel::AiChatPanel(juce::ApplicationProperties* properties)
     sendButton.onClick = [this] {
         if (requestInFlight)
         {
-            // Stop: the worker ends what it is doing (a running command at once) and reports where it got to.
-            if (runControl != nullptr)
-                runControl->stop = true;
+            requestStop("Stopped by the user.");
             sendButton.setEnabled(false);
             if (runControl != nullptr)
                 postLiveStatus(juce::Component::SafePointer<AiChatPanel>(this), runControl, "Stopping...");
@@ -352,6 +350,18 @@ AiChatPanel::AiChatPanel(juce::ApplicationProperties* properties)
 
     refreshProfileList();
     refreshConversationList(true);
+}
+
+bool AiChatPanel::requestStop(const juce::String& reason)
+{
+    if (!requestInFlight || runControl == nullptr) return false;
+    {
+        std::lock_guard lock(runControl->mutex);
+        runControl->stopReason = reason.isNotEmpty() ? reason : "Stopped by the user.";
+    }
+    runControl->stop = true;
+    postLiveStatus(juce::Component::SafePointer<AiChatPanel>(this), runControl, "Stopping...");
+    return true;
 }
 
 AiChatPanel::~AiChatPanel()
@@ -655,12 +665,119 @@ bool AiChatPanel::submitExternalMessage(const juce::String& content,
     return true;
 }
 
+bool AiChatPanel::configureExternalSession(const juce::var& options, juce::String& error)
+{
+    if (requestInFlight)
+    {
+        error = "The AI Assistant is busy.";
+        return false;
+    }
+    if (!options.isObject())
+    {
+        error = "Session options must be a JSON object.";
+        return false;
+    }
+
+    auto selectNamed = [&error](juce::ComboBox& box, const juce::String& requested,
+                                std::initializer_list<std::pair<const char*, int>> names,
+                                const char* field) {
+        if (requested.isEmpty()) return true;
+        for (const auto& [name, id] : names)
+            if (requested.equalsIgnoreCase(name))
+            {
+                box.setSelectedId(id, juce::sendNotificationSync);
+                return true;
+            }
+        error = "Unknown " + juce::String(field) + ": " + requested;
+        return false;
+    };
+
+    if (!selectNamed(modeBox, options.getProperty("mode", {}).toString(),
+                     { { "auto", 1 }, { "plan", 2 }, { "execute", 3 }, { "review", 4 } }, "mode")
+        || !selectNamed(accessBox, options.getProperty("access", {}).toString(),
+                       { { "observe", 1 }, { "workspace", 2 }, { "full", 3 }, { "full access", 3 } }, "access")
+        || !selectNamed(outputBox, options.getProperty("outputDetail", {}).toString(),
+                       { { "brief", 1 }, { "standard", 2 }, { "detailed", 3 } }, "output detail"))
+        return false;
+
+    const auto requestedProfile = options.getProperty("profile", {}).toString().trim();
+    if (requestedProfile.isNotEmpty())
+    {
+        int match = -1;
+        for (int index = 0; index < profileBox.getNumItems(); ++index)
+            if (profileBox.getItemText(index) == requestedProfile) { match = index; break; }
+        if (match < 0)
+        {
+            error = "Unknown AI profile: " + requestedProfile;
+            return false;
+        }
+        profileBox.setSelectedItemIndex(match, juce::sendNotificationSync);
+    }
+
+    const auto requestedModel = options.getProperty("model", {}).toString().trim();
+    if (requestedModel.isNotEmpty())
+    {
+        int match = -1;
+        for (int index = 0; index < modelBox.getNumItems(); ++index)
+            if (modelBox.getItemText(index) == requestedModel) { match = index; break; }
+        if (match < 0)
+        {
+            error = "Model is not available in the selected profile: " + requestedModel;
+            return false;
+        }
+        modelBox.setSelectedItemIndex(match, juce::sendNotificationSync);
+    }
+
+    auto configureBudget = [&options, &error](const char* name, int& target,
+                                               int minimum, int maximum) {
+        if (!options.hasProperty(name)) return true;
+        const auto value = static_cast<int>(options.getProperty(name, 0));
+        if (value < minimum || value > maximum)
+        {
+            error = juce::String(name) + " must be between " + juce::String(minimum)
+                + " and " + juce::String(maximum) + ".";
+            return false;
+        }
+        target = value;
+        return true;
+    };
+    if (!configureBudget("maxProviderCalls", maxProviderCalls, 1, 500)
+        || !configureBudget("maxToolCalls", maxToolCalls, 1, 2000)
+        || !configureBudget("maxTotalTokens", maxTotalTokens, 1000, 10000000))
+        return false;
+
+    if (static_cast<bool>(options.getProperty("newConversation", false)))
+        startNewConversation();
+    return true;
+}
+
+juce::var AiChatPanel::externalSessionSnapshot() const
+{
+    auto* snapshot = new juce::DynamicObject();
+    snapshot->setProperty("profile", profileBox.getText());
+    snapshot->setProperty("model", modelBox.getText());
+    snapshot->setProperty("mode", modeBox.getText().toLowerCase());
+    snapshot->setProperty("access", accessBox.getText().toLowerCase());
+    snapshot->setProperty("outputDetail", outputBox.getText().toLowerCase());
+    snapshot->setProperty("conversationId", currentConversation.id);
+    snapshot->setProperty("busy", requestInFlight);
+    snapshot->setProperty("maxProviderCalls", maxProviderCalls);
+    snapshot->setProperty("maxToolCalls", maxToolCalls);
+    snapshot->setProperty("maxTotalTokens", maxTotalTokens);
+    if (getProjectRoot)
+        snapshot->setProperty("projectRoot", getProjectRoot().getFullPathName());
+    AgentTask task;
+    if (AgentTask::load(conversationStore.getConversationFolder(), currentConversation.id, task))
+        snapshot->setProperty("task", task.evaluationSnapshot());
+    return juce::var(snapshot);
+}
+
 void AiChatPanel::completeExternalRequest(bool ok, const juce::String& response)
 {
     if (!externalCompletion) return;
     auto completion = std::move(externalCompletion);
     externalCompletion = {};
-    completion(ok, response);
+    completion(ok, response, externalSessionSnapshot());
 }
 
 void AiChatPanel::refreshConversationList(bool loadMostRecent)
@@ -1126,8 +1243,12 @@ void AiChatPanel::startResolvedMessage(const juce::String& userText, AgentMode s
 
     auto* providerPtr = provider.release();
 
+    const auto providerCallBudget = maxProviderCalls;
+    const auto toolCallBudget = maxToolCalls;
+    const auto tokenBudget = maxTotalTokens;
     std::thread([safeThis, historySnapshot, providerPtr, engineerTools, toolDefinitions,
-                 agentRun, task, conversationFolder, run = runControl] () mutable {
+                 agentRun, task, conversationFolder, run = runControl,
+                 providerCallBudget, toolCallBudget, tokenBudget] () mutable {
         run->running = true;
         struct Finished { std::shared_ptr<RunControl> run; ~Finished() { run->running = false; } } finished { run };
         bool stopped = false;
@@ -1143,6 +1264,16 @@ void AiChatPanel::startResolvedMessage(const juce::String& userText, AgentMode s
                 stopped = true;
                 break;
             }
+            if (agentRun)
+            {
+                const auto reason = task.budgetExceeded(providerCallBudget, toolCallBudget, tokenBudget);
+                if (reason.isNotEmpty())
+                {
+                    task.fail(reason);
+                    task.save(conversationFolder);
+                    break;
+                }
+            }
             postLiveStatus(safeThis, run, round == 0 ? juce::String("Thinking...")
                                                      : "Thinking about the next step (step " + juce::String(round + 1) + ")...");
             response = owned->sendChat(
@@ -1150,6 +1281,17 @@ void AiChatPanel::startResolvedMessage(const juce::String& userText, AgentMode s
                 toolDefinitions,
                 agentRun ? ai_provider::ToolChoice::required
                          : ai_provider::ToolChoice::autoSelect);
+            if (agentRun) task.recordProviderUsage(response);
+            if (agentRun)
+            {
+                const auto reason = task.budgetExceeded(providerCallBudget, toolCallBudget, tokenBudget);
+                if (reason.isNotEmpty())
+                {
+                    task.fail(reason);
+                    task.save(conversationFolder);
+                    break;
+                }
+            }
             if (!response.ok)
                 break;
 
@@ -1194,7 +1336,14 @@ void AiChatPanel::startResolvedMessage(const juce::String& userText, AgentMode s
                 else
                 {
                     result = engineerTools.execute(call);
-                    if (agentRun) task.recordEngineerResult(call.name, result);
+                    if (agentRun)
+                    {
+                        task.recordEngineerResult(call.name, result);
+                        const auto reason = task.budgetExceeded(
+                            providerCallBudget, toolCallBudget, tokenBudget);
+                        if (reason.isNotEmpty())
+                            task.fail(reason);
+                    }
                 }
                 workspaceChanged = workspaceChanged || result.workspaceChanged;
                 const auto summary = result.message.upToFirstOccurrenceOf("\n", false, false);
@@ -1230,12 +1379,19 @@ void AiChatPanel::startResolvedMessage(const juce::String& userText, AgentMode s
         }
 
         if (stopped)
-            response = { false, {}, "Stopped by the user." };
+        {
+            juce::String reason;
+            {
+                std::lock_guard lock(run->mutex);
+                reason = run->stopReason;
+            }
+            response = { false, {}, reason.toStdString() };
+        }
 
         if (agentRun && !task.isTerminal())
         {
             if (stopped)
-                task.fail("Stopped by the user.");
+                task.fail(juce::String(response.errorMessage));
             else if (!response.ok)
                 task.fail("Provider error: " + juce::String(response.errorMessage));
             else if (response.toolCalls.empty())

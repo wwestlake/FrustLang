@@ -61,6 +61,7 @@ private:
     ContextPanel* contextPanel = nullptr;
     ErrorListPanel* errorListPanel = nullptr;
     FratePanel* fratePanel = nullptr;
+    AiChatPanel* aiChatPanel = nullptr;
     std::unique_ptr<juce::FileChooser> activeFileChooser;
 
     static juce::File getLayoutFile();

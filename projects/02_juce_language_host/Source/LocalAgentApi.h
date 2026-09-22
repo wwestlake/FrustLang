@@ -8,8 +8,10 @@
 class LocalAgentApi : private juce::Thread
 {
 public:
-    using Completion = std::function<void(bool, const juce::String&)>;
+    using Completion = std::function<void(bool, const juce::String&, const juce::var&)>;
     using MessageHandler = std::function<void(const juce::String&, Completion)>;
+    using SessionHandler = std::function<void(const juce::var&, Completion)>;
+    using CancelHandler = std::function<void()>;
 
     explicit LocalAgentApi(juce::File discoveryFileOverride = {});
     ~LocalAgentApi() override;
@@ -18,6 +20,8 @@ public:
     void stop();
 
     MessageHandler onMessage;
+    SessionHandler onSession;
+    CancelHandler onCancel;
 
     static juce::File getDiscoveryFile();
 

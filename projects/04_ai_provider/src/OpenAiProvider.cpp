@@ -365,9 +365,13 @@ ChatResponse OpenAiProvider::sendChat(const std::vector<ChatMessage>& messages,
         for (int index = 0; index < sourceUrls.size(); ++index)
             content << "- [" << sourceTitles[index] << "](" << sourceUrls[index] << ")\n";
     }
+    const auto usage = parsed.getProperty("usage", {});
+    const auto inputTokens = static_cast<int>(usage.getProperty("input_tokens", 0));
+    const auto outputTokens = static_cast<int>(usage.getProperty("output_tokens", 0));
+    const auto totalTokens = static_cast<int>(usage.getProperty("total_tokens", inputTokens + outputTokens));
     return { true, content.toStdString(), {}, std::move(toolCalls),
              json::toJson(parsed.getProperty("output", {})),
-             hostedToolUsed };
+             hostedToolUsed, inputTokens, outputTokens, totalTokens };
 }
 
 ModelListResponse OpenAiProvider::listModels() {

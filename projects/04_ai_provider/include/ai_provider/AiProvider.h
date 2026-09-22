@@ -39,6 +39,9 @@ struct ChatResponse {
     std::vector<ToolCall> toolCalls;
     std::string providerItemsJson;
     bool hostedToolUsed = false;
+    int inputTokens = 0;
+    int outputTokens = 0;
+    int totalTokens = 0;
 };
 
 struct ModelListResponse {

@@ -23,7 +23,7 @@
 class AiChatPanel : public juce::Component
 {
 public:
-    using ExternalCompletion = std::function<void(bool, const juce::String&)>;
+    using ExternalCompletion = std::function<void(bool, const juce::String&, const juce::var&)>;
 
     explicit AiChatPanel(juce::ApplicationProperties* properties);
     ~AiChatPanel() override;
@@ -32,6 +32,9 @@ public:
     void resized() override;
 
     bool submitExternalMessage(const juce::String& content, ExternalCompletion completion);
+    bool configureExternalSession(const juce::var& options, juce::String& error);
+    juce::var externalSessionSnapshot() const;
+    bool requestStop(const juce::String& reason = "Stopped by the user.");
 
     std::function<juce::File()> getProjectRoot;
     std::function<std::vector<juce::File>()> getReadOnlyRoots;
@@ -109,6 +112,7 @@ public:
         std::atomic<bool> running { false };
         std::mutex mutex;
         juce::String status;
+        juce::String stopReason { "Stopped by the user." };
         juce::StringArray steps;
     };
     std::shared_ptr<RunControl> runControl;
@@ -119,6 +123,9 @@ public:
     void closeCard();
 
 private:
+    int maxProviderCalls = 64;
+    int maxToolCalls = 128;
+    int maxTotalTokens = 300000;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AiChatPanel)
 };

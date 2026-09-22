@@ -1,6 +1,6 @@
 # FrustIDE Local Agent API
 
-FrustIDE exposes an authenticated HTTP API on a random loopback port while the IDE is running. It uses the same active conversation, mode, access ceiling, task controller, and engineering tools as the AI Assistant panel.
+FrustIDE exposes an authenticated HTTP API on a random loopback port while the IDE is running. It uses the same active conversation, mode, access ceiling, task controller, and engineering tools as the AI Assistant panel. The evaluation harness also uses this API to establish clean, repeatable sessions.
 
 The API never listens on a LAN interface. On startup, FrustIDE writes its connection information to:
 
@@ -33,13 +33,39 @@ Content-Type: application/json
 
 Returns `202` with a `requestId`. The message appears in the current AI Assistant conversation. If the assistant is already working, the request finishes with a busy error rather than interrupting it.
 
+## Configure an evaluation session
+
+```http
+POST /v1/session
+Content-Type: application/json
+
+{
+  "projectRoot": "D:\\FrustLang\\tools\\agent-eval\\runs\\example\\workspace",
+  "mode": "execute",
+  "access": "full",
+  "outputDetail": "brief",
+  "model": "gpt-4o-mini",
+  "newConversation": true
+}
+```
+
+All fields are optional. Supported modes are `auto`, `plan`, `execute`, and `review`; access values are `observe`, `workspace`, and `full`; output detail values are `brief`, `standard`, and `detailed`. The project root and model must already exist. Task budgets can be set with `maxProviderCalls`, `maxToolCalls`, and `maxTotalTokens`; defaults are 64, 128, and 300,000. Like a message, configuration returns `202` with a `requestId` and is read through the request endpoint.
+
 ## Read the reply
 
 ```http
 GET /v1/requests/{requestId}
 ```
 
-The status is `queued`, `running`, `completed`, or `failed`. A completed request includes `response`; a failed request includes `error`.
+The status is `queued`, `running`, `completed`, or `failed`. A completed request includes `response`; a failed request includes `error`. Results also include `durationMs` and structured `details` describing the active profile, model, mode, access, project, conversation, and host-observed task evidence. Task evidence includes tool/provider calls, token usage, verification gates, and repeated failures.
+
+## Cancel the active run
+
+```http
+POST /v1/cancel
+```
+
+Returns `202` with `status: stopping`. Cancellation uses the same stop path as the AI Assistant's Stop button. The worker finishes the current provider request, then stops before another model or tool call.
 
 ## PowerShell example
 
@@ -52,3 +78,5 @@ Invoke-RestMethod "$($api.baseUrl)/v1/requests/$($request.requestId)" -Headers $
 ```
 
 The local API is a conversation transport, not a permission bypass. Write operations are available only when the IDE's access control and task mode authorize an Execute run.
+
+The benchmark runner and baseline suite are in `tools\agent-eval`. Run `agent_eval.py validate` without starting the IDE, or `agent_eval.py run` against the active discovery document.

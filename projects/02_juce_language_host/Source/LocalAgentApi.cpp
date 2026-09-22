@@ -34,6 +34,9 @@ struct LocalAgentApi::State
         juce::String status { "queued" };
         juce::String response;
         juce::String error;
+        juce::var details;
+        double startedAtMs = 0.0;
+        double durationMs = 0.0;
     };
 
     std::mutex mutex;
@@ -80,7 +83,7 @@ bool LocalAgentApi::start()
     token = juce::Uuid().toString();
     auto* discovery = new juce::DynamicObject();
     discovery->setProperty("schema", "frustide-agent-api");
-    discovery->setProperty("version", 1);
+    discovery->setProperty("version", 2);
     discovery->setProperty("baseUrl", "http://127.0.0.1:" + juce::String(listener.getBoundPort()));
     discovery->setProperty("token", token);
     discovery->setProperty("transport", "http");
@@ -146,13 +149,16 @@ void LocalAgentApi::handleConnection(juce::StreamingSocket& socket)
         return;
     }
 
-    if (request.method == "POST" && request.path == "/v1/messages")
+    if (request.method == "POST" && (request.path == "/v1/messages" || request.path == "/v1/session"))
     {
         const auto parsed = juce::JSON::parse(request.body);
+        const bool messageRequest = request.path == "/v1/messages";
         const auto content = parsed.getProperty("content", {}).toString().trim();
-        if (!parsed.isObject() || content.isEmpty())
+        if (!parsed.isObject() || (messageRequest && content.isEmpty()))
         {
-            writeJson(socket, 400, "Bad Request", errorBody("JSON content must be a non-empty string."));
+            writeJson(socket, 400, "Bad Request", errorBody(messageRequest
+                ? "JSON content must be a non-empty string."
+                : "Session configuration must be a JSON object."));
             return;
         }
 
@@ -163,30 +169,60 @@ void LocalAgentApi::handleConnection(juce::StreamingSocket& socket)
         }
 
         auto sharedState = state;
-        auto handler = onMessage;
-        juce::MessageManager::callAsync([sharedState, handler, requestId, content] {
+        auto messageHandler = onMessage;
+        auto sessionHandler = onSession;
+        juce::MessageManager::callAsync([sharedState, messageHandler, sessionHandler,
+                                         requestId, content, parsed, messageRequest] {
             {
                 std::lock_guard lock(sharedState->mutex);
                 auto found = sharedState->requests.find(requestId);
                 if (!sharedState->active || found == sharedState->requests.end()) return;
                 found->second.status = "running";
+                found->second.startedAtMs = juce::Time::getMillisecondCounterHiRes();
             }
 
-            auto completion = [sharedState, requestId](bool ok, const juce::String& result) {
+            auto completion = [sharedState, requestId](bool ok, const juce::String& result,
+                                                        const juce::var& details) {
                 std::lock_guard lock(sharedState->mutex);
                 auto found = sharedState->requests.find(requestId);
                 if (found == sharedState->requests.end()) return;
                 found->second.status = ok ? "completed" : "failed";
+                found->second.durationMs = juce::Time::getMillisecondCounterHiRes() - found->second.startedAtMs;
+                found->second.details = details;
                 if (ok) found->second.response = result;
                 else found->second.error = result;
             };
-            if (handler) handler(content, std::move(completion));
-            else completion(false, "The IDE assistant is unavailable.");
+            if (messageRequest)
+            {
+                if (messageHandler) messageHandler(content, std::move(completion));
+                else completion(false, "The IDE assistant is unavailable.", {});
+            }
+            else
+            {
+                if (sessionHandler) sessionHandler(parsed, std::move(completion));
+                else completion(false, "The IDE session controller is unavailable.", {});
+            }
         });
 
         auto* body = new juce::DynamicObject();
         body->setProperty("requestId", requestId);
         body->setProperty("status", "queued");
+        writeJson(socket, 202, "Accepted", juce::var(body));
+        return;
+    }
+
+    if (request.method == "POST" && request.path == "/v1/cancel")
+    {
+        auto cancelHandler = onCancel;
+        if (!cancelHandler)
+        {
+            writeJson(socket, 503, "Service Unavailable",
+                      errorBody("The IDE cancellation controller is unavailable."));
+            return;
+        }
+        juce::MessageManager::callAsync([cancelHandler] { cancelHandler(); });
+        auto* body = new juce::DynamicObject();
+        body->setProperty("status", "stopping");
         writeJson(socket, 202, "Accepted", juce::var(body));
         return;
     }
@@ -210,8 +246,10 @@ void LocalAgentApi::handleConnection(juce::StreamingSocket& socket)
         auto* body = new juce::DynamicObject();
         body->setProperty("requestId", requestId);
         body->setProperty("status", result.status);
+        body->setProperty("durationMs", result.durationMs);
         if (result.response.isNotEmpty()) body->setProperty("response", result.response);
         if (result.error.isNotEmpty()) body->setProperty("error", result.error);
+        if (!result.details.isVoid()) body->setProperty("details", result.details);
         writeJson(socket, 200, "OK", juce::var(body));
         return;
     }

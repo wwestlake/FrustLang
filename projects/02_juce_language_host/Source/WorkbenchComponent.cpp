@@ -90,7 +90,7 @@ WorkbenchComponent::WorkbenchComponent()
     };
 
     auto aiChat = std::make_unique<AiChatPanel>(appProperties.get());
-    auto* aiChatPanel = aiChat.get();
+    aiChatPanel = aiChat.get();
     aiChat->getProjectRoot = [this] { return fileTreePanel->getRootDirectory(); };
     aiChat->getReadOnlyRoots = [this] { return getReadOnlyRoots(); };
     aiChat->openReadOnlyRoot = [this](const juce::File& folder) { addReadOnlyRoot(folder); };
@@ -131,11 +131,42 @@ WorkbenchComponent::WorkbenchComponent()
         (const juce::String& content, LocalAgentApi::Completion completion) mutable {
         if (safeChat == nullptr)
         {
-            completion(false, "The AI Assistant panel is unavailable.");
+            completion(false, "The AI Assistant panel is unavailable.", {});
             return;
         }
         if (!safeChat->submitExternalMessage(content, completion))
-            completion(false, "The AI Assistant is busy. Try again after its current request finishes.");
+            completion(false, "The AI Assistant is busy. Try again after its current request finishes.", {});
+    };
+    localAgentApi->onSession = [safeThis = juce::Component::SafePointer<WorkbenchComponent>(this)]
+        (const juce::var& options, LocalAgentApi::Completion completion) mutable {
+        if (safeThis == nullptr || safeThis->aiChatPanel == nullptr)
+        {
+            completion(false, "The IDE session controller is unavailable.", {});
+            return;
+        }
+        const auto requestedRoot = options.getProperty("projectRoot", {}).toString().trim();
+        if (requestedRoot.isNotEmpty())
+        {
+            const juce::File folder(requestedRoot);
+            if (!folder.isDirectory())
+            {
+                completion(false, "The requested project root does not exist: " + requestedRoot, {});
+                return;
+            }
+            if (safeThis->fileTreePanel != nullptr)
+                safeThis->fileTreePanel->setRootDirectory(folder);
+        }
+        juce::String error;
+        if (!safeThis->aiChatPanel->configureExternalSession(options, error))
+        {
+            completion(false, error, safeThis->aiChatPanel->externalSessionSnapshot());
+            return;
+        }
+        completion(true, "Session configured.", safeThis->aiChatPanel->externalSessionSnapshot());
+    };
+    localAgentApi->onCancel = [safeChat = juce::Component::SafePointer<AiChatPanel>(aiChatPanel)] {
+        if (safeChat != nullptr)
+            safeChat->requestStop("Stopped through the local agent API.");
     };
     localAgentApi->start();
     

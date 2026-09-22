@@ -40,8 +40,15 @@ int main()
     const auto discoveryFile = testFolder.getChildFile("agent-api.json");
     LocalAgentApi api(discoveryFile);
     api.onMessage = [](const juce::String& content, LocalAgentApi::Completion completion) {
-        completion(true, "Echo: " + content);
+        auto* details = new juce::DynamicObject();
+        details->setProperty("model", "test-model");
+        completion(true, "Echo: " + content, juce::var(details));
     };
+    api.onSession = [](const juce::var& options, LocalAgentApi::Completion completion) {
+        completion(true, "Session configured for " + options.getProperty("mode", {}).toString(), options);
+    };
+    bool cancellationRequested = false;
+    api.onCancel = [&cancellationRequested] { cancellationRequested = true; };
 
     expect(api.start(), "API starts on a loopback port");
     const auto discovery = juce::JSON::parse(discoveryFile.loadFileAsString());
@@ -66,10 +73,35 @@ int main()
         if (result.getProperty("status", {}).toString() != "completed") continue;
         expect(result.getProperty("response", {}).toString() == "Echo: hello agent",
                "Completed request returns the assistant response");
+        expect(static_cast<double>(result.getProperty("durationMs", 0.0)) >= 0.0
+               && result.getProperty("details", {}).getProperty("model", {}).toString() == "test-model",
+               "Completed request returns elapsed time and structured details");
         completed = true;
         break;
     }
     expect(completed, "Submitted request reaches completion");
+
+    const auto configured = request(baseUrl + "/v1/session", token, "POST",
+                                    R"({"mode":"execute","newConversation":true})");
+    const auto configurationId = configured.getProperty("requestId", {}).toString();
+    bool sessionCompleted = false;
+    for (int attempt = 0; attempt < 50; ++attempt)
+    {
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
+        const auto result = request(baseUrl + "/v1/requests/" + configurationId, token, "GET");
+        if (result.getProperty("status", {}).toString() != "completed") continue;
+        expect(result.getProperty("details", {}).getProperty("mode", {}).toString() == "execute",
+               "Session configuration returns its structured state");
+        sessionCompleted = true;
+        break;
+    }
+    expect(sessionCompleted, "Session configuration reaches completion");
+
+    const auto cancelled = request(baseUrl + "/v1/cancel", token, "POST", "{}");
+    for (int attempt = 0; attempt < 20 && !cancellationRequested; ++attempt)
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
+    expect(cancelled.getProperty("status", {}).toString() == "stopping" && cancellationRequested,
+           "Authenticated cancellation reaches the IDE controller");
 
     api.stop();
     expect(!discoveryFile.existsAsFile(), "Discovery file is removed when the API stops");

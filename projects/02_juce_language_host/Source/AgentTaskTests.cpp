@@ -52,6 +52,15 @@ int main()
     expect(!unverified.ok, "Completion is rejected before verification");
 
     task.recordEngineerResult("workspace_check_frust", { true, false, "Frust check passed", true });
+    ai_provider::ChatResponse usage;
+    usage.inputTokens = 120;
+    usage.outputTokens = 30;
+    usage.totalTokens = 150;
+    task.recordProviderUsage(usage);
+    const auto snapshot = task.evaluationSnapshot();
+    expect(static_cast<int>(snapshot.getProperty("providerCalls", 0)) == 1
+           && static_cast<int>(snapshot.getProperty("totalTokens", 0)) == 150,
+           "Evaluation snapshot reports provider calls and token usage");
     auto complete = task.executeControl(call("agent_complete_task", R"({"summary":"Updated the command loop."})"));
     expect(complete.ok && complete.terminal && task.isCompleted(),
            "Completion is accepted after inspection, edit, and verification");
@@ -122,6 +131,29 @@ int main()
     converging.recordEngineerResult("workspace_replace_text", { true, true, "Updated src/lib.fr" });
     converging.recordEngineerResult("workspace_check_frust", { false, false, "Error: duplicate symbol print_f64", true });
     expect(converging.isResumable(), "Three matching failures trigger a convergence stop despite intervening reads and edits");
+
+    auto variedFailures = AgentTask::begin("varied", "Repair changing syntax errors", "execute", true, true, true);
+    variedFailures.recordEngineerResult("workspace_list", { true, false, "Listed project" });
+    assess(variedFailures);
+    plan(variedFailures, "Repair changing syntax errors");
+    variedFailures.recordEngineerResult("workspace_check_frust", { false, false, "Error: expected semicolon", true });
+    variedFailures.recordEngineerResult("workspace_replace_text", { true, true, "Updated src/main.fr" });
+    variedFailures.recordEngineerResult("workspace_check_frust", { false, false, "Error: unknown function println_str", true });
+    variedFailures.recordEngineerResult("workspace_replace_text", { true, true, "Updated src/main.fr" });
+    variedFailures.recordEngineerResult("workspace_check_frust", { false, false, "Error: entry declaration is invalid", true });
+    expect(variedFailures.isResumable(),
+           "Three failed verifications stop a changing edit-and-check loop");
+
+    AgentTask budgeted = AgentTask::begin("budgeted", "Use bounded resources", "execute", true, true, false);
+    ai_provider::ChatResponse budgetUsage;
+    budgetUsage.inputTokens = 900;
+    budgetUsage.outputTokens = 100;
+    budgetUsage.totalTokens = 1000;
+    budgeted.recordProviderUsage(budgetUsage);
+    expect(budgeted.budgetExceeded(1, 10, 10000).contains("model requests"),
+           "Provider-call budget is enforced");
+    expect(budgeted.budgetExceeded(10, 10, 1000).contains("tokens"),
+           "Token budget is enforced");
 
     auto release = AgentTask::begin("release", "Build, test, and publish the JSON pod", "execute", true, true, true);
     release.recordEngineerResult("workspace_list", { true, false, "Listed project" });

@@ -1,0 +1,59 @@
+{
+  "schema": "frustide-agent-eval-suite",
+  "schemaVersion": 1,
+  "name": "FrustIDE Virtual Engineer Baseline",
+  "defaults": {
+    "timeoutSeconds": 900,
+    "betweenCasesSeconds": 3,
+    "session": {
+      "mode": "execute",
+      "access": "full",
+      "outputDetail": "brief",
+      "maxProviderCalls": 16,
+      "maxToolCalls": 48,
+      "maxTotalTokens": 200000
+    }
+  },
+  "cases": [
+    {
+      "id": "project-review",
+      "title": "Inspect without modifying",
+      "fixture": "fixtures/project-review",
+      "session": { "mode": "review", "access": "observe" },
+      "prompt": "Review this project. Identify the required command named in SPEC.md and its principal operational risk. Do not modify any files.",
+      "expectNoChanges": true,
+      "assertions": [
+        { "type": "response_contains", "value": "nebula-sync" },
+        { "type": "response_contains", "value": "overwrite" },
+        { "type": "task_field", "field": "status", "equals": "completed" },
+        { "type": "max_tool_calls", "value": 8 }
+      ]
+    },
+    {
+      "id": "write-documentation",
+      "title": "Create documentation from a specification",
+      "fixture": "fixtures/write-documentation",
+      "prompt": "Read SPEC.md and create the documentation file docs/project-summary.md. It must begin with '# Widget Project Summary', identify the project as a console widget, mention src/main.fr, and preserve all existing files. Read the finished document back before completing.",
+      "assertions": [
+        { "type": "file_exists", "path": "docs/project-summary.md" },
+        { "type": "file_contains", "path": "docs/project-summary.md", "value": "# Widget Project Summary" },
+        { "type": "file_contains", "path": "docs/project-summary.md", "value": "src/main.fr" },
+        { "type": "task_field", "field": "status", "equals": "completed" },
+        { "type": "max_tool_calls", "value": 14 }
+      ]
+    },
+    {
+      "id": "repair-frust",
+      "title": "Repair and verify Frust source",
+      "fixture": "fixtures/repair-frust",
+      "prompt": "Repair src/main.fr so it is valid Frust and prints ready. Keep the existing function shape, make the smallest correction, and verify it with workspace_check_frust before completing.",
+      "assertions": [
+        { "type": "file_contains", "path": "src/main.fr", "value": "println(\"ready\");" },
+        { "type": "task_field", "field": "status", "equals": "completed" },
+        { "type": "task_field", "field": "verified", "equals": true },
+        { "type": "max_tool_calls", "value": 16 },
+        { "type": "max_provider_calls", "value": 10 }
+      ]
+    }
+  ]
+}

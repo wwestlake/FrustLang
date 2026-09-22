@@ -243,6 +243,10 @@ void AgentTask::recordEngineerResult(const std::string& name, const EngineerTool
     {
         verified = result.ok;
         latestVerification = result.message.upToFirstOccurrenceOf("\n", false, false);
+        if (result.ok)
+            verificationFailureCount = 0;
+        else
+            ++verificationFailureCount;
     }
     if (result.ok && name == "run_command") recordCommandEvidence(result.message);
     if (result.ok && result.verificationPerformed)
@@ -271,9 +275,41 @@ void AgentTask::recordEngineerResult(const std::string& name, const EngineerTool
             }
         }
     }
+    if (verificationFailureCount >= 3 && status == "running")
+    {
+        status = "waiting-for-user";
+        pendingQuestion = "Verification has failed three times despite attempted repairs. "
+            "The task has been stopped to prevent an edit-and-check loop. Latest result: "
+            + latestVerification;
+        observations.add("Verification loop stopped after "
+            + juce::String(verificationFailureCount) + " failed checks.");
+    }
     observations.add(juce::String(name) + ": "
         + result.message.upToFirstOccurrenceOf("\n", false, false));
     while (observations.size() > 20) observations.remove(0);
+}
+
+void AgentTask::recordProviderUsage(const ai_provider::ChatResponse& response)
+{
+    ++providerCalls;
+    inputTokens += response.inputTokens;
+    outputTokens += response.outputTokens;
+    totalTokens += response.totalTokens;
+}
+
+juce::String AgentTask::budgetExceeded(int maxProviderCalls, int maxToolCalls,
+                                       int maxTotalTokens) const
+{
+    if (maxProviderCalls > 0 && providerCalls >= maxProviderCalls)
+        return "Task budget reached: " + juce::String(providerCalls)
+            + " model requests (limit " + juce::String(maxProviderCalls) + ").";
+    if (maxToolCalls > 0 && toolCalls >= maxToolCalls)
+        return "Task budget reached: " + juce::String(toolCalls)
+            + " tool calls (limit " + juce::String(maxToolCalls) + ").";
+    if (maxTotalTokens > 0 && totalTokens >= maxTotalTokens)
+        return "Task budget reached: " + juce::String(totalTokens)
+            + " tokens (limit " + juce::String(maxTotalTokens) + ").";
+    return {};
 }
 
 juce::String AgentTask::failureFingerprint(const juce::String& message)
@@ -384,7 +420,9 @@ juce::String AgentTask::statusLine() const
 {
     auto shortGoal = goal.substring(0, 90);
     if (goal.length() > shortGoal.length()) shortGoal << "...";
-    return "Task [" + mode + "]: " + shortGoal + "  |  " + phase();
+    return "Task [" + mode + "]: " + shortGoal + "  |  " + phase()
+        + "  |  " + juce::String(providerCalls) + " requests, "
+        + juce::String(totalTokens) + " tokens";
 }
 
 juce::String AgentTask::finalMessage() const
@@ -424,6 +462,33 @@ const juce::StringArray& AgentTask::planSteps() const { return plan; }
 const juce::String& AgentTask::taskGoal() const { return goal; }
 const juce::String& AgentTask::taskMode() const { return mode; }
 
+juce::var AgentTask::evaluationSnapshot() const
+{
+    auto* object = new juce::DynamicObject();
+    object->setProperty("taskId", taskId);
+    object->setProperty("conversationId", conversationId);
+    object->setProperty("status", status);
+    object->setProperty("mode", mode);
+    object->setProperty("phase", phase());
+    object->setProperty("toolCalls", toolCalls);
+    object->setProperty("providerCalls", providerCalls);
+    object->setProperty("inputTokens", inputTokens);
+    object->setProperty("outputTokens", outputTokens);
+    object->setProperty("totalTokens", totalTokens);
+    object->setProperty("inspected", inspected);
+    object->setProperty("capabilitiesAssessed", capabilitiesAssessed);
+    object->setProperty("changed", changed);
+    object->setProperty("verified", verified);
+    object->setProperty("buildVerified", buildVerified);
+    object->setProperty("testsVerified", testsVerified);
+    object->setProperty("published", published);
+    object->setProperty("repeatedFailureCount", repeatedFailureCount);
+    object->setProperty("verificationFailureCount", verificationFailureCount);
+    object->setProperty("planStepCount", plan.size());
+    object->setProperty("observationCount", observations.size());
+    return juce::var(object);
+}
+
 juce::var AgentTask::toJson() const
 {
     auto* object = new juce::DynamicObject();
@@ -461,7 +526,12 @@ juce::var AgentTask::toJson() const
     object->setProperty("testsVerified", testsVerified);
     object->setProperty("published", published);
     object->setProperty("repeatedFailureCount", repeatedFailureCount);
+    object->setProperty("verificationFailureCount", verificationFailureCount);
     object->setProperty("toolCalls", toolCalls);
+    object->setProperty("providerCalls", providerCalls);
+    object->setProperty("inputTokens", inputTokens);
+    object->setProperty("outputTokens", outputTokens);
+    object->setProperty("totalTokens", totalTokens);
     return juce::var(object);
 }
 
@@ -503,6 +573,11 @@ bool AgentTask::fromJson(const juce::var& value, AgentTask& task)
     task.testsVerified = boolProperty(value, "testsVerified");
     task.published = boolProperty(value, "published");
     task.repeatedFailureCount = static_cast<int>(value.getProperty("repeatedFailureCount", 0));
+    task.verificationFailureCount = static_cast<int>(value.getProperty("verificationFailureCount", 0));
     task.toolCalls = static_cast<int>(value.getProperty("toolCalls", 0));
+    task.providerCalls = static_cast<int>(value.getProperty("providerCalls", 0));
+    task.inputTokens = static_cast<int>(value.getProperty("inputTokens", 0));
+    task.outputTokens = static_cast<int>(value.getProperty("outputTokens", 0));
+    task.totalTokens = static_cast<int>(value.getProperty("totalTokens", 0));
     return task.taskId.isNotEmpty() && task.conversationId.isNotEmpty() && task.goal.isNotEmpty();
 }
