@@ -21,6 +21,9 @@ public:
     void saveFile();
     void saveAs(const juce::File& newFile);
     void goToLocation(int line, int column);
+    // The file was renamed or moved on disk: follow it, keeping what is in the editor.
+    void retarget(const juce::File& newFile);
+    bool hasUnsavedChanges() const { return isDirty; }
 
 private:
     // juce::CodeDocument::Listener
@@ -72,6 +75,11 @@ public:
     void saveActiveFile();
     void saveActiveFileAs(const juce::File& newFile);
     void closeActiveTab();
+
+    // From the Project Explorer. A tab whose file (or a folder above it) was renamed or moved follows it; a tab whose file was
+    // deleted closes, unless it has unsaved changes, which are kept (saving writes the file again).
+    void fileMoved(const juce::File& from, const juce::File& to);
+    void fileDeleted(const juce::File& file);
 
     // Empty juce::String/File if there's no active tab.
     juce::String getActiveFileContent() const;

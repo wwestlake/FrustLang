@@ -41,6 +41,9 @@ WorkbenchComponent::WorkbenchComponent()
     auto editor = std::make_unique<EditorTabComponent>();
     editorTabComponent = editor.get();
     fileTreePanel->onFileDoubleClicked = [this](const juce::File& file) { editorTabComponent->openFile(file); };
+    fileTreePanel->onFileMoved = [this](const juce::File& from, const juce::File& to) { editorTabComponent->fileMoved(from, to); };
+    fileTreePanel->onFileDeleted = [this](const juce::File& file) { editorTabComponent->fileDeleted(file); };
+    fileTreePanel->getActiveEditorFile = [this] { return editorTabComponent != nullptr ? editorTabComponent->getActiveFile() : juce::File(); };
     fileTreePanel->onRootDirectoryChanged = [this](const juce::File& folder) {
         if (fratePanel != nullptr) fratePanel->setProjectRoot(folder);
         if (terminalPanel != nullptr) terminalPanel->setProjectRoot(folder);

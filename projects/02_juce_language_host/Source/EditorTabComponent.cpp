@@ -71,6 +71,13 @@ void CodeEditorTab::saveFile()
     }
 }
 
+void CodeEditorTab::retarget(const juce::File& newFile)
+{
+    targetFile = newFile;
+    lastKnownModTime = newFile.getLastModificationTime();
+    statusBar.setText("File: " + displayName() + " | Renamed", juce::dontSendNotification);
+}
+
 void CodeEditorTab::saveAs(const juce::File& newFile)
 {
     targetFile = newFile;
@@ -214,6 +221,32 @@ void EditorTabComponent::saveActiveFileAs(const juce::File& newFile)
         tabComp->saveAs(newFile);
         tabs.getTabbedButtonBar().setTabName(current, newFile.getFileName());
     }
+}
+
+void EditorTabComponent::fileMoved(const juce::File& from, const juce::File& to)
+{
+    for (int i = 0; i < tabs.getNumTabs(); ++i)
+        if (auto* tab = dynamic_cast<CodeEditorTab*>(tabs.getTabContentComponent(i)))
+        {
+            const auto file = tab->getFile();
+            if (file == from || file.isAChildOf(from))
+            {
+                const auto moved = file == from ? to : to.getChildFile(file.getRelativePathFrom(from));
+                tab->retarget(moved);
+                tabs.getTabbedButtonBar().setTabName(i, moved.getFileName());
+            }
+        }
+}
+
+void EditorTabComponent::fileDeleted(const juce::File& file)
+{
+    for (int i = tabs.getNumTabs(); --i >= 0;)
+        if (auto* tab = dynamic_cast<CodeEditorTab*>(tabs.getTabContentComponent(i)))
+        {
+            const auto open = tab->getFile();
+            if ((open == file || open.isAChildOf(file)) && ! tab->hasUnsavedChanges())
+                closeTab(i);
+        }
 }
 
 void EditorTabComponent::closeActiveTab()
