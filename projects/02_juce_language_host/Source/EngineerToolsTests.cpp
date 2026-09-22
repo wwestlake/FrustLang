@@ -1,7 +1,11 @@
 #include "EngineerTools.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <iostream>
+#include <mutex>
+#include <thread>
 
 namespace
 {
@@ -30,7 +34,7 @@ int main()
     EngineerTools workspace(base, EngineerTools::AccessLevel::workspace);
     const auto observeDefinitions = observe.definitions();
     expect(observeDefinitions.size() == 5, "Observe exposes read-only, registry, and verification tools");
-    expect(workspace.definitions().size() == 10, "Workspace exposes all ten engineering tools, run_command included");
+    expect(workspace.definitions().size() == 12, "Workspace exposes all twelve engineering tools: run_command, launch_program and stop_program included");
     expect(std::none_of(observeDefinitions.begin(), observeDefinitions.end(), [](const auto& tool) {
         return tool.name == "run_command";
     }), "Observe cannot run commands");
@@ -138,6 +142,9 @@ int main()
         expect(command_tool::prefixOf("cmake --build build --target x") == "cmake --build", "the rule for a cmake build");
         expect(command_tool::prefixOf("C:\\tools\\ninja.exe -C out") == "ninja", "a path to a program is its name");
         expect(command_tool::splitCommands("a && b || c; d | e").size() == 5, "a chain splits into its commands");
+        expect(verdictOf("dotnet run").runsProgram && !verdictOf("dotnet run").build, "dotnet run starts a program; it is not a build");
+        expect(verdictOf("dotnet run").command == "dotnet run", "and gets no build flag");
+        expect(verdictOf("cargo run").runsProgram && verdictOf("cargo build").build, "cargo run starts a program, cargo build builds");
     }
 
     // ---- run_command: really running (PowerShell, headless, inside a temporary project) ----
@@ -187,6 +194,40 @@ int main()
 
         auto noOneToAsk = workspace.execute(call("run_command", R"({"command":"cmd /c echo x","reason":"test"})"));
         expect(!noOneToAsk.ok, "with no one to ask, a command that needs approval does not run");
+
+        // Stop ends a running command at once, and progress is reported while it runs.
+        std::atomic<bool> stopNow { false };
+        std::atomic<int> progressCalls { 0 };
+        juce::String lastProgress;
+        std::mutex progressLock;
+        auto stoppable = workspace;
+        EngineerTools::CommandServices services;
+        services.approve = [](const command_tool::ApprovalRequest&) { return command_tool::Approval::once; };
+        services.logFolder = logs;
+        services.rulesFolder = rulesFolder;
+        services.shouldStop = [&stopNow] { return stopNow.load(); };
+        services.progress = [&](const juce::String& line) {
+            ++progressCalls;
+            std::lock_guard<std::mutex> lock(progressLock);
+            lastProgress = line;
+        };
+        stoppable.setCommandServices(services);
+        std::thread stopper([&stopNow] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(3500));
+            stopNow = true;
+        });
+        const auto startedAt = juce::Time::getMillisecondCounterHiRes();
+        auto stoppedRun = stoppable.execute(call("run_command",
+            R"({"command":"Write-Output ticking; Start-Sleep -Seconds 60","reason":"test stop","timeout_seconds":120})"));
+        const auto took = (juce::Time::getMillisecondCounterHiRes() - startedAt) / 1000.0;
+        stopper.join();
+        expect(!stoppedRun.ok && stoppedRun.message.contains("stopped it"), "Stop ends a running command, and says so");
+        expect(took < 15.0, "and promptly, not at the time limit");
+        expect(progressCalls >= 2, "progress is reported while it runs");
+        {
+            std::lock_guard<std::mutex> lock(progressLock);
+            expect(lastProgress.contains("Running") && lastProgress.contains("ticking"), "with the elapsed time and the last line it printed");
+        }
     }
 
     base.deleteRecursively();

@@ -67,7 +67,13 @@ MutationIntent mutationIntentFor(const juce::String& request)
     const bool action = hasWord("create") || hasWord("write") || hasWord("rewrite")
         || hasWord("update") || hasWord("edit") || hasWord("change") || hasWord("add")
         || hasWord("implement") || hasWord("fix") || hasWord("make") || hasWord("rename")
-        || hasWord("remove") || hasWord("delete");
+        || hasWord("remove") || hasWord("delete")
+        // Building, running and opening things act too: "rebuild it and start it" was read as a question and the model was
+        // given only the read-only tools.
+        || hasWord("build") || hasWord("rebuild") || hasWord("compile") || hasWord("run") || hasWord("rerun")
+        || hasWord("launch") || hasWord("start") || hasWord("open") || hasWord("execute") || hasWord("test")
+        || hasWord("generate") || hasWord("scaffold") || hasWord("refactor") || hasWord("move") || hasWord("install")
+        || hasWord("setup") || hasWord("initialize") || hasWord("init");
     if (!action) return MutationIntent::none;
 
     const bool directoryOnly = (text.contains("folder") || text.contains("directory"))
@@ -79,7 +85,8 @@ MutationIntent mutationIntentFor(const juce::String& request)
 // Asks the user whether a command may run, and waits for the answer. Called on the assistant's worker thread; the dialog runs on
 // the message thread. If the panel is gone, or nobody answers within ten minutes, the answer is no.
 command_tool::Approval askUserToRunCommand(juce::Component::SafePointer<juce::Component> owner,
-                                           const command_tool::ApprovalRequest& request)
+                                           const command_tool::ApprovalRequest& request,
+                                           std::function<bool()> shouldStop)
 {
     struct Wait
     {
@@ -125,10 +132,76 @@ command_tool::Approval askUserToRunCommand(juce::Component::SafePointer<juce::Co
         });
     });
 
+    // Waits for the answer, but not past Stop (or the IDE closing), and not more than ten minutes.
+    const auto giveUpAt = std::chrono::steady_clock::now() + std::chrono::minutes(10);
     std::unique_lock<std::mutex> lock(wait->mutex);
-    if (!wait->answered.wait_for(lock, std::chrono::minutes(10), [&wait] { return wait->done; }))
-        return command_tool::Approval::deny;
+    while (!wait->done)
+    {
+        if ((shouldStop && shouldStop()) || std::chrono::steady_clock::now() > giveUpAt)
+            return command_tool::Approval::deny;
+        wait->answered.wait_for(lock, std::chrono::milliseconds(200));
+    }
     return wait->answer;
+}
+
+// What a tool call is doing, in a few words for the live status ("Reading src/main.cpp").
+juce::String describeCall(const ai_provider::ToolCall& call)
+{
+    const auto arguments = juce::JSON::parse(juce::String(call.argumentsJson));
+    auto arg = [&arguments](const char* name) {
+        auto text = arguments.getProperty(name, {}).toString();
+        return text.length() > 80 ? text.substring(0, 77) + "..." : text;
+    };
+    const juce::String name(call.name);
+    if (name == "workspace_list") return "Looking at the project" + (arg("path").isNotEmpty() && arg("path") != "." ? " (" + arg("path") + ")" : juce::String());
+    if (name == "workspace_read") return "Reading " + arg("path");
+    if (name == "workspace_search") return "Searching the project for \"" + arg("query") + "\"";
+    if (name == "registry_search") return "Checking the pod registry" + (arg("query").isNotEmpty() ? " for \"" + arg("query") + "\"" : juce::String());
+    if (name == "workspace_create_directory") return "Creating the folder " + arg("path");
+    if (name == "workspace_create_file") return "Creating " + arg("path");
+    if (name == "workspace_write_file") return "Writing " + arg("path");
+    if (name == "workspace_replace_text") return "Editing " + arg("path");
+    if (name == "workspace_check_frust") return "Checking the Frust code in " + arg("path");
+    if (name == "run_command") return "Running " + arg("command");
+    if (name == "launch_program") return "Opening " + arg("command") + " in its own window";
+    if (name == "stop_program") return "Closing a program it opened";
+    if (name == "agent_set_plan")
+    {
+        const auto* steps = arguments.getProperty("steps", {}).getArray();
+        return "Planning (" + juce::String(steps != nullptr ? steps->size() : 0) + " steps)";
+    }
+    if (name == "agent_complete_task") return "Finishing up";
+    if (name == "agent_request_user") return "Preparing a question for you";
+    return "Using " + name;
+}
+
+// Shows the live status in the reply, from any thread.
+void postLiveStatus(juce::Component::SafePointer<AiChatPanel> panel, const std::shared_ptr<AiChatPanel::RunControl>& run,
+                    const juce::String& status, const juce::String& finishedStep = {})
+{
+    juce::StringArray steps;
+    {
+        std::lock_guard<std::mutex> lock(run->mutex);
+        if (status.isNotEmpty())
+            run->status = status;
+        if (finishedStep.isNotEmpty())
+        {
+            run->steps.add(finishedStep);
+            while (run->steps.size() > 12)
+                run->steps.remove(0);
+        }
+        steps = run->steps;
+    }
+    juce::MessageManager::callAsync([panel, run, steps] {
+        if (panel == nullptr)
+            return;
+        juce::String shown;
+        {
+            std::lock_guard<std::mutex> lock(run->mutex);
+            shown = run->status;
+        }
+        panel->showLiveStatus(shown, steps);
+    });
 }
 
 bool isWriteTool(const std::string& name)
@@ -236,14 +309,50 @@ AiChatPanel::AiChatPanel(juce::ApplicationProperties* properties)
     inputBox.onReturnKey = [this] { sendMessage(); };
     addAndMakeVisible(inputBox);
 
-    sendButton.onClick = [this] { sendMessage(); };
+    sendButton.onClick = [this] {
+        if (requestInFlight)
+        {
+            // Stop: the worker ends what it is doing (a running command at once) and reports where it got to.
+            if (runControl != nullptr)
+                runControl->stop = true;
+            sendButton.setEnabled(false);
+            if (runControl != nullptr)
+                postLiveStatus(juce::Component::SafePointer<AiChatPanel>(this), runControl, "Stopping...");
+            return;
+        }
+        sendMessage();
+    };
     addAndMakeVisible(sendButton);
 
     refreshProfileList();
     refreshConversationList(true);
 }
 
-AiChatPanel::~AiChatPanel() = default;
+AiChatPanel::~AiChatPanel()
+{
+    // A run still going: tell it to stop (a running command is ended at once) and give its thread a moment to finish, so
+    // nothing is left working on a panel that is gone.
+    if (runControl != nullptr && runControl->running)
+    {
+        runControl->stop = true;
+        for (int i = 0; i < 60 && runControl->running; ++i)
+            juce::Thread::sleep(50);
+    }
+}
+
+void AiChatPanel::showLiveStatus(const juce::String& status, const juce::StringArray& steps)
+{
+    if (!requestInFlight)
+        return;
+    juce::String text = status.isNotEmpty() ? status : juce::String("Working...");
+    if (!steps.isEmpty())
+    {
+        text << "\n\nSo far:";
+        for (const auto& step : steps)
+            text << "\n- " << step;
+    }
+    transcript.replaceLastMessage("assistant", text);
+}
 
 void AiChatPanel::paint(juce::Graphics& g)
 {
@@ -677,7 +786,10 @@ void AiChatPanel::updateConversationControls()
     accessBox.setEnabled(!requestInFlight);
     modeBox.setEnabled(!requestInFlight);
     modelBox.setEnabled(!requestInFlight && !modelRequestInFlight && modelBox.getNumItems() > 0);
-    sendButton.setEnabled(!requestInFlight);
+    // While the Engineer works, Send becomes Stop.
+    sendButton.setButtonText(requestInFlight ? "Stop" : "Send");
+    sendButton.setTooltip(requestInFlight ? "Stop the assistant (it ends what it is running and reports where it got to)" : "Send");
+    sendButton.setEnabled(true);
 }
 
 void AiChatPanel::refreshTaskStatus()
@@ -722,8 +834,10 @@ void AiChatPanel::sendMessage()
     renderConversation();
 
     requestInFlight = true;
+    runControl = std::make_shared<RunControl>();
+    runControl->status = "Thinking...";
     updateConversationControls();
-    appendTranscript("assistant", "(thinking...)");
+    appendTranscript("assistant", "Thinking...");
 
     juce::Component::SafePointer<AiChatPanel> safeThis(this);
     auto historySnapshot = history;
@@ -746,8 +860,13 @@ void AiChatPanel::sendMessage()
     EngineerTools engineerTools(projectRoot, effectiveAccess);
     {
         EngineerTools::CommandServices services;
-        services.approve = [owner = juce::Component::SafePointer<juce::Component>(this)](const command_tool::ApprovalRequest& request) {
-            return askUserToRunCommand(owner, request);
+        auto run = runControl;
+        services.shouldStop = [run] { return run->stop.load(); };
+        services.approve = [owner = juce::Component::SafePointer<juce::Component>(this), run](const command_tool::ApprovalRequest& request) {
+            return askUserToRunCommand(owner, request, [run] { return run->stop.load(); });
+        };
+        services.progress = [panel = juce::Component::SafePointer<AiChatPanel>(this), run](const juce::String& status) {
+            postLiveStatus(panel, run, status);
         };
         services.logFolder = conversationStore.getConversationFolder().getChildFile(".agent-state").getChildFile("command-logs");
         engineerTools.setCommandServices(std::move(services));
@@ -827,15 +946,25 @@ void AiChatPanel::sendMessage()
     auto* providerPtr = provider.release();
 
     std::thread([safeThis, historySnapshot, providerPtr, engineerTools, toolDefinitions,
-                 agentRun, task, conversationFolder] () mutable {
+                 agentRun, task, conversationFolder, run = runControl] () mutable {
+        run->running = true;
+        struct Finished { std::shared_ptr<RunControl> run; ~Finished() { run->running = false; } } finished { run };
+        bool stopped = false;
         std::unique_ptr<ai_provider::AiProvider> owned(providerPtr);
         auto workingHistory = historySnapshot;
         ai_provider::ChatResponse response;
         bool workspaceChanged = false;
         juce::StringArray activity;
         constexpr int maximumToolRounds = 24;
-        for (int round = 0; round < maximumToolRounds; ++round)
+        for (int round = 0; round < maximumToolRounds && !stopped; ++round)
         {
+            if (run->stop)
+            {
+                stopped = true;
+                break;
+            }
+            postLiveStatus(safeThis, run, round == 0 ? juce::String("Thinking...")
+                                                     : "Thinking about the next step (step " + juce::String(round + 1) + ")...");
             response = owned->sendChat(
                 workingHistory,
                 toolDefinitions,
@@ -863,6 +992,13 @@ void AiChatPanel::sendMessage()
                 { "assistant", response.content, response.toolCalls, {}, response.providerItemsJson });
             for (const auto& call : response.toolCalls)
             {
+                if (run->stop)
+                {
+                    stopped = true;
+                    break;
+                }
+                const auto doing = describeCall(call);
+                postLiveStatus(safeThis, run, doing);
                 EngineerTools::Result result;
                 auto control = agentRun ? task.executeControl(call) : AgentTask::ControlResult {};
                 if (control.handled)
@@ -882,6 +1018,12 @@ void AiChatPanel::sendMessage()
                 }
                 workspaceChanged = workspaceChanged || result.workspaceChanged;
                 const auto summary = result.message.upToFirstOccurrenceOf("\n", false, false);
+                {
+                    auto brief = summary.fromFirstOccurrenceOf("Error: ", false, false);
+                    if (brief.isEmpty()) brief = summary;
+                    if (brief.length() > 110) brief = brief.substring(0, 107) + "...";
+                    postLiveStatus(safeThis, run, {}, result.ok ? doing : doing + ": failed (" + brief + ")");
+                }
                 activity.add("- `" + juce::String(call.name) + "`: " + summary);
                 const auto taskLine = agentRun ? task.statusLine() : juce::String();
                 juce::MessageManager::callAsync([safeThis,
@@ -905,9 +1047,14 @@ void AiChatPanel::sendMessage()
                 response = { false, {}, "The Engineer reached the 24-round tool limit." };
         }
 
+        if (stopped)
+            response = { false, {}, "Stopped by the user." };
+
         if (agentRun && !task.isTerminal())
         {
-            if (!response.ok)
+            if (stopped)
+                task.fail("Stopped by the user.");
+            else if (!response.ok)
                 task.fail("Provider error: " + juce::String(response.errorMessage));
             else if (response.toolCalls.empty())
                 task.fail("The model stopped without completing the assigned task.");

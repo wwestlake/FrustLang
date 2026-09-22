@@ -6,7 +6,9 @@
 #include "AgentTask.h"
 #include "ConversationStore.h"
 #include "EngineerTools.h"
+#include <atomic>
 #include <functional>
+#include <mutex>
 #include <memory>
 #include <vector>
 
@@ -86,6 +88,23 @@ private:
     // MessageManager::callAsync, since JUCE UI is message-thread-only.
     bool requestInFlight = false;
     ExternalCompletion externalCompletion;
+
+public:
+    // The run in progress, shared with its worker thread. Stop sets `stop`; the worker checks it between steps and a running
+    // command is ended at once. `running` lets the destructor wait for the worker before the panel goes away. `status` and
+    // `steps` are the live progress shown in the reply while it works.
+    struct RunControl
+    {
+        std::atomic<bool> stop { false };
+        std::atomic<bool> running { false };
+        std::mutex mutex;
+        juce::String status;
+        juce::StringArray steps;
+    };
+    std::shared_ptr<RunControl> runControl;
+    void showLiveStatus(const juce::String& status, const juce::StringArray& steps);
+
+private:
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AiChatPanel)
 };

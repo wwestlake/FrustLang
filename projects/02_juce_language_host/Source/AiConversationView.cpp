@@ -386,6 +386,16 @@ void AiConversationView::appendMessage(const juce::String& role, const juce::Str
     scrollToBottom();
 }
 
+void AiConversationView::replaceLastMessage(const juce::String& role, const juce::String& message)
+{
+    if (! messages.empty() && messages.back().role == role)
+        messages.back().content = message;
+    else
+        messages.push_back({ role, message });
+    content->rebuild(messages, scale);
+    scrollToBottom();
+}
+
 void AiConversationView::scrollToBottom()
 {
     viewport.setViewPosition(0, juce::jmax(0, content->getHeight() - viewport.getMaximumVisibleHeight()));

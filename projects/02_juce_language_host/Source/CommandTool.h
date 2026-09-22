@@ -30,6 +30,7 @@ struct Assessment
     bool build = false;           // compiles something
     bool test = false;            // runs tests
     bool readOnly = false;        // only looks (git status, dir...)
+    bool runsProgram = false;     // starts the project's own program (dotnet run, cargo run): short limit, it may wait for input
     bool alwaysAsk = false;       // may never be allowed by a saved rule (deletions, pushes, downloads)
     juce::String rulePrefix;      // what "Always allow" would save, e.g. "dotnet build"
 };
@@ -65,6 +66,7 @@ struct RunResult
     bool started = false;
     int exitCode = -1;
     bool timedOut = false;
+    bool stopped = false;      // the user pressed Stop, or the IDE is closing
     juce::String output;       // what the model reads: head and tail when it was long
     juce::int64 totalBytes = 0;
     bool truncated = false;
@@ -74,9 +76,26 @@ struct RunResult
     juce::String error;        // why it did not start
 };
 
-// Runs a command in PowerShell with `workingDirectory` as its folder. Kills the whole process tree after `timeoutSeconds`.
+// Called about once a second while a command runs: how long it has run, the last line it printed, and how long since it
+// printed anything.
+using Progress = std::function<void(double seconds, const juce::String& lastLine, double secondsSinceOutput)>;
+
+// Runs a command in PowerShell with `workingDirectory` as its folder. Kills the whole process tree after `timeoutSeconds`, or
+// as soon as `shouldStop` says so.
 RunResult run(const juce::String& command, const juce::File& workingDirectory, int timeoutSeconds,
-              const juce::File& logFolder = {}, int headBytes = 12000, int tailBytes = 12000);
+              const juce::File& logFolder = {}, int headBytes = 12000, int tailBytes = 12000,
+              const std::function<bool()>& shouldStop = {}, const Progress& progress = {});
+
+// Starts a command in its OWN VISIBLE console window, for a program the user should see and use (a REPL, a game, an app), and
+// returns at once. The window stays open after the program ends, so its last output can be read. Every program started this
+// way is ended when the IDE closes. Returns the process id, or 0 with the reason in `error`.
+int launch(const juce::String& command, const juce::File& workingDirectory, juce::String& error);
+
+// Ends a program started with launch() (its whole process tree). False if it is not one of ours or already ended.
+bool stopLaunched(int processId);
+
+// The programs started with launch() that are still running: process id and the command.
+juce::StringArray listLaunched();
 
 // Whether a compiler or build tool is running anywhere on this machine (the owner's rule: one build at a time), and which.
 bool otherBuildRunning(juce::String& which);

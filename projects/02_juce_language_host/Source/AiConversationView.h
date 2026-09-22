@@ -22,6 +22,8 @@ public:
 
     void setMessages(std::vector<Message> newMessages);
     void appendMessage(const juce::String& role, const juce::String& content);
+    // Changes the last message when it has this role (a live status line), otherwise adds one.
+    void replaceLastMessage(const juce::String& role, const juce::String& content);
     void scrollToBottom();
     float getScale() const { return scale; }
 

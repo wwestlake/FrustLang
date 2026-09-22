@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <deque>
+#include <mutex>
 #include <vector>
 
 #if JUCE_WINDOWS
@@ -79,7 +80,7 @@ struct Part
 {
     Verdict verdict = Verdict::ask;
     juce::String reason;
-    bool build = false, test = false, readOnly = false, alwaysAsk = false;
+    bool build = false, test = false, readOnly = false, alwaysAsk = false, runsProgram = false;
     juce::String text;   // possibly with a flag added
 };
 
@@ -145,13 +146,17 @@ Part judge(juce::String text, const juce::StringArray& allowedPrefixes, juce::St
         if (! anyWordStartsWith(w, { "/t:", "-t:", "/target:", "-target:" }))
             return deny("Give an explicit /t:<target>: on this machine a build always names the target it builds.");
     }
-    else if (program == "dotnet" && (second == "build" || second == "test" || second == "publish" || second == "pack" || second == "run"))
+    else if (program == "dotnet" && second == "run")
+    {
+        part.runsProgram = true;   // not a build: it starts the program, which may wait for input
+    }
+    else if (program == "dotnet" && (second == "build" || second == "test" || second == "publish" || second == "pack"))
     {
         part.build = second != "test";
         part.test = second == "test";
         if (hasParallelFlag(w))
             return deny("Builds on this machine are single-core: use -m:1.");
-        if (! anyWordStartsWith(w, { "-m:1", "/m:1", "-maxcpucount:1", "/maxcpucount:1" }) && second != "run")
+        if (! anyWordStartsWith(w, { "-m:1", "/m:1", "-maxcpucount:1", "/maxcpucount:1" }))
         {
             part.text << " -m:1";
             amendments.add("added -m:1 to '" + w[0] + " " + w[1] + "' (builds on this machine are single-core)");
@@ -159,8 +164,9 @@ Part judge(juce::String text, const juce::StringArray& allowedPrefixes, juce::St
     }
     else if (program == "cargo" && (second == "build" || second == "test" || second == "check" || second == "run" || second == "clippy"))
     {
-        part.build = second != "test";
+        part.build = second != "test" && second != "run";
         part.test = second == "test";
+        part.runsProgram = second == "run";
         if (! anyWordStartsWith(w, { "-j", "--jobs" }))
         {
             part.text << " -j 1";
@@ -357,6 +363,7 @@ Assessment assess(const juce::String& command, const juce::StringArray& allowedP
         result.build = result.build || part.build;
         result.test = result.test || part.test;
         result.alwaysAsk = result.alwaysAsk || part.alwaysAsk;
+        result.runsProgram = result.runsProgram || part.runsProgram;
         everyPartReadOnly = everyPartReadOnly && part.readOnly;
         if (part.verdict == Verdict::deny)
         {
@@ -483,7 +490,7 @@ std::wstring encodedCommand(const juce::String& command)
 }
 
 RunResult run(const juce::String& command, const juce::File& workingDirectory, int timeoutSeconds, const juce::File& logFolder,
-              int headBytes, int tailBytes)
+              int headBytes, int tailBytes, const std::function<bool()>& shouldStop, const Progress& progress)
 {
     RunResult result;
     const auto started = std::chrono::steady_clock::now();
@@ -550,11 +557,35 @@ RunResult run(const juce::String& command, const juce::File& workingDirectory, i
 
     std::string head;
     std::deque<char> tail;
+    std::string lastLine, partialLine;
+    auto lastOutput = std::chrono::steady_clock::now();
+    // The full log is capped: a program stuck printing in a loop once wrote half a gigabyte.
+    constexpr juce::int64 maxLogBytes = 20 * 1024 * 1024;
+    juce::int64 loggedBytes = 0;
     auto keep = [&](const char* data, DWORD count)
     {
         result.totalBytes += count;
-        if (log != nullptr)
-            log->write(data, count);
+        lastOutput = std::chrono::steady_clock::now();
+        for (DWORD i = 0; i < count; ++i)
+        {
+            const char c = data[i];
+            if (c == '\n' || c == '\r')
+            {
+                if (! partialLine.empty())
+                    lastLine = partialLine;
+                partialLine.clear();
+            }
+            else if (partialLine.size() < 300)
+                partialLine.push_back(c);
+        }
+        if (log != nullptr && loggedBytes < maxLogBytes)
+        {
+            const auto room = (size_t) std::min<juce::int64>((juce::int64) count, maxLogBytes - loggedBytes);
+            log->write(data, room);
+            loggedBytes += (juce::int64) room;
+            if (loggedBytes >= maxLogBytes)
+                *log << "\n\n[the log stops here at 20 MB; the command went on printing]\n";
+        }
         for (DWORD i = 0; i < count; ++i)
         {
             if ((int) head.size() < headBytes)
@@ -569,10 +600,30 @@ RunResult run(const juce::String& command, const juce::File& workingDirectory, i
     };
 
     const auto deadline = started + std::chrono::seconds(timeoutSeconds);
+    auto lastProgress = started;
     char buffer[8192];
     bool finished = false;
     while (true)
     {
+        const auto now = std::chrono::steady_clock::now();
+        if (progress && now - lastProgress >= std::chrono::seconds(1))
+        {
+            lastProgress = now;
+            const auto& shown = partialLine.empty() ? lastLine : partialLine;
+            progress(std::chrono::duration<double>(now - started).count(),
+                     juce::String::fromUTF8(shown.data(), (int) shown.size()).trim(),
+                     std::chrono::duration<double>(now - lastOutput).count());
+        }
+        if (! finished && shouldStop && shouldStop())
+        {
+            result.stopped = true;
+            if (job != nullptr)
+                TerminateJobObject(job, 1);
+            else
+                TerminateProcess(process.hProcess, 1);
+            WaitForSingleObject(process.hProcess, 5000);
+            finished = true;
+        }
         DWORD available = 0;
         while (PeekNamedPipe(readEnd, nullptr, 0, nullptr, &available, nullptr) && available > 0)
         {
@@ -625,6 +676,109 @@ RunResult run(const juce::String& command, const juce::File& workingDirectory, i
     return result;
 }
 
+namespace
+{
+// The programs launch() started. Each has a job, so its whole tree can be ended; the jobs end with the IDE (kill on close).
+struct Launched
+{
+    int processId = 0;
+    HANDLE job = nullptr;
+    HANDLE process = nullptr;
+    juce::String command;
+};
+
+std::mutex& launchedLock()
+{
+    static std::mutex m;
+    return m;
+}
+
+std::vector<Launched>& launched()
+{
+    static std::vector<Launched> list;
+    return list;
+}
+
+bool stillRunning(HANDLE process)
+{
+    DWORD code = 0;
+    return process != nullptr && GetExitCodeProcess(process, &code) && code == STILL_ACTIVE;
+}
+}
+
+int launch(const juce::String& command, const juce::File& workingDirectory, juce::String& error)
+{
+    juce::String shellName;
+    const auto shell = findShell(shellName);
+    // -NoExit keeps the window, so the user can read what the program printed last.
+    std::wstring commandLine = L"\"" + shell + L"\" -NoLogo -NoProfile -NoExit -ExecutionPolicy Bypass -EncodedCommand "
+                               + encodedCommand("$Host.UI.RawUI.WindowTitle = 'FrustIDE: ' + " + juce::String("'")
+                                                + command.replace("'", "''") + "'\n" + command);
+    std::vector<wchar_t> mutableLine(commandLine.begin(), commandLine.end());
+    mutableLine.push_back(0);
+
+    HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits {};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (job != nullptr)
+        SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits));
+
+    STARTUPINFOW startup {};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process {};
+    const auto folder = workingDirectory.getFullPathName();
+    if (! CreateProcessW(nullptr, mutableLine.data(), nullptr, nullptr, FALSE,
+                         CREATE_NEW_CONSOLE | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT, nullptr,
+                         folder.toWideCharPointer(), &startup, &process))
+    {
+        if (job != nullptr)
+            CloseHandle(job);
+        error = "Could not open a window for it (Windows error " + juce::String((int) GetLastError()) + ").";
+        return 0;
+    }
+    if (job != nullptr)
+        AssignProcessToJobObject(job, process.hProcess);
+    ResumeThread(process.hThread);
+    CloseHandle(process.hThread);
+
+    std::lock_guard<std::mutex> lock(launchedLock());
+    launched().push_back({ (int) process.dwProcessId, job, process.hProcess, command });
+    return (int) process.dwProcessId;
+}
+
+bool stopLaunched(int processId)
+{
+    std::lock_guard<std::mutex> lock(launchedLock());
+    auto& list = launched();
+    for (auto it = list.begin(); it != list.end(); ++it)
+        if (it->processId == processId)
+        {
+            const bool wasRunning = stillRunning(it->process);
+            if (it->job != nullptr)
+            {
+                TerminateJobObject(it->job, 1);
+                CloseHandle(it->job);
+            }
+            else if (it->process != nullptr)
+                TerminateProcess(it->process, 1);
+            if (it->process != nullptr)
+                CloseHandle(it->process);
+            list.erase(it);
+            return wasRunning;
+        }
+    return false;
+}
+
+juce::StringArray listLaunched()
+{
+    std::lock_guard<std::mutex> lock(launchedLock());
+    juce::StringArray lines;
+    for (const auto& l : launched())
+        if (stillRunning(l.process))
+            lines.add(juce::String(l.processId) + ": " + l.command);
+    return lines;
+}
+
 bool otherBuildRunning(juce::String& which)
 {
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -647,12 +801,16 @@ bool otherBuildRunning(juce::String& which)
     return found;
 }
 #else
-RunResult run(const juce::String&, const juce::File&, int, const juce::File&, int, int)
+RunResult run(const juce::String&, const juce::File&, int, const juce::File&, int, int, const std::function<bool()>&, const Progress&)
 {
     RunResult result;
     result.error = "Commands are only supported on Windows.";
     return result;
 }
+
+int launch(const juce::String&, const juce::File&, juce::String& error) { error = "Only supported on Windows."; return 0; }
+bool stopLaunched(int) { return false; }
+juce::StringArray listLaunched() { return {}; }
 
 bool otherBuildRunning(juce::String&) { return false; }
 #endif

@@ -166,6 +166,8 @@ EngineerTools::Result EngineerTools::execute(const ai_provider::ToolCall& call) 
     if (name == "workspace_replace_text") return replaceText(arguments);
     if (name == "workspace_check_frust") return checkFrust(arguments);
     if (name == "run_command") return runCommand(arguments);
+    if (name == "launch_program") return launchProgram(arguments);
+    if (name == "stop_program") return stopProgram(arguments);
     return failure("Unknown tool: " + name);
 }
 
@@ -364,6 +366,9 @@ EngineerTools::Result EngineerTools::checkFrust(const juce::var& arguments) cons
     const auto file = resolveProjectPath(stringProperty(arguments, "path"), error);
     if (error.isNotEmpty()) return failure(error);
     if (!file.existsAsFile()) return failure("File does not exist.");
+    if (!file.hasFileExtension("fr;frust"))
+        return failure("'" + file.getFileName() + "' is not a Frust file, so the Frust check cannot say anything about it. "
+                       "Build it with its own compiler through run_command (for example dotnet build, or cmake --build ... --target ...).");
     if (file.getSize() > maxTextFileBytes) return failure("File exceeds the 2 MB check limit.");
 
     frust::CompileRequest request;
@@ -413,7 +418,11 @@ EngineerTools::Result EngineerTools::runCommand(const juce::var& arguments) cons
             return failure("This command needs the user's approval and there is no one to ask here (" + verdict.reason + ").");
         command_tool::ApprovalRequest request { verdict.command, relative, reason, verdict.reason,
                                                 verdict.alwaysAsk ? juce::String() : verdict.rulePrefix };
+        if (commands.progress)
+            commands.progress("Waiting for your approval to run: " + verdict.command);
         const auto decision = commands.approve(request);
+        if (commands.shouldStop && commands.shouldStop())
+            return failure("Stopped by the user before the command ran.");
         if (decision == command_tool::Approval::deny)
             return failure("The user did not allow this command. Do not try to get around that: if you need it, say why and "
                            "ask with agent_request_user.");
@@ -433,9 +442,25 @@ EngineerTools::Result EngineerTools::runCommand(const juce::var& arguments) cons
         lock.lock();
     }
 
-    const int defaultTimeout = (verdict.build || verdict.test) ? 900 : 120;
+    // A program the project runs gets a short limit: here it has no keyboard and no screen, so one that waits for input never ends.
+    const int defaultTimeout = verdict.runsProgram ? 60 : (verdict.build || verdict.test) ? 900 : 120;
     const int timeout = juce::jlimit(5, 1800, intProperty(arguments, "timeout_seconds", defaultTimeout));
-    const auto ran = command_tool::run(verdict.command, folder, timeout, commands.logFolder);
+    const auto shown = verdict.command.length() > 70 ? verdict.command.substring(0, 67) + "..." : verdict.command;
+    const auto progress = [this, shown](double seconds, const juce::String& lastLine, double quietFor) {
+        if (!commands.progress)
+            return;
+        const int s = (int) seconds;
+        juce::String line = "Running " + shown + " (" + juce::String(s / 60) + ":" + juce::String(s % 60).paddedLeft('0', 2) + ")";
+        if (quietFor >= 20.0)
+            line << ", no output for " << (int) quietFor << " s";
+        if (lastLine.isNotEmpty())
+            line << "\n" << (lastLine.length() > 160 ? lastLine.substring(0, 157) + "..." : lastLine);
+        commands.progress(line);
+    };
+    if (commands.progress)
+        commands.progress("Running " + shown);
+    const auto ran = command_tool::run(verdict.command, folder, timeout, commands.logFolder, 12000, 12000,
+                                       commands.shouldStop, progress);
     if (!ran.started)
         return failure(ran.error);
 
@@ -443,15 +468,89 @@ EngineerTools::Result EngineerTools::runCommand(const juce::var& arguments) cons
     text << "Ran in " << ran.shell << " in " << relative << ": " << verdict.command << "\n";
     for (const auto& amendment : verdict.amendments)
         text << "Note: the host " << amendment << ".\n";
-    if (ran.timedOut)
+    if (ran.stopped)
+        text << "The user stopped it after " << juce::String(ran.seconds, 1) << " s (the whole process tree was ended).\n";
+    else if (ran.timedOut)
+    {
         text << "It was stopped at the time limit of " << timeout << " seconds (the whole process tree was ended).\n";
+        if (verdict.runsProgram)
+            text << "The program was still running. This shell has no keyboard and no screen, so a program that waits for "
+                    "input (a REPL, a menu, a game, a server) never finishes here. Check it by building it and running its "
+                    "tests, or give it its input on the command line, for example: \"help`nquit\" | dotnet run\n";
+    }
     else
         text << "Exit code " << ran.exitCode << " after " << juce::String(ran.seconds, 1) << " s.\n";
     if (ran.truncated && ran.logFile != juce::File())
         text << "The output was long; the start and the end are below, the whole of it is in " << ran.logFile.getFullPathName() << "\n";
     text << "\n" << (ran.output.trim().isEmpty() ? juce::String("(no output)") : ran.output);
 
-    const bool ok = ran.exitCode == 0 && !ran.timedOut;
+    const bool ok = ran.exitCode == 0 && !ran.timedOut && !ran.stopped;
     // A build or a test run is verification evidence. Anything else that is not read-only may have changed the project.
     return { ok, !verdict.readOnly && !verdict.build && !verdict.test, text, verdict.build || verdict.test };
+}
+
+EngineerTools::Result EngineerTools::launchProgram(const juce::var& arguments) const
+{
+    const auto command = stringProperty(arguments, "command").trim();
+    if (command.isEmpty())
+        return failure("Give the command that starts the program.");
+    const auto reason = stringProperty(arguments, "reason").trim();
+
+    juce::String error;
+    const auto folder = resolveProjectPath(stringProperty(arguments, "cwd", "."), error);
+    if (error.isNotEmpty())
+        return failure(error);
+    if (!folder.isDirectory())
+        return failure("The folder to start it in does not exist.");
+    const auto relative = folder == root ? juce::String(".")
+                                         : folder.getRelativePathFrom(root).replaceCharacter('\\', '/');
+
+    // The same rules as run_command decide what may never run. Opening a window on the user's screen is always asked, unless the
+    // user chose "Always allow" for launching this kind of program here.
+    command_tool::RuleStore rules(root, commands.rulesFolder);
+    const auto verdict = command_tool::assess(command, {});
+    if (verdict.verdict == command_tool::Verdict::deny)
+        return failure("The host refused this command: " + verdict.reason);
+    const auto launchRule = verdict.alwaysAsk || verdict.rulePrefix.isEmpty() ? juce::String() : "launch " + verdict.rulePrefix;
+    if (launchRule.isEmpty() || !rules.allowedPrefixes().contains(launchRule.toLowerCase()))
+    {
+        if (!commands.approve)
+            return failure("Opening a program window needs the user's approval and there is no one to ask here.");
+        command_tool::ApprovalRequest request { command, relative, reason,
+                                                "It opens a program in its own window on your screen.", launchRule };
+        if (commands.progress)
+            commands.progress("Waiting for your approval to open: " + command);
+        const auto decision = commands.approve(request);
+        if (commands.shouldStop && commands.shouldStop())
+            return failure("Stopped by the user before the program was opened.");
+        if (decision == command_tool::Approval::deny)
+            return failure("The user did not allow opening this program. Ask with agent_request_user if you need it.");
+        if (decision == command_tool::Approval::always && launchRule.isNotEmpty())
+            rules.allow(launchRule);
+    }
+
+    const int processId = command_tool::launch(command, folder, error);
+    if (processId == 0)
+        return failure(error);
+    juce::String text;
+    text << "Opened in its own window on the user's screen (process " << processId << "), in " << relative << ": " << command << "\n"
+         << "You cannot see or type into that window. To learn what it shows, ask the user (agent_request_user); to check its "
+            "behaviour yourself, build it and run its tests with run_command. It stays open until the user closes it or you call "
+            "stop_program; it is closed when the IDE closes.";
+    return { true, false, text, false };
+}
+
+EngineerTools::Result EngineerTools::stopProgram(const juce::var& arguments) const
+{
+    const int processId = intProperty(arguments, "process_id", 0);
+    if (processId <= 0)
+    {
+        const auto running = command_tool::listLaunched();
+        return { true, false, running.isEmpty() ? juce::String("No program opened by the Engineer is running.")
+                                                : "Programs the Engineer opened that are running:\n" + running.joinIntoString("\n"),
+                 false };
+    }
+    if (!command_tool::stopLaunched(processId))
+        return failure("Process " + juce::String(processId) + " is not a program the Engineer opened, or it has already ended.");
+    return { true, false, "Closed the program (process " + juce::String(processId) + ") and everything it started.", false };
 }
