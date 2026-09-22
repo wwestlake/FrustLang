@@ -73,7 +73,9 @@ juce_add_gui_app(LagDaemonResearchIDE
 juce_add_binary_data(FrustIDEAssets
     HEADER_NAME FrustIDEAssets.h
     NAMESPACE FrustIDEAssets
-    SOURCES Resources/FrustIDE.png
+    SOURCES
+        Resources/FrustIDE.png
+        Resources/Frusty/FrustySpriteAtlas.png
 )
 
 # juce_add_gui_app names the output binary after PRODUCT_NAME by default
@@ -119,6 +121,8 @@ target_sources(LagDaemonResearchIDE PRIVATE
     Source/ConversationStore.cpp
     Source/AiChatPanel.h
     Source/AiChatPanel.cpp
+    Source/FrustyComponent.h
+    Source/FrustyComponent.cpp
     Source/ActionCard.h
     Source/ActionCard.cpp
     Source/EngineerTools.h
@@ -127,6 +131,8 @@ target_sources(LagDaemonResearchIDE PRIVATE
     Source/CommandTool.cpp
     Source/AgentTask.h
     Source/AgentTask.cpp
+    Source/AgentModeRouter.h
+    Source/AgentModeRouter.cpp
     Source/AiConversationView.h
     Source/AiConversationView.cpp
     Source/LocalAgentApi.h
@@ -238,6 +244,23 @@ target_link_libraries(AgentTaskTests PRIVATE
 )
 
 juce_generate_juce_header(AgentTaskTests)
+
+juce_add_console_app(AgentModeRouterTests
+    PRODUCT_NAME "Agent Mode Router Tests"
+)
+
+target_sources(AgentModeRouterTests PRIVATE
+    Source/AgentModeRouter.h
+    Source/AgentModeRouter.cpp
+    Source/AgentModeRouterTests.cpp
+)
+
+target_link_libraries(AgentModeRouterTests PRIVATE
+    ai_provider
+    juce::juce_core
+)
+
+juce_generate_juce_header(AgentModeRouterTests)
 
 juce_add_console_app(LocalAgentApiTests
     PRODUCT_NAME "Local Agent API Tests"

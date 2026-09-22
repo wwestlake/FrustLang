@@ -56,13 +56,27 @@ EngineerTools::Result failure(const juce::String& message)
 }
 }
 
-EngineerTools::EngineerTools(juce::File projectRoot, AccessLevel accessLevel)
-    : root(std::move(projectRoot)), access(accessLevel)
+EngineerTools::EngineerTools(juce::File projectRoot, AccessLevel accessLevel, bool writesAllowed)
+    : root(std::move(projectRoot)), access(accessLevel), allowWrites(writesAllowed)
 {
+    if (root.isDirectory()) workspaceRoots.push_back({ root, false });
+}
+
+void EngineerTools::setReferenceRoots(std::vector<juce::File> roots)
+{
+    for (auto& folder : roots)
+    {
+        if (!folder.isDirectory()) continue;
+        bool alreadyOpen = false;
+        for (const auto& opened : workspaceRoots)
+            alreadyOpen = alreadyOpen || opened.folder == folder;
+        if (!alreadyOpen) workspaceRoots.push_back({ std::move(folder), true });
+    }
 }
 
 juce::String EngineerTools::accessName(AccessLevel level)
 {
+    if (level == AccessLevel::full) return "Full Access";
     return level == AccessLevel::workspace ? "Workspace" : "Observe";
 }
 
@@ -87,7 +101,7 @@ std::vector<ai_provider::ToolDefinition> EngineerTools::definitions() const
         if (!root.isDirectory() && name != "registry_search")
             continue;
         const auto required = stringProperty(tool, "access");
-        if (required == "workspace" && access != AccessLevel::workspace)
+        if (required == "workspace" && (access == AccessLevel::observe || !allowWrites))
             continue;
 
         ai_provider::ToolDefinition definition;
@@ -110,7 +124,26 @@ bool EngineerTools::toolIsAvailable(const juce::String& name) const
     return false;
 }
 
+const EngineerTools::WorkspaceRoot* EngineerTools::containingRoot(const juce::File& candidate) const
+{
+    for (const auto& opened : workspaceRoots)
+        if (candidate == opened.folder || candidate.isAChildOf(opened.folder))
+            return &opened;
+    return nullptr;
+}
+
+juce::String EngineerTools::displayPath(const juce::File& file) const
+{
+    if (const auto* opened = containingRoot(file))
+    {
+        const auto relative = file.getRelativePathFrom(opened->folder).replaceCharacter('\\', '/');
+        return "[" + opened->folder.getFileName() + "]/" + (relative == "." ? juce::String() : relative);
+    }
+    return file.getFullPathName();
+}
+
 juce::File EngineerTools::resolveProjectPath(const juce::String& suppliedPath,
+                                             PathPurpose purpose,
                                              juce::String& error) const
 {
     if (!root.isDirectory())
@@ -132,16 +165,49 @@ juce::File EngineerTools::resolveProjectPath(const juce::String& suppliedPath,
     if (!ec)
         candidate = juce::File(juce::String(canonicalPath.c_str()));
 
-    std::error_code rootError;
-    const auto canonicalRootPath = std::filesystem::weakly_canonical(
-        std::filesystem::path(root.getFullPathName().toStdString()), rootError);
-    const auto canonicalRoot = rootError
-        ? root : juce::File(juce::String(canonicalRootPath.c_str()));
-
-    if (candidate != canonicalRoot && !candidate.isAChildOf(canonicalRoot))
+    if (const auto* opened = containingRoot(candidate))
     {
-        error = "The requested path is outside the open project.";
+        if (purpose == PathPurpose::write && opened->readOnly)
+        {
+            error = "The requested path is in a read-only reference folder: " + opened->folder.getFullPathName();
+            return {};
+        }
+        return candidate;
+    }
+
+    if (purpose == PathPurpose::write)
+    {
+        if (!allowWrites)
+        {
+            error = "The current mode is read-only.";
+            return {};
+        }
+        if (access == AccessLevel::full) return candidate;
+        error = "The requested path is outside the writable project.";
         return {};
+    }
+    if (access == AccessLevel::full) return candidate;
+    if (!juce::File::isAbsolutePath(suppliedPath))
+    {
+        error = "The requested path is outside the open workspace.";
+        return {};
+    }
+    if (!commands.approveExternalRead)
+    {
+        error = "Reading outside the open workspace needs the user's approval.";
+        return {};
+    }
+
+    const auto decision = commands.approveExternalRead(candidate);
+    if (decision == ExternalReadDecision::deny)
+    {
+        error = "The user did not allow access to the external path.";
+        return {};
+    }
+    if (decision == ExternalReadDecision::openReadOnly)
+    {
+        const auto folder = candidate.isDirectory() ? candidate : candidate.getParentDirectory();
+        workspaceRoots.push_back({ folder, true });
     }
     return candidate;
 }
@@ -175,7 +241,7 @@ EngineerTools::Result EngineerTools::execute(const ai_provider::ToolCall& call) 
 EngineerTools::Result EngineerTools::list(const juce::var& arguments) const
 {
     juce::String error;
-    const auto directory = resolveProjectPath(stringProperty(arguments, "path", "."), error);
+    const auto directory = resolveProjectPath(stringProperty(arguments, "path", "."), PathPurpose::read, error);
     if (error.isNotEmpty()) return failure(error);
     if (!directory.isDirectory()) return failure("Directory does not exist.");
 
@@ -188,7 +254,7 @@ EngineerTools::Result EngineerTools::list(const juce::var& arguments) const
     int emitted = 0;
     for (const auto& entry : entries)
     {
-        const auto relative = entry.getRelativePathFrom(root).replaceCharacter('\\', '/');
+        const auto relative = displayPath(entry);
         if (isIgnored(relative)) continue;
         output << (entry.isDirectory() ? "directory  " : "file       ") << relative << "\n";
         if (++emitted >= limit) break;
@@ -199,7 +265,7 @@ EngineerTools::Result EngineerTools::list(const juce::var& arguments) const
 EngineerTools::Result EngineerTools::read(const juce::var& arguments) const
 {
     juce::String error;
-    const auto file = resolveProjectPath(stringProperty(arguments, "path"), error);
+    const auto file = resolveProjectPath(stringProperty(arguments, "path"), PathPurpose::read, error);
     if (error.isNotEmpty()) return failure(error);
     if (!file.existsAsFile()) return failure("File does not exist.");
     if (file.getSize() > maxTextFileBytes) return failure("File exceeds the 2 MB read limit.");
@@ -213,7 +279,7 @@ EngineerTools::Result EngineerTools::read(const juce::var& arguments) const
     juce::String output;
     for (int index = start; index <= end; ++index)
         output << juce::String(index).paddedLeft(' ', 6) << "  " << lines[index - 1] << "\n";
-    return { true, false, file.getRelativePathFrom(root).replaceCharacter('\\', '/')
+    return { true, false, displayPath(file)
         + " (" + juce::String(lines.size()) + " lines, SHA-256: " + contentHash(file.loadFileAsString())
         + ")\n" + output.trimEnd() };
 }
@@ -223,7 +289,7 @@ EngineerTools::Result EngineerTools::search(const juce::var& arguments) const
     const auto query = stringProperty(arguments, "query");
     if (query.isEmpty()) return failure("Search query must not be empty.");
     juce::String error;
-    const auto directory = resolveProjectPath(stringProperty(arguments, "path", "."), error);
+    const auto directory = resolveProjectPath(stringProperty(arguments, "path", "."), PathPurpose::read, error);
     if (error.isNotEmpty()) return failure(error);
     if (!directory.isDirectory()) return failure("Search directory does not exist.");
 
@@ -235,7 +301,7 @@ EngineerTools::Result EngineerTools::search(const juce::var& arguments) const
     int matches = 0;
     for (const auto& file : files)
     {
-        const auto relative = file.getRelativePathFrom(root).replaceCharacter('\\', '/');
+        const auto relative = displayPath(file);
         if (isIgnored(relative) || file.getSize() > maxTextFileBytes) continue;
         juce::StringArray lines;
         lines.addLines(file.loadFileAsString());
@@ -297,31 +363,31 @@ EngineerTools::Result EngineerTools::searchRegistry(const juce::var& arguments) 
 EngineerTools::Result EngineerTools::createDirectory(const juce::var& arguments) const
 {
     juce::String error;
-    const auto directory = resolveProjectPath(stringProperty(arguments, "path"), error);
+    const auto directory = resolveProjectPath(stringProperty(arguments, "path"), PathPurpose::write, error);
     if (error.isNotEmpty()) return failure(error);
     const auto result = directory.createDirectory();
     if (result.failed()) return failure(result.getErrorMessage());
     return { true, true, "Directory is ready: "
-        + directory.getRelativePathFrom(root).replaceCharacter('\\', '/') };
+        + displayPath(directory) };
 }
 
 EngineerTools::Result EngineerTools::createFile(const juce::var& arguments) const
 {
     juce::String error;
-    const auto file = resolveProjectPath(stringProperty(arguments, "path"), error);
+    const auto file = resolveProjectPath(stringProperty(arguments, "path"), PathPurpose::write, error);
     if (error.isNotEmpty()) return failure(error);
     if (file.exists()) return failure("File already exists; creation will not overwrite it.");
     const auto parentResult = file.getParentDirectory().createDirectory();
     if (parentResult.failed()) return failure(parentResult.getErrorMessage());
     if (!file.replaceWithText(stringProperty(arguments, "content")))
         return failure("Could not write the new file.");
-    return { true, true, "Created " + file.getRelativePathFrom(root).replaceCharacter('\\', '/') };
+    return { true, true, "Created " + displayPath(file) };
 }
 
 EngineerTools::Result EngineerTools::writeFile(const juce::var& arguments) const
 {
     juce::String error;
-    const auto file = resolveProjectPath(stringProperty(arguments, "path"), error);
+    const auto file = resolveProjectPath(stringProperty(arguments, "path"), PathPurpose::write, error);
     if (error.isNotEmpty()) return failure(error);
     if (!file.existsAsFile()) return failure("File does not exist; use workspace_create_file.");
     if (file.getSize() > maxTextFileBytes) return failure("File exceeds the 2 MB write limit.");
@@ -334,13 +400,13 @@ EngineerTools::Result EngineerTools::writeFile(const juce::var& arguments) const
 
     if (!file.replaceWithText(stringProperty(arguments, "content")))
         return failure("Could not write the file.");
-    return { true, true, "Rewrote " + file.getRelativePathFrom(root).replaceCharacter('\\', '/') };
+    return { true, true, "Rewrote " + displayPath(file) };
 }
 
 EngineerTools::Result EngineerTools::replaceText(const juce::var& arguments) const
 {
     juce::String error;
-    const auto file = resolveProjectPath(stringProperty(arguments, "path"), error);
+    const auto file = resolveProjectPath(stringProperty(arguments, "path"), PathPurpose::write, error);
     if (error.isNotEmpty()) return failure(error);
     if (!file.existsAsFile()) return failure("File does not exist.");
     if (file.getSize() > maxTextFileBytes) return failure("File exceeds the 2 MB edit limit.");
@@ -358,13 +424,13 @@ EngineerTools::Result EngineerTools::replaceText(const juce::var& arguments) con
         ? original.replace(oldText, newText)
         : original.replaceSection(first, oldText.length(), newText);
     if (!file.replaceWithText(updated)) return failure("Could not write the edited file.");
-    return { true, true, "Updated " + file.getRelativePathFrom(root).replaceCharacter('\\', '/') };
+    return { true, true, "Updated " + displayPath(file) };
 }
 
 EngineerTools::Result EngineerTools::checkFrust(const juce::var& arguments) const
 {
     juce::String error;
-    const auto file = resolveProjectPath(stringProperty(arguments, "path"), error);
+    const auto file = resolveProjectPath(stringProperty(arguments, "path"), PathPurpose::read, error);
     if (error.isNotEmpty()) return failure(error);
     if (!file.existsAsFile()) return failure("File does not exist.");
     if (!file.hasFileExtension("fr;frust"))
@@ -400,7 +466,7 @@ EngineerTools::Result EngineerTools::runCommand(const juce::var& arguments) cons
     const auto reason = stringProperty(arguments, "reason").trim();
 
     juce::String error;
-    const auto folder = resolveProjectPath(stringProperty(arguments, "cwd", "."), error);
+    const auto folder = resolveProjectPath(stringProperty(arguments, "cwd", "."), PathPurpose::write, error);
     if (error.isNotEmpty())
         return failure(error);
     if (!folder.isDirectory())
@@ -413,7 +479,7 @@ EngineerTools::Result EngineerTools::runCommand(const juce::var& arguments) cons
     if (verdict.verdict == command_tool::Verdict::deny)
         return failure("The host refused this command: " + verdict.reason);
 
-    if (verdict.verdict == command_tool::Verdict::ask)
+    if (verdict.verdict == command_tool::Verdict::ask && access != AccessLevel::full)
     {
         if (!commands.approve)
             return failure("This command needs the user's approval and there is no one to ask here (" + verdict.reason + ").");
@@ -498,7 +564,7 @@ EngineerTools::Result EngineerTools::launchProgram(const juce::var& arguments) c
     const auto reason = stringProperty(arguments, "reason").trim();
 
     juce::String error;
-    const auto folder = resolveProjectPath(stringProperty(arguments, "cwd", "."), error);
+    const auto folder = resolveProjectPath(stringProperty(arguments, "cwd", "."), PathPurpose::write, error);
     if (error.isNotEmpty())
         return failure(error);
     if (!folder.isDirectory())
@@ -513,7 +579,8 @@ EngineerTools::Result EngineerTools::launchProgram(const juce::var& arguments) c
     if (verdict.verdict == command_tool::Verdict::deny)
         return failure("The host refused this command: " + verdict.reason);
     const auto launchRule = verdict.alwaysAsk || verdict.rulePrefix.isEmpty() ? juce::String() : "launch " + verdict.rulePrefix;
-    if (launchRule.isEmpty() || !rules.allowedPrefixes().contains(launchRule.toLowerCase()))
+    if (access != AccessLevel::full
+        && (launchRule.isEmpty() || !rules.allowedPrefixes().contains(launchRule.toLowerCase())))
     {
         if (!commands.approve)
             return failure("Opening a program window needs the user's approval and there is no one to ask here.");

@@ -16,70 +16,12 @@ juce::File getConfigFile()
         .getChildFile("ai_config.json");
 }
 
-enum class MutationIntent
-{
-    none,
-    anyWrite,
-    fileWrite
-};
-
-enum class AgentMode
-{
-    automatic = 1,
-    plan = 2,
-    execute = 3,
-    review = 4
-};
-
-juce::String modeName(AgentMode mode)
-{
-    if (mode == AgentMode::plan) return "plan";
-    if (mode == AgentMode::execute) return "execute";
-    if (mode == AgentMode::review) return "review";
-    return "auto";
-}
-
 bool isPlanContinuation(const juce::String& request)
 {
     const auto text = request.trim().toLowerCase();
     return text == "do it" || text == "go ahead" || text == "proceed"
         || text == "continue" || text.contains("execute the plan")
         || text.contains("implement the plan");
-}
-
-MutationIntent mutationIntentFor(const juce::String& request)
-{
-    const auto text = request.trim().toLowerCase();
-    const bool directRequest = text.startsWith("please ") || text.startsWith("can you ")
-        || text.startsWith("could you ") || text.startsWith("would you ")
-        || text.startsWith("i want you to ") || text.startsWith("let's ")
-        || text.startsWith("lets ");
-    const bool statusStatement = text.startsWith("we are ") || text.startsWith("we're ")
-        || text.startsWith("i am ") || text.startsWith("i'm ")
-        || text.startsWith("they are ") || text.startsWith("they're ")
-        || text.startsWith("production is ") || text.startsWith("it is being ");
-    if (statusStatement && !directRequest)
-        return MutationIntent::none;
-
-    juce::StringArray words;
-    words.addTokens(text, " \t\r\n.,!?;:()[]{}<>+-=*/\\|&^%\"'", "");
-    const auto hasWord = [&words](const juce::String& word) { return words.contains(word); };
-    const bool action = hasWord("create") || hasWord("write") || hasWord("rewrite")
-        || hasWord("update") || hasWord("edit") || hasWord("change") || hasWord("add")
-        || hasWord("implement") || hasWord("fix") || hasWord("make") || hasWord("rename")
-        || hasWord("remove") || hasWord("delete")
-        // Building, running and opening things act too: "rebuild it and start it" was read as a question and the model was
-        // given only the read-only tools.
-        || hasWord("build") || hasWord("rebuild") || hasWord("compile") || hasWord("run") || hasWord("rerun")
-        || hasWord("launch") || hasWord("start") || hasWord("open") || hasWord("execute") || hasWord("test")
-        || hasWord("generate") || hasWord("scaffold") || hasWord("refactor") || hasWord("move") || hasWord("install")
-        || hasWord("setup") || hasWord("initialize") || hasWord("init");
-    if (!action) return MutationIntent::none;
-
-    const bool directoryOnly = (text.contains("folder") || text.contains("directory"))
-        && !text.contains("file") && !text.contains("code") && !text.contains("project")
-        && !text.contains("source") && !text.contains("document");
-    return directoryOnly ? MutationIntent::anyWrite : MutationIntent::fileWrite;
 }
 
 // Shows a card and waits for the user's answer, from the assistant's worker thread. Returns the button pressed and the comment,
@@ -157,6 +99,33 @@ command_tool::Approval askUserToRunCommand(juce::Component::SafePointer<AiChatPa
     if (button == 0) return command_tool::Approval::once;
     if (offerAlways && button == 1) return command_tool::Approval::always;
     return command_tool::Approval::deny;
+}
+
+EngineerTools::ExternalReadDecision askUserToReadExternal(
+    juce::Component::SafePointer<AiChatPanel> panel,
+    const juce::File& requested,
+    std::function<bool()> shouldStop)
+{
+    const auto folder = requested.isDirectory() ? requested : requested.getParentDirectory();
+    ActionCard::Request card;
+    card.title = "Open external reference?";
+    card.body = "The Engineer wants to read:\n" + requested.getFullPathName()
+        + "\n\nThis location is outside the open workspace. Allow one read, or open the folder as a read-only reference tree.";
+    card.buttons = { "Allow once", "Open read-only", "Deny" };
+    card.accent = juce::Colour(0xff4ea1ff);
+
+    const auto [button, comment] = askWithCard(panel, card, std::move(shouldStop));
+    juce::ignoreUnused(comment);
+    if (button == 0) return EngineerTools::ExternalReadDecision::allowOnce;
+    if (button == 1)
+    {
+        juce::MessageManager::callAsync([panel, folder] {
+            if (panel != nullptr && panel->openReadOnlyRoot)
+                panel->openReadOnlyRoot(folder);
+        });
+        return EngineerTools::ExternalReadDecision::openReadOnly;
+    }
+    return EngineerTools::ExternalReadDecision::deny;
 }
 
 // A program the Engineer opened for the user to try: a card with what to check, a comment box, Pass and Fail.
@@ -278,11 +247,14 @@ AiChatPanel::AiChatPanel(juce::ApplicationProperties* properties)
 
     accessBox.addItem("Observe", 1);
     accessBox.addItem("Workspace", 2);
+    accessBox.addItem("Full Access", 3);
     accessBox.setTooltip("Maximum access available to the AI Assistant");
     const auto savedAccess = appProperties != nullptr
         ? appProperties->getUserSettings()->getIntValue("aiAssistantAccess", 2) : 2;
-    accessBox.setSelectedId(savedAccess == 1 ? 1 : 2, juce::dontSendNotification);
+    accessBox.setSelectedId(juce::jlimit(1, 3, savedAccess), juce::dontSendNotification);
     accessBox.onChange = [this] {
+        if (accessBox.getSelectedId() == 3)
+            frusty.showMood(FrustyComponent::Mood::fullAccess, 1400);
         if (appProperties == nullptr) return;
         appProperties->getUserSettings()->setValue("aiAssistantAccess", accessBox.getSelectedId());
         appProperties->getUserSettings()->saveIfNeeded();
@@ -303,6 +275,20 @@ AiChatPanel::AiChatPanel(juce::ApplicationProperties* properties)
         appProperties->getUserSettings()->saveIfNeeded();
     };
     addAndMakeVisible(modeBox);
+
+    outputBox.addItem("Brief", 1);
+    outputBox.addItem("Standard", 2);
+    outputBox.addItem("Detailed", 3);
+    outputBox.setTooltip("How much detail the assistant includes in its visible response");
+    const auto savedOutput = appProperties != nullptr
+        ? appProperties->getUserSettings()->getIntValue("aiAssistantOutputDetail", 2) : 2;
+    outputBox.setSelectedId(juce::jlimit(1, 3, savedOutput), juce::dontSendNotification);
+    outputBox.onChange = [this] {
+        if (appProperties == nullptr) return;
+        appProperties->getUserSettings()->setValue("aiAssistantOutputDetail", outputBox.getSelectedId());
+        appProperties->getUserSettings()->saveIfNeeded();
+    };
+    addAndMakeVisible(outputBox);
 
     aiSettingsButton.setTooltip("Configure the selected AI provider");
     aiSettingsButton.onClick = [this] { showAiSettings(); };
@@ -361,6 +347,8 @@ AiChatPanel::AiChatPanel(juce::ApplicationProperties* properties)
     };
     addAndMakeVisible(sendButton);
 
+    addAndMakeVisible(frusty);
+
     refreshProfileList();
     refreshConversationList(true);
 }
@@ -379,6 +367,7 @@ AiChatPanel::~AiChatPanel()
 
 void AiChatPanel::showCard(ActionCard::Request request, std::function<void(int, const juce::String&)> onAnswer)
 {
+    frusty.showMood(FrustyComponent::Mood::approval);
     card = std::make_unique<ActionCard>(std::move(request), std::move(onAnswer));
     addAndMakeVisible(*card);
     resized();
@@ -392,6 +381,7 @@ void AiChatPanel::closeCard()
     auto* old = card.release();
     old->setVisible(false);
     juce::MessageManager::callAsync([old] { delete old; });
+    frusty.showMood(requestInFlight ? FrustyComponent::Mood::planning : FrustyComponent::Mood::idle);
     resized();
 }
 
@@ -400,6 +390,16 @@ void AiChatPanel::showLiveStatus(const juce::String& status, const juce::StringA
     if (!requestInFlight)
         return;
     juce::String text = status.isNotEmpty() ? status : juce::String("Working...");
+    const auto lowerStatus = text.toLowerCase();
+    if (lowerStatus.contains("stopping") || lowerStatus.contains("round limit"))
+        frusty.showMood(FrustyComponent::Mood::exhausted);
+    else if (lowerStatus.contains("failed") || lowerStatus.contains("error"))
+        frusty.showMood(FrustyComponent::Mood::compilerError);
+    else if (lowerStatus.contains("running") || lowerStatus.contains("building")
+             || lowerStatus.contains("creating") || lowerStatus.contains("updating"))
+        frusty.showMood(FrustyComponent::Mood::working);
+    else
+        frusty.showMood(FrustyComponent::Mood::planning);
     if (!steps.isEmpty())
     {
         text << "\n\nSo far:";
@@ -443,6 +443,8 @@ void AiChatPanel::resized()
     auto taskBar = bounds.removeFromTop(22);
     modeBox.setBounds(taskBar.removeFromLeft(92));
     taskBar.removeFromLeft(4);
+    outputBox.setBounds(taskBar.removeFromLeft(92));
+    taskBar.removeFromLeft(4);
     taskStatusLabel.setBounds(taskBar);
     bounds.removeFromTop(4);
 
@@ -457,6 +459,8 @@ void AiChatPanel::resized()
     transcript.setBounds(bounds);
     sendButton.setBounds(inputArea.removeFromRight(60));
     inputArea.removeFromRight(4);
+    frusty.setBounds(inputArea.removeFromLeft(62));
+    inputArea.removeFromLeft(4);
     inputBox.setBounds(inputArea);
 }
 
@@ -846,6 +850,7 @@ void AiChatPanel::updateConversationControls()
     profileBox.setEnabled(!requestInFlight);
     accessBox.setEnabled(!requestInFlight);
     modeBox.setEnabled(!requestInFlight);
+    outputBox.setEnabled(!requestInFlight);
     modelBox.setEnabled(!requestInFlight && !modelRequestInFlight && modelBox.getNumItems() > 0);
     // While the Engineer works, Send becomes Stop.
     sendButton.setButtonText(requestInFlight ? "Stop" : "Send");
@@ -877,14 +882,6 @@ void AiChatPanel::sendMessage()
     auto userText = inputBox.getText().trim();
     if (userText.isEmpty()) return;
 
-    auto provider = aiConfig.createProvider(profileName.toStdString());
-    if (!provider) {
-        const auto message = "Could not create a provider for '" + profileName + "'.";
-        appendTranscript("system", message);
-        completeExternalRequest(false, message);
-        return;
-    }
-
     if (!appendAndSave("user", userText))
     {
         completeExternalRequest(false, "The message could not be saved.");
@@ -899,6 +896,87 @@ void AiChatPanel::sendMessage()
     runControl->status = "Thinking...";
     updateConversationControls();
     appendTranscript("assistant", "Thinking...");
+    frusty.showMood(FrustyComponent::Mood::planning);
+
+    const auto selectedMode = static_cast<AgentMode>(modeBox.getSelectedId());
+    if (selectedMode != AgentMode::automatic)
+    {
+        startResolvedMessage(userText, selectedMode,
+                             selectedMode == AgentMode::execute && isPlanContinuation(userText), {});
+        return;
+    }
+
+    auto provider = aiConfig.createProvider(profileName.toStdString());
+    if (!provider)
+    {
+        const auto message = "Could not create a provider for '" + profileName + "'.";
+        appendTranscript("system", message);
+        requestInFlight = false;
+        updateConversationControls();
+        completeExternalRequest(false, message);
+        return;
+    }
+
+    juce::String previousTaskSummary;
+    AgentTask previous;
+    if (AgentTask::load(conversationStore.getConversationFolder(), currentConversation.id, previous))
+    {
+        previousTaskSummary << "Previous mode: " << previous.taskMode()
+                            << "\nPrevious status: " << (previous.isCompleted() ? "completed" : "not completed")
+                            << "\nPrevious goal: " << previous.taskGoal();
+        if (!previous.planSteps().isEmpty())
+            previousTaskSummary << "\nSaved plan:\n" << previous.planSteps().joinIntoString("\n");
+    }
+
+    juce::Component::SafePointer<AiChatPanel> safeThis(this);
+    auto* providerPtr = provider.release();
+    auto run = runControl;
+    std::thread([safeThis, providerPtr, userText, previousTaskSummary, run] {
+        run->running = true;
+        struct Finished { std::shared_ptr<RunControl> run; ~Finished() { run->running = false; } } finished { run };
+        postLiveStatus(safeThis, run, "Choosing the right mode...");
+        std::unique_ptr<ai_provider::AiProvider> owned(providerPtr);
+        const auto response = owned->sendChat(AgentModeRouter::messagesFor(userText, previousTaskSummary));
+        auto decision = response.ok
+            ? AgentModeRouter::parse(juce::String(response.content)) : AgentModeDecision {};
+        if (!response.ok) decision.error = juce::String(response.errorMessage);
+        if (run->stop) decision = { false, AgentMode::answer, false, 0.0, {}, "Stopped by the user." };
+
+        juce::MessageManager::callAsync([safeThis, userText, decision] {
+            if (safeThis == nullptr) return;
+            if (!decision.ok)
+            {
+                const auto message = "Auto could not determine a mode: " + decision.error
+                    + " Select a mode explicitly and send the request again.";
+                safeThis->appendAndSave("assistant", message);
+                safeThis->renderConversation();
+                safeThis->completeExternalRequest(false, message);
+                safeThis->requestInFlight = false;
+                safeThis->updateConversationControls();
+                return;
+            }
+            safeThis->taskStatusLabel.setText(
+                "Auto selected " + AgentModeRouter::modeName(decision.mode), juce::dontSendNotification);
+            safeThis->startResolvedMessage(userText, decision.mode, decision.continuation, decision.reason);
+        });
+    }).detach();
+}
+
+void AiChatPanel::startResolvedMessage(const juce::String& userText, AgentMode selectedMode,
+                                       bool continuation, const juce::String& routeReason)
+{
+    const auto profileName = profileBox.getText();
+    auto provider = aiConfig.createProvider(profileName.toStdString());
+    if (!provider)
+    {
+        const auto message = "Could not create a provider for '" + profileName + "'.";
+        appendAndSave("assistant", message);
+        renderConversation();
+        completeExternalRequest(false, message);
+        requestInFlight = false;
+        updateConversationControls();
+        return;
+    }
 
     juce::Component::SafePointer<AiChatPanel> safeThis(this);
     auto historySnapshot = history;
@@ -907,18 +985,15 @@ void AiChatPanel::sendMessage()
         historySnapshot.back().content =
             (userText + "\n\n---\nRetrieved context for this request:\n" + ragContext).toStdString();
     const auto projectRoot = getProjectRoot ? getProjectRoot() : juce::File();
-    const auto access = accessBox.getSelectedId() == 2
-        ? EngineerTools::AccessLevel::workspace : EngineerTools::AccessLevel::observe;
-    const auto selectedMode = static_cast<AgentMode>(modeBox.getSelectedId());
-    const auto requestedMutation = mutationIntentFor(userText);
-    const bool continuation = selectedMode == AgentMode::execute && isPlanContinuation(userText);
-    const bool executeRequested = (selectedMode == AgentMode::automatic
-                                    && requestedMutation != MutationIntent::none)
-        || (selectedMode == AgentMode::execute
-            && (requestedMutation != MutationIntent::none || continuation));
-    const auto effectiveAccess = executeRequested
-        ? access : EngineerTools::AccessLevel::observe;
-    EngineerTools engineerTools(projectRoot, effectiveAccess);
+    const auto access = accessBox.getSelectedId() == 3 ? EngineerTools::AccessLevel::full
+        : accessBox.getSelectedId() == 2 ? EngineerTools::AccessLevel::workspace
+                                         : EngineerTools::AccessLevel::observe;
+    const auto outputDetail = outputBox.getSelectedId() == 1 ? juce::String("brief")
+        : outputBox.getSelectedId() == 3 ? juce::String("detailed") : juce::String("standard");
+    const bool executeRequested = selectedMode == AgentMode::execute;
+    EngineerTools engineerTools(projectRoot, access, executeRequested);
+    const auto readOnlyRoots = getReadOnlyRoots ? getReadOnlyRoots() : std::vector<juce::File> {};
+    engineerTools.setReferenceRoots(readOnlyRoots);
     {
         EngineerTools::CommandServices services;
         auto run = runControl;
@@ -928,6 +1003,9 @@ void AiChatPanel::sendMessage()
         };
         services.askTest = [panel = juce::Component::SafePointer<AiChatPanel>(this), run](const command_tool::TestRequest& request) {
             return askUserToTest(panel, request, [run] { return run->stop.load(); });
+        };
+        services.approveExternalRead = [panel = juce::Component::SafePointer<AiChatPanel>(this), run](const juce::File& path) {
+            return askUserToReadExternal(panel, path, [run] { return run->stop.load(); });
         };
         services.progress = [panel = juce::Component::SafePointer<AiChatPanel>(this), run](const juce::String& status) {
             postLiveStatus(panel, run, status);
@@ -952,8 +1030,20 @@ void AiChatPanel::sendMessage()
             "do not repeat the file contents or code in chat. The IDE preserves detailed tool activity in a "
             "collapsed disclosure section. "
             "Current project root: " + projectRoot.getFullPathName().toStdString()
-            + ". Current mode: " + modeName(selectedMode).toStdString()
-            + ". Current access ceiling: " + EngineerTools::accessName(access).toStdString() + ".";
+            + ". Current mode: " + AgentModeRouter::modeName(selectedMode).toStdString()
+            + ". Current access ceiling: " + EngineerTools::accessName(access).toStdString()
+            + ". Visible response detail: " + outputDetail.toStdString()
+            + ". Brief means state only the result and essential caveats. Standard means a balanced explanation. "
+              "Detailed means include reasoning, evidence, and relevant implementation detail. "
+              "Output detail changes presentation only; it does not change the task, mode, access, or approval rules.";
+        if (!readOnlyRoots.empty())
+        {
+            historySnapshot.front().content += " Open read-only reference roots:";
+            for (const auto& reference : readOnlyRoots)
+                historySnapshot.front().content += " " + reference.getFullPathName().toStdString() + ";";
+        }
+        if (routeReason.isNotEmpty())
+            historySnapshot.front().content += " Auto routing note: " + routeReason.toStdString() + ".";
     }
     if ((executeRequested || selectedMode == AgentMode::plan || selectedMode == AgentMode::review)
         && !projectRoot.isDirectory())
@@ -967,7 +1057,7 @@ void AiChatPanel::sendMessage()
         completeExternalRequest(false, message);
         return;
     }
-    if (executeRequested && access != EngineerTools::AccessLevel::workspace)
+    if (executeRequested && access == EngineerTools::AccessLevel::observe)
     {
         const juce::String message = "Execute work is blocked because access is set to Observe. "
             "Change the access control to Workspace when you want the agent to edit the open project.";
@@ -997,7 +1087,7 @@ void AiChatPanel::sendMessage()
         const bool planRequired = selectedMode != AgentMode::review;
         const bool writeRequired = executeRequested;
         task = AgentTask::begin(currentConversation.id, goal,
-                                executeRequested ? "execute" : modeName(selectedMode),
+                                AgentModeRouter::modeName(selectedMode),
                                 planRequired, writeRequired,
                                 writeRequired && requiresFrustVerification(goal), initialPlan);
         const auto controlTools = task.controlDefinitions();
@@ -1019,8 +1109,7 @@ void AiChatPanel::sendMessage()
         ai_provider::ChatResponse response;
         bool workspaceChanged = false;
         juce::StringArray activity;
-        constexpr int maximumToolRounds = 24;
-        for (int round = 0; round < maximumToolRounds && !stopped; ++round)
+        for (int round = 0; !stopped; ++round)
         {
             if (run->stop)
             {
@@ -1107,8 +1196,6 @@ void AiChatPanel::sendMessage()
                 if (task.isTerminal()) break;
                 workingHistory.push_back({ "system", task.contextMessage().toStdString() });
             }
-            if (round == maximumToolRounds - 1)
-                response = { false, {}, "The Engineer reached the 24-round tool limit." };
         }
 
         if (stopped)
@@ -1148,11 +1235,15 @@ void AiChatPanel::sendMessage()
                 safeThis->completeExternalRequest(true, juce::String(finalContent));
                 if (agentRun)
                     safeThis->taskStatusLabel.setText(task.statusLine(), juce::dontSendNotification);
+                safeThis->frusty.showMood(agentRun && !task.isCompleted()
+                    ? FrustyComponent::Mood::compilerError
+                    : FrustyComponent::Mood::success, 1800);
             } else {
                 safeThis->renderConversation();
                 const auto message = "Error: " + juce::String(response.errorMessage);
                 safeThis->appendTranscript("system", message);
                 safeThis->completeExternalRequest(false, message);
+                safeThis->frusty.showMood(FrustyComponent::Mood::linkerFailure, 2200);
             }
 
             safeThis->transcript.scrollToBottom();

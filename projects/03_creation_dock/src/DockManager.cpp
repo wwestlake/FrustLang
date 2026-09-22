@@ -1,5 +1,7 @@
 #include "CreationDock/DockManager.h"
 
+#include <algorithm>
+
 namespace CreationDock {
 
 namespace {
@@ -100,6 +102,17 @@ void DockManager::dockPanel(DockPanel* panel, DockTargetZone zone)
     if (zone == DockTargetZone::Bottom) targetZone = container.getBottomZone();
 
     targetZone->addPanel(std::move(extractedPanel));
+    container.resized();
+}
+
+void DockManager::removePanel(DockPanel* panel)
+{
+    if (panel == nullptr) return;
+    const auto id = panel->getPanelID();
+    auto removed = extractPanel(panel);
+    if (!removed) return;
+    defaultLayout.erase(std::remove_if(defaultLayout.begin(), defaultLayout.end(),
+        [&id](const auto& entry) { return entry.first == id; }), defaultLayout.end());
     container.resized();
 }
 

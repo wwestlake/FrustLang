@@ -1,0 +1,43 @@
+#include "AgentModeRouter.h"
+
+#include <iostream>
+
+namespace
+{
+int failures = 0;
+
+void expect(bool condition, const char* message)
+{
+    if (condition) return;
+    ++failures;
+    std::cerr << "FAIL: " << message << "\n";
+}
+}
+
+int main()
+{
+    auto review = AgentModeRouter::parse(
+        R"({"mode":"review","continuation":false,"confidence":0.96,"reason":"read-only inspection"})");
+    expect(review.ok && review.mode == AgentMode::review, "Parses review mode");
+    expect(!review.continuation, "Parses a non-continuation");
+    expect(review.confidence > 0.95, "Parses confidence");
+
+    auto execute = AgentModeRouter::parse(
+        "```json\n{\"mode\":\"execute\",\"continuation\":true,\"confidence\":1,\"reason\":\"saved plan\"}\n```");
+    expect(execute.ok && execute.mode == AgentMode::execute, "Accepts fenced provider JSON");
+    expect(execute.continuation, "Parses plan continuation");
+
+    expect(!AgentModeRouter::parse("I would use execute mode.").ok, "Rejects prose instead of JSON");
+    expect(!AgentModeRouter::parse(R"({"mode":"destroy","continuation":false})").ok,
+           "Rejects unknown modes");
+
+    const auto messages = AgentModeRouter::messagesFor("execute the plan", "Previous mode: plan");
+    expect(messages.size() == 2, "Router uses a minimal two-message context");
+    expect(messages[1].content.find("execute the plan") != std::string::npos,
+           "Router preserves the original request");
+    expect(messages[1].content.find("Previous mode: plan") != std::string::npos,
+           "Router receives compact saved task state");
+
+    if (failures == 0) std::cout << "AgentModeRouterTests passed\n";
+    return failures == 0 ? 0 : 1;
+}

@@ -5,8 +5,10 @@
 #include "ActionCard.h"
 #include "AiConversationView.h"
 #include "AgentTask.h"
+#include "AgentModeRouter.h"
 #include "ConversationStore.h"
 #include "EngineerTools.h"
+#include "FrustyComponent.h"
 #include <atomic>
 #include <functional>
 #include <mutex>
@@ -32,10 +34,14 @@ public:
     bool submitExternalMessage(const juce::String& content, ExternalCompletion completion);
 
     std::function<juce::File()> getProjectRoot;
+    std::function<std::vector<juce::File>()> getReadOnlyRoots;
+    std::function<void(const juce::File&)> openReadOnlyRoot;
     std::function<void()> onFileSystemChanged;
 
 private:
     void sendMessage();
+    void startResolvedMessage(const juce::String& userText, AgentMode mode,
+                              bool continuation, const juce::String& routeReason);
     void appendTranscript(const juce::String& speaker, const juce::String& text);
     void refreshProfileList();
     void refreshModelList();
@@ -62,6 +68,7 @@ private:
     juce::ComboBox modelBox;
     juce::ComboBox accessBox;
     juce::ComboBox modeBox;
+    juce::ComboBox outputBox;
     juce::TextButton aiSettingsButton { "AI Settings..." };
     juce::ComboBox conversationBox;
     juce::TextButton newButton { "New" };
@@ -72,6 +79,7 @@ private:
     std::unique_ptr<ActionCard> card;
     juce::TextEditor inputBox;
     juce::TextButton sendButton { "Send" };
+    FrustyComponent frusty;
 
     ai_provider::AiConfig aiConfig;
     juce::ApplicationProperties* appProperties = nullptr;

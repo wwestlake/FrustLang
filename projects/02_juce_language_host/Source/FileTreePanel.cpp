@@ -308,7 +308,7 @@ juce::String FileTreePanel::relativePath(const juce::File& file) const
 void FileTreePanel::setRootDirectory(const juce::File& dir)
 {
     currentRoot = dir;
-    headerLabel.setText("Root: " + dir.getFileName(), juce::dontSendNotification);
+    headerLabel.setText((readOnly ? "Reference: " : "Root: ") + dir.getFileName(), juce::dontSendNotification);
     tree->setRootItem(nullptr);
     rootItem = std::make_unique<Item>(*this, dir);
     tree->setRootItem(rootItem.get());
@@ -316,6 +316,16 @@ void FileTreePanel::setRootDirectory(const juce::File& dir)
     lastSignature = diskSignature();
     if (onRootDirectoryChanged)
         onRootDirectoryChanged(currentRoot);
+}
+
+void FileTreePanel::setReadOnly(bool shouldBeReadOnly)
+{
+    readOnly = shouldBeReadOnly;
+    openFolderButton.setEnabled(!readOnly);
+    newFileButton.setEnabled(!readOnly);
+    newFolderButton.setEnabled(!readOnly);
+    if (currentRoot.isDirectory())
+        headerLabel.setText((readOnly ? "Reference: " : "Root: ") + currentRoot.getFileName(), juce::dontSendNotification);
 }
 
 void FileTreePanel::refresh()
@@ -456,16 +466,16 @@ void FileTreePanel::showMenuFor(Item* item)
     juce::PopupMenu menu;
     menu.addItem(1, "Open", oneFile);
     menu.addSeparator();
-    menu.addItem(2, "New File...");
-    menu.addItem(3, "New Folder...");
+    menu.addItem(2, "New File...", !readOnly);
+    menu.addItem(3, "New Folder...", !readOnly);
     menu.addSeparator();
-    menu.addItem(4, "Cut", any);
+    menu.addItem(4, "Cut", any && !readOnly);
     menu.addItem(5, "Copy", any);
-    menu.addItem(6, "Paste", ! clipboardFiles.isEmpty());
-    menu.addItem(7, "Duplicate", one);
+    menu.addItem(6, "Paste", !readOnly && !clipboardFiles.isEmpty());
+    menu.addItem(7, "Duplicate", one && !readOnly);
     menu.addSeparator();
-    menu.addItem(8, "Rename...", one);
-    menu.addItem(9, any && selected.size() > 1 ? "Delete " + juce::String(selected.size()) + " Items..." : juce::String("Delete..."), any);
+    menu.addItem(8, "Rename...", one && !readOnly);
+    menu.addItem(9, any && selected.size() > 1 ? "Delete " + juce::String(selected.size()) + " Items..." : juce::String("Delete..."), any && !readOnly);
     menu.addSeparator();
     menu.addItem(10, "Copy Path", one);
     menu.addItem(11, "Copy Relative Path", one);
@@ -521,11 +531,11 @@ bool FileTreePanel::handleKey(const juce::KeyPress& key)
             openItem(item);
         return true;
     }
-    if (key == juce::KeyPress::F2Key && selected.size() == 1) { renameFile(selected[0]); return true; }
-    if (key == juce::KeyPress::deleteKey && ! selected.isEmpty()) { deleteFiles(selected); return true; }
+    if (!readOnly && key == juce::KeyPress::F2Key && selected.size() == 1) { renameFile(selected[0]); return true; }
+    if (!readOnly && key == juce::KeyPress::deleteKey && ! selected.isEmpty()) { deleteFiles(selected); return true; }
     if (command && key.getKeyCode() == 'C' && ! selected.isEmpty()) { copyToClipboard(selected, false); return true; }
-    if (command && key.getKeyCode() == 'X' && ! selected.isEmpty()) { copyToClipboard(selected, true); return true; }
-    if (command && key.getKeyCode() == 'V' && ! clipboardFiles.isEmpty()) { paste(targetFolder()); return true; }
+    if (!readOnly && command && key.getKeyCode() == 'X' && ! selected.isEmpty()) { copyToClipboard(selected, true); return true; }
+    if (!readOnly && command && key.getKeyCode() == 'V' && ! clipboardFiles.isEmpty()) { paste(targetFolder()); return true; }
     return false;
 }
 
@@ -579,6 +589,7 @@ void FileTreePanel::askForName(const juce::String& title, const juce::String& in
 
 void FileTreePanel::newFile(const juce::File& folder)
 {
+    if (readOnly) return;
     askForName("New File", {}, 0, [this, folder](const juce::String& name) {
         const auto file = folder.getChildFile(name);
         if (file.exists())
@@ -594,6 +605,7 @@ void FileTreePanel::newFile(const juce::File& folder)
 
 void FileTreePanel::newFolder(const juce::File& folder)
 {
+    if (readOnly) return;
     askForName("New Folder", {}, 0, [this, folder](const juce::String& name) {
         const auto dir = folder.getChildFile(name);
         if (dir.exists())
@@ -607,6 +619,7 @@ void FileTreePanel::newFolder(const juce::File& folder)
 
 void FileTreePanel::renameFile(const juce::File& file)
 {
+    if (readOnly) return;
     if (file == juce::File() || file == currentRoot)
         return;
     const auto name = file.getFileName();
@@ -630,6 +643,7 @@ void FileTreePanel::renameFile(const juce::File& file)
 
 void FileTreePanel::deleteFiles(const juce::Array<juce::File>& files)
 {
+    if (readOnly) return;
     juce::Array<juce::File> targets;
     for (const auto& f : files)
         if (f != currentRoot && f.exists())
@@ -668,6 +682,7 @@ void FileTreePanel::deleteFiles(const juce::Array<juce::File>& files)
 
 void FileTreePanel::duplicateFile(const juce::File& file)
 {
+    if (readOnly) return;
     if (file == juce::File() || file == currentRoot)
         return;
     const auto copy = copyNameFor(file);
@@ -689,6 +704,7 @@ void FileTreePanel::copyToClipboard(const juce::Array<juce::File>& files, bool c
 
 void FileTreePanel::paste(const juce::File& folder)
 {
+    if (readOnly) return;
     if (clipboardFiles.isEmpty())
         return;
     if (clipboardIsCut)
@@ -706,6 +722,7 @@ void FileTreePanel::paste(const juce::File& folder)
 
 void FileTreePanel::copyInto(const juce::StringArray& paths, const juce::File& folder)
 {
+    if (readOnly) return;
     juce::StringArray failed;
     juce::File last;
     for (const auto& path : paths)
@@ -734,6 +751,7 @@ void FileTreePanel::copyInto(const juce::StringArray& paths, const juce::File& f
 
 void FileTreePanel::moveInto(const juce::Array<juce::File>& files, const juce::File& folder)
 {
+    if (readOnly) return;
     juce::Array<juce::File> moving;
     juce::StringArray refused;
     for (const auto& f : files)

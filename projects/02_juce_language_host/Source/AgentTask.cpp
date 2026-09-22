@@ -216,7 +216,7 @@ juce::String AgentTask::statusLine() const
 {
     auto shortGoal = goal.substring(0, 90);
     if (goal.length() > shortGoal.length()) shortGoal << "...";
-    return "Task: " + shortGoal + "  |  " + phase();
+    return "Task [" + mode + "]: " + shortGoal + "  |  " + phase();
 }
 
 juce::String AgentTask::finalMessage() const
@@ -243,7 +243,7 @@ bool AgentTask::isCompleted() const
 
 bool AgentTask::canWrite() const
 {
-    return status == "running" && inspected && (!requiresPlan || !plan.isEmpty());
+    return requiresWrite && status == "running" && inspected && (!requiresPlan || !plan.isEmpty());
 }
 
 const juce::StringArray& AgentTask::planSteps() const { return plan; }

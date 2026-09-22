@@ -1,6 +1,8 @@
 #include "WorkbenchComponent.h"
 #include <FrustIDEAssets.h>
 
+#include <algorithm>
+
 WorkbenchComponent::WorkbenchComponent()
 {
     menuBar = std::make_unique<juce::MenuBarComponent>(this);
@@ -90,8 +92,12 @@ WorkbenchComponent::WorkbenchComponent()
     auto aiChat = std::make_unique<AiChatPanel>(appProperties.get());
     auto* aiChatPanel = aiChat.get();
     aiChat->getProjectRoot = [this] { return fileTreePanel->getRootDirectory(); };
+    aiChat->getReadOnlyRoots = [this] { return getReadOnlyRoots(); };
+    aiChat->openReadOnlyRoot = [this](const juce::File& folder) { addReadOnlyRoot(folder); };
     aiChat->onFileSystemChanged = [this] {
         if (fileTreePanel != nullptr) fileTreePanel->refresh();
+        for (const auto& reference : referenceTrees)
+            if (reference.tree != nullptr) reference.tree->refresh();
     };
     // appProperties (constructed above) is what persists which
     // discovered plugins are marked auto-load across restarts - same
@@ -108,6 +114,15 @@ WorkbenchComponent::WorkbenchComponent()
     dockManager->registerPanel("console", "Console & Output REPL", std::move(console), CreationDock::DockTargetZone::Bottom);
     dockManager->registerPanel("errors", "Error List", std::move(errorList), CreationDock::DockTargetZone::Bottom);
     dockManager->registerPanel("terminal", "OS Terminal", std::move(terminal), CreationDock::DockTargetZone::Bottom);
+
+    if (appProperties)
+    {
+        const auto savedReferences = juce::JSON::parse(
+            appProperties->getUserSettings()->getValue("readOnlyReferenceFolders", "[]"));
+        if (auto* folders = savedReferences.getArray())
+            for (const auto& folder : *folders)
+                addReadOnlyRoot(juce::File(folder.toString()), false);
+    }
 
     dockManager->loadLayoutFromFile(getLayoutFile());
 
@@ -188,6 +203,7 @@ juce::PopupMenu WorkbenchComponent::getMenuForIndex(int topLevelMenuIndex, const
     if (menuName == "File") {
         menu.addItem(FileNew, "New File");
         menu.addItem(FileOpenFolder, "Open Folder...");
+        menu.addItem(FileOpenReferenceFolder, "Open Read-Only Reference Folder...");
         menu.addSeparator();
         menu.addItem(FileSave, "Save File");
         menu.addItem(FileCloseTab, "Close Tab");
@@ -239,6 +255,19 @@ void WorkbenchComponent::menuItemSelected(int menuItemID, int topLevelMenuIndex)
                 }
                 activeFileChooser = nullptr;
             });
+    } else if (menuItemID == FileOpenReferenceFolder) {
+        activeFileChooser = std::make_unique<juce::FileChooser>(
+            "Open Read-Only Reference Folder...",
+            juce::File::getCurrentWorkingDirectory(),
+            "*");
+
+        activeFileChooser->launchAsync(
+            juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
+            [this](const juce::FileChooser& fc) {
+                const auto folder = fc.getResult();
+                if (folder.isDirectory()) addReadOnlyRoot(folder);
+                activeFileChooser = nullptr;
+            });
     } else if (menuItemID == FileNew) {
         if (editorTabComponent) editorTabComponent->newUntitledTab();
     } else if (menuItemID == FileSave) {
@@ -281,6 +310,67 @@ void WorkbenchComponent::menuItemSelected(int menuItemID, int topLevelMenuIndex)
     } else if (menuItemID == AccountSignOut) {
         if (authSession) authSession->clearSession();
     }
+}
+
+void WorkbenchComponent::addReadOnlyRoot(const juce::File& folder, bool persist)
+{
+    if (!folder.isDirectory() || dockManager == nullptr) return;
+    if (fileTreePanel != nullptr && fileTreePanel->getRootDirectory() == folder) return;
+    for (const auto& reference : referenceTrees)
+        if (reference.folder == folder) return;
+
+    auto tree = std::make_unique<FileTreePanel>();
+    auto* treePtr = tree.get();
+    treePtr->setReadOnly(true);
+    treePtr->setRootDirectory(folder);
+    treePtr->onFileDoubleClicked = [this](const juce::File& file) {
+        if (editorTabComponent != nullptr) editorTabComponent->openFile(file);
+    };
+    treePtr->getActiveEditorFile = [this] {
+        return editorTabComponent != nullptr ? editorTabComponent->getActiveFile() : juce::File();
+    };
+
+    const auto path = folder.getFullPathName();
+    const auto hash = juce::SHA256(path.toRawUTF8(), static_cast<size_t>(path.getNumBytesAsUTF8()))
+        .toHexString().substring(0, 12);
+    auto* panel = dockManager->registerPanel("reference-" + hash,
+        "Reference: " + folder.getFileName(), std::move(tree), CreationDock::DockTargetZone::Left);
+    referenceTrees.push_back({ folder, treePtr, panel });
+    panel->onCloseRequested = [safeThis = juce::Component::SafePointer<WorkbenchComponent>(this)](CreationDock::DockPanel* closing) {
+        juce::MessageManager::callAsync([safeThis, closing] {
+            if (safeThis != nullptr) safeThis->removeReadOnlyRoot(closing);
+        });
+    };
+    if (persist) saveReadOnlyRoots();
+}
+
+void WorkbenchComponent::removeReadOnlyRoot(CreationDock::DockPanel* panel)
+{
+    auto found = std::find_if(referenceTrees.begin(), referenceTrees.end(),
+        [panel](const ReferenceTree& reference) { return reference.panel == panel; });
+    if (found == referenceTrees.end()) return;
+    referenceTrees.erase(found);
+    saveReadOnlyRoots();
+    if (dockManager != nullptr) dockManager->removePanel(panel);
+}
+
+std::vector<juce::File> WorkbenchComponent::getReadOnlyRoots() const
+{
+    std::vector<juce::File> roots;
+    roots.reserve(referenceTrees.size());
+    for (const auto& reference : referenceTrees) roots.push_back(reference.folder);
+    return roots;
+}
+
+void WorkbenchComponent::saveReadOnlyRoots()
+{
+    if (!appProperties) return;
+    juce::Array<juce::var> roots;
+    for (const auto& reference : referenceTrees)
+        roots.add(reference.folder.getFullPathName());
+    appProperties->getUserSettings()->setValue("readOnlyReferenceFolders",
+        juce::JSON::toString(juce::var(roots), false));
+    appProperties->getUserSettings()->saveIfNeeded();
 }
 
 void WorkbenchComponent::runActiveFileInRepl()

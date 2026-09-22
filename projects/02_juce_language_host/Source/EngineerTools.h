@@ -13,7 +13,8 @@ public:
     enum class AccessLevel
     {
         observe = 0,
-        workspace = 1
+        workspace = 1,
+        full = 2
     };
 
     struct Result
@@ -24,7 +25,21 @@ public:
         bool verificationPerformed = false;
     };
 
-    EngineerTools(juce::File projectRoot, AccessLevel accessLevel);
+    struct WorkspaceRoot
+    {
+        juce::File folder;
+        bool readOnly = true;
+    };
+
+    enum class ExternalReadDecision
+    {
+        deny,
+        allowOnce,
+        openReadOnly
+    };
+
+    EngineerTools(juce::File projectRoot, AccessLevel accessLevel, bool writesAllowed = true);
+    void setReferenceRoots(std::vector<juce::File> roots);
 
     // What run_command needs from the application: a way to ask the user (without one, every command the rules do not
     // simply allow is refused), where to keep full command logs, and where the user's "always allow" rules live (empty =
@@ -37,6 +52,7 @@ public:
         std::function<bool()> shouldStop;                    // true once the user presses Stop or the IDE is closing
         std::function<void(const juce::String&)> progress;   // a short live status line ("Running dotnet build (0:14): ...")
         command_tool::Tester askTest;                        // shows the Pass / Fail card and waits for the user's verdict
+        std::function<ExternalReadDecision(const juce::File&)> approveExternalRead;
     };
     void setCommandServices(CommandServices services) { commands = std::move(services); }
 
@@ -46,8 +62,12 @@ public:
     static juce::String accessName(AccessLevel level);
 
 private:
+    enum class PathPurpose { read, write };
     juce::var loadCatalog() const;
-    juce::File resolveProjectPath(const juce::String& suppliedPath, juce::String& error) const;
+    juce::File resolveProjectPath(const juce::String& suppliedPath, PathPurpose purpose,
+                                  juce::String& error) const;
+    const WorkspaceRoot* containingRoot(const juce::File& candidate) const;
+    juce::String displayPath(const juce::File& file) const;
     bool toolIsAvailable(const juce::String& name) const;
 
     Result list(const juce::var& arguments) const;
@@ -65,6 +85,8 @@ private:
     Result userTest(const juce::var& arguments) const;
 
     juce::File root;
+    mutable std::vector<WorkspaceRoot> workspaceRoots;
     AccessLevel access;
+    bool allowWrites = true;
     CommandServices commands;
 };

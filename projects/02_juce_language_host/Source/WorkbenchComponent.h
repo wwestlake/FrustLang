@@ -15,6 +15,8 @@
 #include "Auth/DesktopAuthSession.h"
 #include "LocalAgentApi.h"
 
+#include <vector>
+
 class WorkbenchComponent  : public juce::Component,
                            public juce::MenuBarModel
 {
@@ -32,6 +34,10 @@ public:
 
 private:
     void runActiveFileInRepl();
+    void addReadOnlyRoot(const juce::File& folder, bool persist = true);
+    void removeReadOnlyRoot(CreationDock::DockPanel* panel);
+    std::vector<juce::File> getReadOnlyRoots() const;
+    void saveReadOnlyRoots();
 
     std::unique_ptr<juce::MenuBarComponent> menuBar;
     juce::TextButton runButton { "Run" };
@@ -42,6 +48,13 @@ private:
     std::unique_ptr<LocalAgentApi> localAgentApi;
     std::unique_ptr<CreationDock::DockManager> dockManager;
     FileTreePanel* fileTreePanel = nullptr;
+    struct ReferenceTree
+    {
+        juce::File folder;
+        FileTreePanel* tree = nullptr;
+        CreationDock::DockPanel* panel = nullptr;
+    };
+    std::vector<ReferenceTree> referenceTrees;
     EditorTabComponent* editorTabComponent = nullptr;
     ConsolePanel* consolePanel = nullptr;
     TerminalPanel* terminalPanel = nullptr;
@@ -55,6 +68,7 @@ private:
     enum MenuCommands {
         FileNew = 1,
         FileOpenFolder,
+        FileOpenReferenceFolder,
         FileSave,
         FileCloseTab,
         FileExit,

@@ -256,11 +256,15 @@ frate cache-dir
 ## Agent Runtime Contract
 
 - The host-owned task packet is authoritative for the current goal, mode, phase, plan, and evidence.
-- `Auto` answers ordinary questions and promotes implementation requests to an Execute run.
+- `Auto` is a routing stage, not a work mode. A small tool-free classification request chooses Answer, Review, Plan, or Execute before LiteSemRAG context and engineering tools are attached.
+- Explicitly selected Review, Plan, and Execute modes bypass Auto routing and remain authoritative.
+- Output detail (Brief, Standard, or Detailed) controls presentation only. It never changes mode, access, approvals, or completion requirements.
 - `Plan` inspects and records a concrete plan but never writes.
 - `Execute` follows inspect, plan, implement, verify, and finish phases.
 - `Review` inspects and reports findings but never writes.
 - Access is separate from mode. Workspace access is required for edits.
+- A workspace can contain one writable project root and multiple read-only reference roots. Absolute reads outside those roots ask the user to allow one read or open a persistent read-only tree.
+- Full Access suppresses ordinary path, command, and launch confirmations within the Windows account's permissions, but never enables writes in Plan or Review and never overrides a read-only reference root or the host's hard-deny rules.
 - Use project tools for real work. A Markdown code block is not a file update.
 - Begin every active task with `workspace_list` at the open project root so duplicate or misplaced project structures are visible before planning.
 - Use `workspace_write_file` for a whole-file repair after reading the current file. Supply the SHA-256 revision from `workspace_read`; stale writes are rejected.

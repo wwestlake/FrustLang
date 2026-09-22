@@ -35,6 +35,8 @@ int main()
     const auto observeDefinitions = observe.definitions();
     expect(observeDefinitions.size() == 5, "Observe exposes read-only, registry, and verification tools");
     expect(workspace.definitions().size() == 13, "Workspace exposes all thirteen engineering tools: run_command, launch_program, stop_program and user_test included");
+    EngineerTools full(base, EngineerTools::AccessLevel::full);
+    expect(full.definitions().size() == 13, "Full Access exposes all engineering tools");
     expect(!workspace.execute(call("user_test", R"({"command":"x","instructions":"try it","reason":"r"})")).ok, "with no one to give a verdict, user_test opens nothing and fails");
     expect(std::none_of(observeDefinitions.begin(), observeDefinitions.end(), [](const auto& tool) {
         return tool.name == "run_command";
@@ -96,6 +98,36 @@ int main()
     auto escaped = workspace.execute(call(
         "workspace_create_file", R"({"path":"../outside.txt","content":"no"})"));
     expect(!escaped.ok, "Workspace path cannot escape the project root");
+
+    const auto reference = base.getSiblingFile(base.getFileName() + "-reference");
+    expect(reference.createDirectory().wasOk(), "temporary reference folder is created");
+    expect(reference.getChildFile("evidence.txt").replaceWithText("immutable evidence"),
+           "reference evidence is created");
+    auto externalReader = observe;
+    int externalQuestions = 0;
+    EngineerTools::CommandServices externalServices;
+    externalServices.approveExternalRead = [&externalQuestions](const juce::File&) {
+        ++externalQuestions;
+        return EngineerTools::ExternalReadDecision::allowOnce;
+    };
+    externalReader.setCommandServices(externalServices);
+    auto externalRead = externalReader.execute(call("workspace_read",
+        "{\"path\":\"" + reference.getChildFile("evidence.txt").getFullPathName()
+            .replaceCharacter('\\', '/').toStdString() + "\"}"));
+    expect(externalRead.ok && externalRead.message.contains("immutable evidence") && externalQuestions == 1,
+           "an approved external read succeeds once");
+
+    workspace.setReferenceRoots({ reference });
+    auto referenceWrite = workspace.execute(call("workspace_create_file",
+        "{\"path\":\"" + reference.getChildFile("changed.txt").getFullPathName()
+            .replaceCharacter('\\', '/').toStdString() + "\",\"content\":\"no\"}"));
+    expect(!referenceWrite.ok && !reference.getChildFile("changed.txt").exists(),
+           "a read-only reference remains protected at Workspace access");
+
+    auto fullWrite = full.execute(call("workspace_create_file",
+        "{\"path\":\"" + base.getSiblingFile(base.getFileName() + "-full-access.txt").getFullPathName()
+            .replaceCharacter('\\', '/').toStdString() + "\",\"content\":\"allowed\"}"));
+    expect(fullWrite.ok, "Full Access may write outside the project without a path approval");
 
     // ---- run_command: the rules (nothing is run here) ----
     {
@@ -231,6 +263,8 @@ int main()
         }
     }
 
+    reference.deleteRecursively();
+    base.getSiblingFile(base.getFileName() + "-full-access.txt").deleteFile();
     base.deleteRecursively();
     if (failures == 0)
         std::cout << "EngineerToolsTests: all checks passed\n";

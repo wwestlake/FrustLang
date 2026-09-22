@@ -25,6 +25,8 @@ public:
     void mouseDown(const juce::MouseEvent& e) override;
 
     void setRootDirectory(const juce::File& dir);
+    void setReadOnly(bool shouldBeReadOnly);
+    bool isReadOnly() const { return readOnly; }
     juce::File getRootDirectory() const { return currentRoot; }
     void refresh();
 
@@ -83,6 +85,7 @@ private:
     juce::String lastSignature;
     juce::Array<juce::File> clipboardFiles;
     bool clipboardIsCut = false;
+    bool readOnly = false;
     std::unique_ptr<juce::AlertWindow> nameWindow;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(FileTreePanel)

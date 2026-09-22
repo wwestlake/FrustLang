@@ -3,15 +3,15 @@
   "tools": [
     {
       "name": "workspace_list",
-      "description": "List files and directories in the project currently open in FrustIDE.",
-      "usage": "Use before assuming the project layout or choosing a file to inspect.",
+      "description": "List files and directories in a folder open in the FrustIDE workspace, including read-only reference folders.",
+      "usage": "Use before assuming the project layout or choosing a file to inspect. An absolute path outside the open workspace asks the user to allow one read or open it as a read-only reference.",
       "access": "observe",
       "tokens": ["files", "folders", "tree", "project", "list"],
       "parameters": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "path": { "type": "string", "description": "Path relative to the open project.", "default": "." },
+          "path": { "type": "string", "description": "Path relative to the writable project, or an absolute path to an open/read-approved reference.", "default": "." },
           "recursive": { "type": "boolean", "default": false },
           "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 200 }
         }
@@ -19,15 +19,15 @@
     },
     {
       "name": "workspace_read",
-      "description": "Read a UTF-8 project file with line numbers and optional line bounds.",
-      "usage": "Read specifications and surrounding source before proposing or making an edit.",
+      "description": "Read a UTF-8 file from the writable project or an open read-only reference, with line numbers and optional line bounds.",
+      "usage": "Read specifications and surrounding source before proposing or making an edit. An absolute external path asks the user before it is read unless Full Access is selected.",
       "access": "observe",
       "tokens": ["read", "source", "specification", "documentation", "lines"],
       "parameters": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "path": { "type": "string", "description": "Path relative to the open project." },
+          "path": { "type": "string", "description": "Path relative to the writable project, or an absolute path to an open/read-approved reference." },
           "start_line": { "type": "integer", "minimum": 1, "default": 1 },
           "end_line": { "type": "integer", "minimum": 1 }
         },
@@ -36,8 +36,8 @@
     },
     {
       "name": "workspace_search",
-      "description": "Search UTF-8 text files in the open project and return matching paths, lines, and excerpts.",
-      "usage": "Use to find definitions, references, requirements, and relevant documentation before editing.",
+      "description": "Search UTF-8 text files in the writable project or an open read-only reference and return matching paths, lines, and excerpts.",
+      "usage": "Use to find definitions, references, requirements, and relevant documentation before editing. An absolute external path asks the user before it is searched unless Full Access is selected.",
       "access": "observe",
       "tokens": ["search", "find", "references", "definitions", "specifications"],
       "parameters": {
@@ -45,7 +45,7 @@
         "additionalProperties": false,
         "properties": {
           "query": { "type": "string", "minLength": 1 },
-          "path": { "type": "string", "description": "Path relative to the open project.", "default": "." },
+          "path": { "type": "string", "description": "Path relative to the writable project, or an absolute path to an open/read-approved reference.", "default": "." },
           "file_pattern": { "type": "string", "default": "*" },
           "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 }
         },
