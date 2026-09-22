@@ -118,4 +118,20 @@ enum class Approval
 };
 
 using Approver = std::function<Approval(const ApprovalRequest&)>;
+
+// A program the Engineer opened for the user to try, and what to check.
+struct TestRequest
+{
+    juce::String command;        // what was opened
+    juce::String instructions;   // what the user should try and look for
+};
+
+struct TestVerdict
+{
+    enum class Outcome { pass, fail, noAnswer };
+    Outcome outcome = Outcome::noAnswer;
+    juce::String comment;        // what the user said
+};
+
+using Tester = std::function<TestVerdict(const TestRequest&)>;
 }

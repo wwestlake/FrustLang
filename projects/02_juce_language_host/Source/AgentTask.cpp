@@ -146,6 +146,8 @@ void AgentTask::recordEngineerResult(const std::string& name, const EngineerTool
         changed = true;
         verified = false;
     }
+    if (result.ok && (result.workspaceChanged || result.verificationPerformed || name == "launch_program" || name == "user_test"))
+        acted = true;
     if (result.verificationPerformed)
     {
         verified = result.ok;
@@ -167,7 +169,7 @@ juce::String AgentTask::phase() const
     if (status != "running") return status;
     if (!inspected) return "inspect";
     if (requiresPlan && plan.isEmpty()) return "plan";
-    if (requiresWrite && !changed) return "implement";
+    if (requiresWrite && !acted) return "implement";
     if (requiresVerification && !verified) return "verify";
     return "finish";
 }
@@ -176,7 +178,8 @@ juce::String AgentTask::completionBlocker() const
 {
     if (!inspected) return "No project inspection has succeeded.";
     if (requiresPlan && plan.isEmpty()) return "No execution plan has been recorded.";
-    if (requiresWrite && !changed) return "No project change has succeeded.";
+    if (requiresWrite && !acted)
+        return "Nothing has been done yet: no change, build, test, command or program launch has succeeded.";
     if (requiresVerification && !verified)
         return "The changed code has not passed verification since the last change (a Frust check, or a build or test "
                "run with run_command).";
@@ -196,13 +199,15 @@ juce::String AgentTask::contextMessage() const
     }
     text << "Observed project: " << (inspected ? "yes" : "no")
          << "\nWorkspace changed: " << (changed ? "yes" : "no")
+         << "\nAction taken (change, build, test, command or launch): " << (acted ? "yes" : "no")
          << "\nVerification passed after latest change: " << (verified ? "yes" : "no") << "\n"
          << "Required behavior: work on this goal until agent_complete_task is accepted or a real "
             "blocker requires agent_request_user. In inspect phase begin with workspace_list on the open "
             "project root, then read the relevant files. In plan phase "
             "call agent_set_plan. In implement phase make the edits, not a prose code sample. In verify "
             "phase call workspace_check_frust for Frust, or build and test with run_command for any other language, and "
-            "repair failures. In review mode inspect and report findings "
+            "repair failures. When the user should try a program, open it with user_test and say what to check: their "
+            "Pass is verification, their Fail is a bug report to fix. In review mode inspect and report findings "
             "without editing. Never claim completion in ordinary text.";
     return text;
 }
@@ -265,6 +270,7 @@ juce::var AgentTask::toJson() const
     object->setProperty("requiresVerification", requiresVerification);
     object->setProperty("inspected", inspected);
     object->setProperty("changed", changed);
+    object->setProperty("acted", acted);
     object->setProperty("verified", verified);
     object->setProperty("toolCalls", toolCalls);
     return juce::var(object);
@@ -290,6 +296,7 @@ bool AgentTask::fromJson(const juce::var& value, AgentTask& task)
     task.requiresVerification = boolProperty(value, "requiresVerification");
     task.inspected = boolProperty(value, "inspected");
     task.changed = boolProperty(value, "changed");
+    task.acted = value.hasProperty("acted") ? boolProperty(value, "acted") : task.changed;
     task.verified = boolProperty(value, "verified");
     task.toolCalls = static_cast<int>(value.getProperty("toolCalls", 0));
     return task.taskId.isNotEmpty() && task.conversationId.isNotEmpty() && task.goal.isNotEmpty();

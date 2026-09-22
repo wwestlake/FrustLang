@@ -82,66 +82,102 @@ MutationIntent mutationIntentFor(const juce::String& request)
     return directoryOnly ? MutationIntent::anyWrite : MutationIntent::fileWrite;
 }
 
-// Asks the user whether a command may run, and waits for the answer. Called on the assistant's worker thread; the dialog runs on
-// the message thread. If the panel is gone, or nobody answers within ten minutes, the answer is no.
-command_tool::Approval askUserToRunCommand(juce::Component::SafePointer<juce::Component> owner,
-                                           const command_tool::ApprovalRequest& request,
-                                           std::function<bool()> shouldStop)
+// Shows a card and waits for the user's answer, from the assistant's worker thread. Returns the button pressed and the comment,
+// or -1 when the run was stopped, the panel is gone, or nobody answered in thirty minutes (the card is then taken away).
+std::pair<int, juce::String> askWithCard(juce::Component::SafePointer<AiChatPanel> panel, const ActionCard::Request& request,
+                                         const std::function<bool()>& shouldStop)
 {
     struct Wait
     {
         std::mutex mutex;
         std::condition_variable answered;
         bool done = false;
-        command_tool::Approval answer = command_tool::Approval::deny;
+        int button = -1;
+        juce::String comment;
     };
     auto wait = std::make_shared<Wait>();
-    auto finish = [wait](command_tool::Approval answer) {
-        std::lock_guard<std::mutex> lock(wait->mutex);
-        wait->done = true;
-        wait->answer = answer;
-        wait->answered.notify_all();
-    };
 
-    juce::MessageManager::callAsync([owner, request, finish] {
-        if (owner == nullptr)
+    juce::MessageManager::callAsync([panel, request, wait] {
+        if (panel == nullptr)
         {
-            finish(command_tool::Approval::deny);
+            std::lock_guard<std::mutex> lock(wait->mutex);
+            wait->done = true;
+            wait->answered.notify_all();
             return;
         }
-        juce::String message;
-        message << "The Engineer wants to run:\n\n    " << request.command << "\n\nin: " << request.workingDirectory << "\n";
-        if (request.reason.isNotEmpty())
-            message << "\nWhy: " << request.reason << "\n";
-        if (request.whyAsked.isNotEmpty())
-            message << "\n(Asked because: " << request.whyAsked << ")\n";
-        const bool offerAlways = request.rulePrefix.isNotEmpty();
-        auto options = juce::MessageBoxOptions()
-            .withIconType(juce::MessageBoxIconType::QuestionIcon)
-            .withTitle("Run this command?")
-            .withMessage(message)
-            .withButton("Run once");
-        if (offerAlways)
-            options = options.withButton("Always allow \"" + request.rulePrefix + "\" here");
-        options = options.withButton("Don't run").withAssociatedComponent(owner.getComponent());
-        // JUCE numbers the buttons 1, 2, ... with the last one 0.
-        juce::AlertWindow::showAsync(options, [finish, offerAlways](int result) {
-            if (result == 1) finish(command_tool::Approval::once);
-            else if (offerAlways && result == 2) finish(command_tool::Approval::always);
-            else finish(command_tool::Approval::deny);
+        panel->showCard(request, [panel, wait](int button, const juce::String& comment) {
+            {
+                std::lock_guard<std::mutex> lock(wait->mutex);
+                wait->done = true;
+                wait->button = button;
+                wait->comment = comment;
+                wait->answered.notify_all();
+            }
+            if (panel != nullptr)
+                panel->closeCard();
         });
     });
 
-    // Waits for the answer, but not past Stop (or the IDE closing), and not more than ten minutes.
-    const auto giveUpAt = std::chrono::steady_clock::now() + std::chrono::minutes(10);
+    const auto giveUpAt = std::chrono::steady_clock::now() + std::chrono::minutes(30);
     std::unique_lock<std::mutex> lock(wait->mutex);
     while (!wait->done)
     {
         if ((shouldStop && shouldStop()) || std::chrono::steady_clock::now() > giveUpAt)
-            return command_tool::Approval::deny;
+        {
+            juce::MessageManager::callAsync([panel] { if (panel != nullptr) panel->closeCard(); });
+            return { -1, {} };
+        }
         wait->answered.wait_for(lock, std::chrono::milliseconds(200));
     }
-    return wait->answer;
+    return { wait->button, wait->comment };
+}
+
+// Whether a command may run: a card with Run once, Always allow (when it can be offered) and Don't run.
+command_tool::Approval askUserToRunCommand(juce::Component::SafePointer<AiChatPanel> panel,
+                                           const command_tool::ApprovalRequest& request,
+                                           std::function<bool()> shouldStop)
+{
+    ActionCard::Request card;
+    const bool opens = request.whyAsked.startsWith("It opens a program");
+    card.title = opens ? "Open this program?" : "Run this command?";
+    card.body << request.command << "\n\nin: " << request.workingDirectory;
+    if (request.reason.isNotEmpty())
+        card.body << "\nwhy: " << request.reason;
+    if (request.whyAsked.isNotEmpty() && !opens)
+        card.body << "\n(asked because: " << request.whyAsked << ")";
+    card.buttons.add(opens ? "Open it" : "Run once");
+    const bool offerAlways = request.rulePrefix.isNotEmpty();
+    if (offerAlways)
+        card.buttons.add("Always allow \"" + request.rulePrefix + "\" here");
+    card.buttons.add(opens ? "Don't open" : "Don't run");
+    card.accent = juce::Colour(0xffe0a040);
+
+    const auto [button, comment] = askWithCard(panel, card, shouldStop);
+    juce::ignoreUnused(comment);
+    if (button == 0) return command_tool::Approval::once;
+    if (offerAlways && button == 1) return command_tool::Approval::always;
+    return command_tool::Approval::deny;
+}
+
+// A program the Engineer opened for the user to try: a card with what to check, a comment box, Pass and Fail.
+command_tool::TestVerdict askUserToTest(juce::Component::SafePointer<AiChatPanel> panel, const command_tool::TestRequest& request,
+                                        std::function<bool()> shouldStop)
+{
+    ActionCard::Request card;
+    card.title = "Test this program";
+    card.body << "It is open in its own window: " << request.command << "\n\nPlease check:\n" << request.instructions;
+    card.buttons = { "Pass", "Fail" };
+    card.wantsComment = true;
+    card.commentHint = "What happened? (especially on Fail)";
+    card.accent = juce::Colour(0xff4ec27a);
+
+    const auto [button, comment] = askWithCard(panel, card, shouldStop);
+    command_tool::TestVerdict verdict;
+    verdict.comment = comment;
+    verdict.outcome = button == 0 ? command_tool::TestVerdict::Outcome::pass
+                    : button == 1 ? command_tool::TestVerdict::Outcome::fail
+                                  : command_tool::TestVerdict::Outcome::noAnswer;
+    return verdict;
 }
 
 // What a tool call is doing, in a few words for the live status ("Reading src/main.cpp").
@@ -165,6 +201,7 @@ juce::String describeCall(const ai_provider::ToolCall& call)
     if (name == "run_command") return "Running " + arg("command");
     if (name == "launch_program") return "Opening " + arg("command") + " in its own window";
     if (name == "stop_program") return "Closing a program it opened";
+    if (name == "user_test") return "Opening " + arg("command") + " for you to test";
     if (name == "agent_set_plan")
     {
         const auto* steps = arguments.getProperty("steps", {}).getArray();
@@ -340,6 +377,24 @@ AiChatPanel::~AiChatPanel()
     }
 }
 
+void AiChatPanel::showCard(ActionCard::Request request, std::function<void(int, const juce::String&)> onAnswer)
+{
+    card = std::make_unique<ActionCard>(std::move(request), std::move(onAnswer));
+    addAndMakeVisible(*card);
+    resized();
+}
+
+void AiChatPanel::closeCard()
+{
+    if (card == nullptr)
+        return;
+    // Not deleted here: this is usually called from the card's own button. It goes on the next message loop.
+    auto* old = card.release();
+    old->setVisible(false);
+    juce::MessageManager::callAsync([old] { delete old; });
+    resized();
+}
+
 void AiChatPanel::showLiveStatus(const juce::String& status, const juce::StringArray& steps)
 {
     if (!requestInFlight)
@@ -393,6 +448,12 @@ void AiChatPanel::resized()
 
     auto inputArea = bounds.removeFromBottom(70);
     bounds.removeFromBottom(4);
+    if (card != nullptr)
+    {
+        const int height = juce::jmin(card->preferredHeight(bounds.getWidth()), bounds.getHeight() / 2);
+        card->setBounds(bounds.removeFromBottom(height));
+        bounds.removeFromBottom(4);
+    }
     transcript.setBounds(bounds);
     sendButton.setBounds(inputArea.removeFromRight(60));
     inputArea.removeFromRight(4);
@@ -862,8 +923,11 @@ void AiChatPanel::sendMessage()
         EngineerTools::CommandServices services;
         auto run = runControl;
         services.shouldStop = [run] { return run->stop.load(); };
-        services.approve = [owner = juce::Component::SafePointer<juce::Component>(this), run](const command_tool::ApprovalRequest& request) {
-            return askUserToRunCommand(owner, request, [run] { return run->stop.load(); });
+        services.approve = [panel = juce::Component::SafePointer<AiChatPanel>(this), run](const command_tool::ApprovalRequest& request) {
+            return askUserToRunCommand(panel, request, [run] { return run->stop.load(); });
+        };
+        services.askTest = [panel = juce::Component::SafePointer<AiChatPanel>(this), run](const command_tool::TestRequest& request) {
+            return askUserToTest(panel, request, [run] { return run->stop.load(); });
         };
         services.progress = [panel = juce::Component::SafePointer<AiChatPanel>(this), run](const juce::String& status) {
             postLiveStatus(panel, run, status);

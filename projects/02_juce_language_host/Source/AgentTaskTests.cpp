@@ -61,6 +61,25 @@ int main()
         R"({"summary":"The implementation plan is ready."})")).ok,
         "Plan mode completes without writing");
 
+    // A task that builds and opens a program changes no file, and must still be able to finish.
+    AgentTask buildAndRun = AgentTask::begin("conversation", "rebuild the REPL and start it", "execute", true, true, false);
+    buildAndRun.recordEngineerResult("workspace_list", { true, false, "Listed project" });
+    expect(buildAndRun.executeControl(call("agent_set_plan",
+        R"({"goal":"rebuild and start","steps":["build it","open it"]})")).ok, "the build-and-run plan is accepted");
+    expect(!buildAndRun.executeControl(call("agent_complete_task", R"({"summary":"done"})")).ok,
+           "it cannot finish before doing anything");
+    buildAndRun.recordEngineerResult("run_command", { true, false, "Exit code 0", true });
+    buildAndRun.recordEngineerResult("launch_program", { true, false, "Opened in its own window" });
+    expect(buildAndRun.executeControl(call("agent_complete_task", R"({"summary":"built and opened"})")).ok,
+           "a build and a launch count as doing the task, with no file changed");
+
+    AgentTask readOnlyCommand = AgentTask::begin("conversation", "make it work", "execute", true, true, false);
+    readOnlyCommand.recordEngineerResult("workspace_list", { true, false, "Listed project" });
+    readOnlyCommand.executeControl(call("agent_set_plan", R"({"goal":"g","steps":["a","b"]})"));
+    readOnlyCommand.recordEngineerResult("run_command", { true, false, "git status", false });
+    expect(!readOnlyCommand.executeControl(call("agent_complete_task", R"({"summary":"x"})")).ok,
+           "a command that only looked does not count as doing the task");
+
     auto review = AgentTask::begin("review-conversation", "Review current code", "review",
                                    false, false, false);
     review.recordEngineerResult("workspace_list", { true, false, "Listed project root" });

@@ -168,6 +168,7 @@ EngineerTools::Result EngineerTools::execute(const ai_provider::ToolCall& call) 
     if (name == "run_command") return runCommand(arguments);
     if (name == "launch_program") return launchProgram(arguments);
     if (name == "stop_program") return stopProgram(arguments);
+    if (name == "user_test") return userTest(arguments);
     return failure("Unknown tool: " + name);
 }
 
@@ -553,4 +554,35 @@ EngineerTools::Result EngineerTools::stopProgram(const juce::var& arguments) con
     if (!command_tool::stopLaunched(processId))
         return failure("Process " + juce::String(processId) + " is not a program the Engineer opened, or it has already ended.");
     return { true, false, "Closed the program (process " + juce::String(processId) + ") and everything it started.", false };
+}
+
+EngineerTools::Result EngineerTools::userTest(const juce::var& arguments) const
+{
+    const auto instructions = stringProperty(arguments, "instructions").trim();
+    if (instructions.isEmpty())
+        return failure("Say what the user should try and what they should see (instructions).");
+    if (!commands.askTest)
+        return failure("There is no one to ask for a test verdict here.");
+
+    // Open it the same way launch_program does (the same rules, and the user is asked first).
+    const auto opened = launchProgram(arguments);
+    if (!opened.ok)
+        return opened;
+
+    if (commands.progress)
+        commands.progress("Waiting for you to test it: the card below has Pass and Fail");
+    const auto verdict = commands.askTest({ stringProperty(arguments, "command").trim(), instructions });
+    const auto said = verdict.comment.isNotEmpty() ? "\nWhat the user said: " + verdict.comment : juce::String("\n(No comment.)");
+
+    switch (verdict.outcome)
+    {
+        case command_tool::TestVerdict::Outcome::pass:
+            return { true, false, "The user tried it and said PASS." + said, true };
+        case command_tool::TestVerdict::Outcome::fail:
+            return { false, false, "The user tried it and said FAIL." + said
+                                       + "\nFix what they describe, build it, and ask them to test again with user_test.", true };
+        case command_tool::TestVerdict::Outcome::noAnswer:
+        default:
+            return failure("The user did not give a verdict (the run was stopped).");
+    }
 }

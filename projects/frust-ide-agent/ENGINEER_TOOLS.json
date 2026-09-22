@@ -196,6 +196,24 @@
           "process_id": { "type": "integer", "description": "The process id launch_program reported. Leave out to list what is running." }
         }
       }
+    },
+    {
+      "name": "user_test",
+      "description": "Open a program in its own window for the user to try, tell them what to check, and wait for their verdict: a card in the assistant panel with Pass, Fail and a comment box. Their answer comes back to you. A Pass is verification of the task; a Fail, with their comment, is a bug report.",
+      "usage": "Use when the result can only be judged by a person using the program: a REPL, a game, a window, anything interactive. Give the command that starts it, and in 'instructions' exactly what to try and what they should see, for example 'Type help and check it lists the commands; type exit and check it quits.' After a Fail, fix what they describe, build, and test again.",
+      "access": "workspace",
+      "tokens": ["test", "try", "user", "verify", "check", "pass", "fail", "feedback", "manual", "repl", "interactive"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "command": { "type": "string", "description": "The PowerShell command that starts the program." },
+          "cwd": { "type": "string", "description": "The folder to start it in, relative to the open project. Default: the project root." },
+          "instructions": { "type": "string", "description": "What the user should try, and what they should see if it works." },
+          "reason": { "type": "string", "description": "Why it needs a person to test it, in a sentence." }
+        },
+        "required": ["command", "instructions", "reason"]
+      }
     }
   ]
 }

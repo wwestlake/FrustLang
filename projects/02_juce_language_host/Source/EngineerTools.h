@@ -36,6 +36,7 @@ public:
         juce::File rulesFolder;
         std::function<bool()> shouldStop;                    // true once the user presses Stop or the IDE is closing
         std::function<void(const juce::String&)> progress;   // a short live status line ("Running dotnet build (0:14): ...")
+        command_tool::Tester askTest;                        // shows the Pass / Fail card and waits for the user's verdict
     };
     void setCommandServices(CommandServices services) { commands = std::move(services); }
 
@@ -61,6 +62,7 @@ private:
     Result runCommand(const juce::var& arguments) const;
     Result launchProgram(const juce::var& arguments) const;
     Result stopProgram(const juce::var& arguments) const;
+    Result userTest(const juce::var& arguments) const;
 
     juce::File root;
     AccessLevel access;

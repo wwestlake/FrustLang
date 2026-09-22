@@ -119,6 +119,8 @@ target_sources(LagDaemonResearchIDE PRIVATE
     Source/ConversationStore.cpp
     Source/AiChatPanel.h
     Source/AiChatPanel.cpp
+    Source/ActionCard.h
+    Source/ActionCard.cpp
     Source/EngineerTools.h
     Source/EngineerTools.cpp
     Source/CommandTool.h

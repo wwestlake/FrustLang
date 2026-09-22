@@ -68,6 +68,9 @@ private:
     bool requiresVerification = false;
     bool inspected = false;
     bool changed = false;
+    // Did the task DO something: a file change, a build or test, a command that acted, or opening a program. A task like
+    // "rebuild it and start it" changes no file; counting only file changes trapped it, unable to finish.
+    bool acted = false;
     bool verified = false;
     int toolCalls = 0;
 };

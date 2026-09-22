@@ -34,7 +34,8 @@ int main()
     EngineerTools workspace(base, EngineerTools::AccessLevel::workspace);
     const auto observeDefinitions = observe.definitions();
     expect(observeDefinitions.size() == 5, "Observe exposes read-only, registry, and verification tools");
-    expect(workspace.definitions().size() == 12, "Workspace exposes all twelve engineering tools: run_command, launch_program and stop_program included");
+    expect(workspace.definitions().size() == 13, "Workspace exposes all thirteen engineering tools: run_command, launch_program, stop_program and user_test included");
+    expect(!workspace.execute(call("user_test", R"({"command":"x","instructions":"try it","reason":"r"})")).ok, "with no one to give a verdict, user_test opens nothing and fails");
     expect(std::none_of(observeDefinitions.begin(), observeDefinitions.end(), [](const auto& tool) {
         return tool.name == "run_command";
     }), "Observe cannot run commands");

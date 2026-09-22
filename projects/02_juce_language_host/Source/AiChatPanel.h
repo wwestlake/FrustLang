@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include <ai_provider/AiConfig.h>
+#include "ActionCard.h"
 #include "AiConversationView.h"
 #include "AgentTask.h"
 #include "ConversationStore.h"
@@ -68,6 +69,7 @@ private:
     juce::TextButton foldersButton { "Folders..." };
     juce::Label taskStatusLabel { "TaskStatus", "No active task" };
     AiConversationView transcript;
+    std::unique_ptr<ActionCard> card;
     juce::TextEditor inputBox;
     juce::TextButton sendButton { "Send" };
 
@@ -103,6 +105,10 @@ public:
     };
     std::shared_ptr<RunControl> runControl;
     void showLiveStatus(const juce::String& status, const juce::StringArray& steps);
+
+    // The card above the message box, for something only the user can decide (see ActionCard). One at a time.
+    void showCard(ActionCard::Request request, std::function<void(int button, const juce::String& comment)> onAnswer);
+    void closeCard();
 
 private:
 
