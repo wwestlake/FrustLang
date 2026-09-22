@@ -3,6 +3,7 @@ import sqlite3
 import re
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 DB_PATH = Path(__file__).parent / "frust_knowledge.db"
@@ -12,6 +13,7 @@ PROJECTS_DIR = REPO_ROOT / "projects"
 AGENT_CONTEXT = REPO_ROOT / "projects" / "frust-ide-agent" / "FRUST_AI_CONTEXT.md"
 SPEC_FILE = REPO_ROOT / "projects" / "01_language_paradigms" / "02_functional" / "FRUST_LANG_SPEC.md"
 ENGINEER_TOOL_CARDS = REPO_ROOT / "projects" / "frust-ide-agent" / "ENGINEER_TOOL_CARDS.jsonl"
+ENGINEER_PROCESS_CARDS = REPO_ROOT / "projects" / "frust-ide-agent" / "ENGINEER_PROCESS_CARDS.jsonl"
 GRAMMAR_FILES = [
     REPO_ROOT / "projects" / "01_language_paradigms" / "02_functional" / "grammar" / "frust.y",
     REPO_ROOT / "projects" / "01_language_paradigms" / "02_functional" / "grammar" / "frust.l",
@@ -94,24 +96,28 @@ def parse_authoritative_docs(cursor):
         else:
             print(f"Warning: grammar file not found at {path}")
 
-def parse_engineer_tool_cards(cursor):
-    if not ENGINEER_TOOL_CARDS.exists():
-        print(f"Warning: Engineer tool cards not found at {ENGINEER_TOOL_CARDS}")
+def parse_card_file(cursor, path, node_type, label):
+    if not path.exists():
+        print(f"Warning: {label} cards not found at {path}")
         return
 
-    for line in ENGINEER_TOOL_CARDS.read_text(encoding="utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         card = json.loads(line)
         upsert_node(
             cursor,
             card["id"],
-            "TOOL",
+            node_type,
             card["title"],
             card["text"],
             card["source"],
         )
-        print(f"Ingested Tool: {card['title']}")
+        print(f"Ingested {label}: {card['title']}")
+
+def parse_engineer_cards(cursor):
+    parse_card_file(cursor, ENGINEER_TOOL_CARDS, "TOOL", "Tool")
+    parse_card_file(cursor, ENGINEER_PROCESS_CARDS, "PROCESS", "Process")
 
 def parse_pods(cursor):
     if not PROJECTS_DIR.exists():
@@ -191,10 +197,16 @@ def main():
     
     print("Initializing LiteSemRAG Database...")
     init_db(cursor)
+    if "--cards-only" in sys.argv:
+        parse_engineer_cards(cursor)
+        conn.commit()
+        conn.close()
+        print(f"Engineer cards updated successfully at {DB_PATH}")
+        return
     clear_db(cursor)
     
     parse_authoritative_docs(cursor)
-    parse_engineer_tool_cards(cursor)
+    parse_engineer_cards(cursor)
     parse_wiki(cursor)
     parse_pods(cursor)
     

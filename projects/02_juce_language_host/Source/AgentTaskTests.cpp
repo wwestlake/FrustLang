@@ -17,6 +17,19 @@ ai_provider::ToolCall call(const std::string& name, const std::string& arguments
 {
     return { "test-call", name, arguments };
 }
+
+AgentTask::ControlResult assess(AgentTask& task)
+{
+    return task.executeControl(call("agent_assess_capabilities",
+        R"({"required":["project files"],"available":["project files"],"missing":[],"evidence":["workspace_list found the project structure"],"options":[]})"));
+}
+
+AgentTask::ControlResult plan(AgentTask& task, const char* goal = "Update main.fr")
+{
+    return task.executeControl(call("agent_set_plan",
+        std::string("{\"goal\":\"") + goal
+        + R"(","steps":["Inspect existing code","Make focused edits","Run acceptance tests"],"constraints":["Keep the requested implementation technology"],"acceptance_tests":["The project check passes"]})"));
+}
 }
 
 int main()
@@ -30,9 +43,9 @@ int main()
         R"({"goal":"Update main.fr","steps":["Inspect existing code","Edit the command loop"]})"));
     expect(!prematurePlan.ok, "Reading one file does not substitute for inspecting project structure");
     task.recordEngineerResult("workspace_list", { true, false, "Listed project root" });
-    auto plan = task.executeControl(call("agent_set_plan",
-        R"({"goal":"Update main.fr","steps":["Inspect existing code","Edit the command loop","Compile-check the result"]})"));
-    expect(plan.ok, "Plan is accepted after inspection");
+    expect(!plan(task).ok, "Plan is rejected before capability assessment");
+    expect(assess(task).ok, "Capability assessment is accepted after inspection");
+    expect(plan(task).ok, "Plan is accepted after inspection and capability assessment");
 
     task.recordEngineerResult("workspace_replace_text", { true, true, "Updated src/main.fr" });
     auto unverified = task.executeControl(call("agent_complete_task", R"({"summary":"done"})"));
@@ -54,28 +67,31 @@ int main()
     auto planOnly = AgentTask::begin("plan-conversation", "Design a parser", "plan",
                                      true, false, false);
     planOnly.recordEngineerResult("workspace_list", { true, false, "Listed project" });
-    expect(planOnly.executeControl(call("agent_set_plan",
-        R"({"goal":"Design a parser","steps":["Read grammar","Describe implementation"]})")).ok,
+    expect(assess(planOnly).ok, "Plan mode assesses prerequisites");
+    expect(plan(planOnly, "Design a parser").ok,
         "Plan mode records a plan");
     expect(planOnly.executeControl(call("agent_complete_task",
         R"({"summary":"The implementation plan is ready."})")).ok,
         "Plan mode completes without writing");
+    expect(planOnly.continuePlanAsExecution(true) && planOnly.canWrite(),
+           "A completed plan becomes an execution task without losing its assessed plan");
 
     // A task that builds and opens a program changes no file, and must still be able to finish.
     AgentTask buildAndRun = AgentTask::begin("conversation", "rebuild the REPL and start it", "execute", true, true, false);
     buildAndRun.recordEngineerResult("workspace_list", { true, false, "Listed project" });
-    expect(buildAndRun.executeControl(call("agent_set_plan",
-        R"({"goal":"rebuild and start","steps":["build it","open it"]})")).ok, "the build-and-run plan is accepted");
+    assess(buildAndRun);
+    expect(plan(buildAndRun, "rebuild and start").ok, "the build-and-run plan is accepted");
     expect(!buildAndRun.executeControl(call("agent_complete_task", R"({"summary":"done"})")).ok,
            "it cannot finish before doing anything");
-    buildAndRun.recordEngineerResult("run_command", { true, false, "Exit code 0", true });
+    buildAndRun.recordEngineerResult("run_command", { true, false, "Ran in PowerShell in .: cmake --build build --config Debug --target repl\nExit code 0", true });
     buildAndRun.recordEngineerResult("launch_program", { true, false, "Opened in its own window" });
     expect(buildAndRun.executeControl(call("agent_complete_task", R"({"summary":"built and opened"})")).ok,
            "a build and a launch count as doing the task, with no file changed");
 
     AgentTask readOnlyCommand = AgentTask::begin("conversation", "make it work", "execute", true, true, false);
     readOnlyCommand.recordEngineerResult("workspace_list", { true, false, "Listed project" });
-    readOnlyCommand.executeControl(call("agent_set_plan", R"({"goal":"g","steps":["a","b"]})"));
+    assess(readOnlyCommand);
+    plan(readOnlyCommand, "make it work");
     readOnlyCommand.recordEngineerResult("run_command", { true, false, "git status", false });
     expect(!readOnlyCommand.executeControl(call("agent_complete_task", R"({"summary":"x"})")).ok,
            "a command that only looked does not count as doing the task");
@@ -87,6 +103,43 @@ int main()
     expect(review.executeControl(call("agent_complete_task",
         R"({"summary":"One correctness issue found."})")).ok,
         "Review mode completes after inspection without a plan or write");
+
+    auto blocked = AgentTask::begin("blocked", "Implement parser", "execute", true, true, true);
+    blocked.recordEngineerResult("workspace_list", { true, false, "Listed project" });
+    auto missing = blocked.executeControl(call("agent_assess_capabilities",
+        R"({"required":["working library linker"],"available":[],"missing":["working library linker"],"evidence":["known-good library test reproduces duplicate symbol"],"options":["repair the linker","change the library boundary"]})"));
+    expect(missing.ok && missing.terminal && blocked.isResumable(),
+           "Missing prerequisites pause the task before edits");
+    expect(blocked.resume(), "A user continuation resumes the same task packet");
+
+    auto converging = AgentTask::begin("converging", "Fix linker issue", "execute", true, true, true);
+    converging.recordEngineerResult("workspace_list", { true, false, "Listed project" });
+    assess(converging);
+    plan(converging, "Fix linker issue");
+    converging.recordEngineerResult("workspace_check_frust", { false, false, "Error: duplicate symbol print_f64", true });
+    converging.recordEngineerResult("workspace_read", { true, false, "Read src/lib.fr" });
+    converging.recordEngineerResult("workspace_check_frust", { false, false, "Error: duplicate symbol print_f64", true });
+    converging.recordEngineerResult("workspace_replace_text", { true, true, "Updated src/lib.fr" });
+    converging.recordEngineerResult("workspace_check_frust", { false, false, "Error: duplicate symbol print_f64", true });
+    expect(converging.isResumable(), "Three matching failures trigger a convergence stop despite intervening reads and edits");
+
+    auto release = AgentTask::begin("release", "Build, test, and publish the JSON pod", "execute", true, true, true);
+    release.recordEngineerResult("workspace_list", { true, false, "Listed project" });
+    assess(release);
+    plan(release, "Build, test, and publish the JSON pod");
+    release.recordEngineerResult("workspace_replace_text", { true, true, "Updated src/parser.fr" });
+    release.recordEngineerResult("workspace_check_frust", { true, false, "Frust check passed", true });
+    expect(!release.executeControl(call("agent_complete_task", R"({"summary":"done"})")).ok,
+           "A syntax check does not satisfy build, test, and publish gates");
+    release.recordEngineerResult("run_command", { true, false, "Ran in PowerShell in .: frate build\nExit code 0", true });
+    expect(!release.executeControl(call("agent_complete_task", R"({"summary":"done"})")).ok,
+           "A build does not satisfy test and publish gates");
+    release.recordEngineerResult("run_command", { true, false, "Ran in PowerShell in .: frate run --test\nExit code 0", true });
+    expect(!release.executeControl(call("agent_complete_task", R"({"summary":"done"})")).ok,
+           "Tests do not satisfy a publish gate");
+    release.recordEngineerResult("run_command", { true, false, "Ran in PowerShell in .: frate publish\nExit code 0", false });
+    expect(release.executeControl(call("agent_complete_task", R"({"summary":"released"})")).ok,
+           "Completion is accepted only after every requested release gate succeeds");
     folder.deleteRecursively();
 
     if (failures == 0) std::cout << "AgentTaskTests: all checks passed\n";

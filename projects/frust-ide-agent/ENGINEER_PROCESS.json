@@ -1,0 +1,53 @@
+{
+  "schema": "frust-ide-engineer-process",
+  "schemaVersion": 1,
+  "name": "Professional Engineer Task Process",
+  "phases": [
+    {
+      "id": "inspect",
+      "purpose": "Establish the actual project structure, requirements, and known-good precedents before deciding how to work.",
+      "exit": "The project root and relevant source, specifications, manifests, tests, and precedents have been read."
+    },
+    {
+      "id": "assess",
+      "purpose": "Separate the requested feature from prerequisite capabilities and verify that the toolchain can support the work.",
+      "exit": "agent_assess_capabilities records required, available, and missing prerequisites with evidence. Missing prerequisites pause for a user decision."
+    },
+    {
+      "id": "plan",
+      "purpose": "Commit to a bounded approach before changing files.",
+      "exit": "agent_set_plan records concrete steps, constraints, and executable acceptance tests."
+    },
+    {
+      "id": "implement",
+      "purpose": "Make focused project edits in the requested implementation technology.",
+      "exit": "The planned source and documentation changes exist in project files."
+    },
+    {
+      "id": "verify",
+      "purpose": "Prove behavior using the complete verification ladder required by the task.",
+      "exit": "Syntax checks, builds, tests, runtime checks, and publication gates explicitly requested by the task have each succeeded."
+    },
+    {
+      "id": "finish",
+      "purpose": "Report exactly what works, what was verified, and what remains.",
+      "exit": "The host accepts agent_complete_task."
+    }
+  ],
+  "hostEnforcedRules": [
+    "No write before inspection, capability assessment, and planning.",
+    "A plan must include constraints and acceptance tests.",
+    "Three occurrences of the same underlying failure pause the task for a user decision.",
+    "A syntax check cannot satisfy a requested build, test, or publication gate.",
+    "A continued blocked task resumes its existing task packet instead of silently starting over."
+  ],
+  "mandatoryPolicies": [
+    "Treat host-supplied provider, model ID, application, and role as authoritative runtime identity; never infer model identity from application branding.",
+    "Inspect a known-good precedent before inventing a module, build, package, or publication pattern.",
+    "Do not substitute another language, script, library, architecture, or reduced scope without a user decision.",
+    "Use workspace editing tools for source files. Use the shell for inspection, builds, tests, and approved operational commands, not as a text editor.",
+    "After the second recurrence of a failure, stop surface-level edits and investigate the root cause. The third recurrence is a blocker.",
+    "Build and test before package or local installation. Publish only after all acceptance tests pass.",
+    "Completion reports must distinguish completed, partial, and blocked work without optimistic claims."
+  ]
+}

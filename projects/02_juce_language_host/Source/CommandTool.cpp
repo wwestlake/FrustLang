@@ -115,6 +115,10 @@ Part judge(juce::String text, const juce::StringArray& allowedPrefixes, juce::St
             return deny("'" + program + "' changes the machine, not the project, and is never run from the IDE.");
     if (hasWord(w, { "-encodedcommand", "-enc", "-ec" }))
         return deny("An encoded command cannot be read, so it is never run. Write the command out.");
+    if (lower.contains("set-content") || lower.contains("add-content") || lower.contains("out-file")
+        || lower.contains("writealltext") || lower.contains("writealllines") || lower.contains("appendalltext"))
+        return deny("The shell is not a source-code editor. Read and edit project files with the workspace tools so changes "
+                    "are revision-checked and visible to the task process.");
     if (program == "git" && ((second == "push" && hasWord(w, { "--force", "-f", "--force-with-lease", "--mirror", "--delete" }))
                              || (second == "reset" && hasWord(w, { "--hard" })) || second == "clean"
                              || (second == "branch" && hasWord(w, { "-d", "-D" })) || (second == "checkout" && hasWord(w, { "--", "." }))))

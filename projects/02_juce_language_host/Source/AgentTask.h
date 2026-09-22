@@ -30,18 +30,21 @@ public:
     static bool load(const juce::File& conversationFolder,
                      const juce::String& conversationId,
                      AgentTask& task);
+    bool resume();
 
     bool save(const juce::File& conversationFolder) const;
     std::vector<ai_provider::ToolDefinition> controlDefinitions() const;
     ControlResult executeControl(const ai_provider::ToolCall& call);
     void recordEngineerResult(const std::string& toolName, const EngineerTools::Result& result);
     void fail(const juce::String& reason);
+    bool continuePlanAsExecution(bool verificationRequired);
 
     juce::String contextMessage() const;
     juce::String statusLine() const;
     juce::String finalMessage() const;
     bool isTerminal() const;
     bool isCompleted() const;
+    bool isResumable() const;
     bool canWrite() const;
     const juce::StringArray& planSteps() const;
     const juce::String& taskGoal() const;
@@ -50,6 +53,8 @@ public:
 private:
     juce::String phase() const;
     juce::String completionBlocker() const;
+    static juce::String failureFingerprint(const juce::String& message);
+    void recordCommandEvidence(const juce::String& message);
     juce::var toJson() const;
     static bool fromJson(const juce::var&, AgentTask&);
 
@@ -61,16 +66,31 @@ private:
     juce::String summary;
     juce::String pendingQuestion;
     juce::String latestVerification;
+    juce::String repeatedFailure;
     juce::StringArray plan;
+    juce::StringArray constraints;
+    juce::StringArray acceptanceTests;
+    juce::StringArray requiredCapabilities;
+    juce::StringArray availableCapabilities;
+    juce::StringArray missingCapabilities;
+    juce::StringArray capabilityEvidence;
     juce::StringArray observations;
     bool requiresWrite = false;
     bool requiresPlan = true;
     bool requiresVerification = false;
+    bool requiresBuildEvidence = false;
+    bool requiresTestEvidence = false;
+    bool requiresPublishEvidence = false;
     bool inspected = false;
+    bool capabilitiesAssessed = false;
     bool changed = false;
     // Did the task DO something: a file change, a build or test, a command that acted, or opening a program. A task like
     // "rebuild it and start it" changes no file; counting only file changes trapped it, unable to finish.
     bool acted = false;
     bool verified = false;
+    bool buildVerified = false;
+    bool testsVerified = false;
+    bool published = false;
+    int repeatedFailureCount = 0;
     int toolCalls = 0;
 };

@@ -14,7 +14,8 @@ Crawls the `wiki/reference` directory and `projects/` source code.
 
 ### `build_engineer_tool_cards.py`
 Generates the assistant's LiteSemRAG tool cards from
-`projects/frust-ide-agent/ENGINEER_TOOLS.json`. FrustIDE reads that same catalog
+`projects/frust-ide-agent/ENGINEER_TOOLS.json`. The database builder also ingests
+`ENGINEER_PROCESS_CARDS.jsonl`. FrustIDE reads the tool catalog
 to construct the live provider tool definitions, keeping tool knowledge and
 executable capability synchronized.
 
@@ -24,6 +25,12 @@ py tools\rag\build_engineer_tool_cards.py
 py tools\rag\litesemrag_builder.py
 ```
 This will output `frust_knowledge.db` in this directory.
+
+To update only tool and process cards without rebuilding language and pod nodes:
+
+```powershell
+py tools\rag\litesemrag_builder.py --cards-only
+```
 
 The IDE links SQLite directly and reads `tools/rag/frust_knowledge.db` from the
 repo root compiled into the Debug/Release build. `AiChatPanel` keeps the

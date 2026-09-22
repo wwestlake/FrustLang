@@ -158,6 +158,8 @@ int main()
         expect(verdictOf("git reset --hard HEAD~1").verdict == Verdict::deny, "git reset --hard is refused");
         expect(verdictOf("shutdown /s").verdict == Verdict::deny, "shutting the machine down is refused");
         expect(verdictOf("powershell -EncodedCommand AAAA").verdict == Verdict::deny, "an encoded command is refused");
+        expect(verdictOf("(Get-Content src/main.fr) -replace 'a','b' | Set-Content src/main.fr").verdict == Verdict::deny,
+               "the shell cannot be used as an untracked source editor");
         expect(verdictOf("Remove-Item C:\\Windows\\foo").verdict == Verdict::deny, "deleting outside the project is refused");
         expect(verdictOf("Remove-Item build\\obj -Recurse").verdict == Verdict::ask, "deleting inside the project is asked");
         expect(verdictOf("Remove-Item build", { "remove-item" }).verdict == Verdict::ask, "and a saved rule never allows a deletion");

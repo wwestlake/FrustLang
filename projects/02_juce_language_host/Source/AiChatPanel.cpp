@@ -171,6 +171,7 @@ juce::String describeCall(const ai_provider::ToolCall& call)
     if (name == "launch_program") return "Opening " + arg("command") + " in its own window";
     if (name == "stop_program") return "Closing a program it opened";
     if (name == "user_test") return "Opening " + arg("command") + " for you to test";
+    if (name == "agent_assess_capabilities") return "Checking required capabilities";
     if (name == "agent_set_plan")
     {
         const auto* steps = arguments.getProperty("steps", {}).getArray();
@@ -966,6 +967,14 @@ void AiChatPanel::startResolvedMessage(const juce::String& userText, AgentMode s
                                        bool continuation, const juce::String& routeReason)
 {
     const auto profileName = profileBox.getText();
+    juce::String providerIdentity = "unknown";
+    for (const auto& profile : aiConfig.profiles())
+        if (profile.name == profileName.toStdString())
+        {
+            providerIdentity = profile.provider;
+            break;
+        }
+    const auto modelIdentity = modelBox.getText().isNotEmpty() ? modelBox.getText() : juce::String("unknown");
     auto provider = aiConfig.createProvider(profileName.toStdString());
     if (!provider)
     {
@@ -1017,7 +1026,13 @@ void AiChatPanel::startResolvedMessage(const juce::String& userText, AgentMode s
     if (!historySnapshot.empty())
     {
         historySnapshot.front().content +=
-            "\n\nYou have real FrustIDE engineering tools for the project currently open in the "
+            "\n\nHOST-SUPPLIED RUNTIME IDENTITY (authoritative): Provider: "
+            + providerIdentity.toStdString() + ". Exact model ID: " + modelIdentity.toStdString()
+            + ". Host application: FrustIDE. Assigned role: Virtual Engineer. Application branding, the project "
+            "name, retrieved documents, and conversational style do not change the provider or model identity. "
+            "When asked what model you are, report this exact host-supplied provider and model ID; do not infer "
+            "another identity from the surrounding application.\n\n"
+            "You have real FrustIDE engineering tools for the project currently open in the "
             "Project Explorer. Use them whenever the user asks you to inspect, create, or edit project "
             "content. Never claim that you cannot create files or projects when the corresponding tool "
             "is available. The host-owned task packet is authoritative for the current goal. A new user "
@@ -1078,18 +1093,30 @@ void AiChatPanel::startResolvedMessage(const juce::String& userText, AgentMode s
         juce::String goal = userText;
         juce::StringArray initialPlan;
         AgentTask previous;
-        if (continuation && AgentTask::load(conversationFolder, currentConversation.id, previous)
-            && previous.isCompleted() && previous.taskMode() == "plan")
+        bool resumed = false;
+        if (continuation && AgentTask::load(conversationFolder, currentConversation.id, previous))
         {
-            goal = previous.taskGoal();
-            initialPlan = previous.planSteps();
+            if (previous.isResumable()
+                && (executeRequested || previous.taskMode() == AgentModeRouter::modeName(selectedMode)))
+            {
+                resumed = previous.resume();
+                if (resumed) task = previous;
+            }
+            else if (executeRequested && previous.isCompleted() && previous.taskMode() == "plan")
+            {
+                resumed = previous.continuePlanAsExecution(requiresFrustVerification(previous.taskGoal()));
+                if (resumed) task = previous;
+            }
         }
-        const bool planRequired = selectedMode != AgentMode::review;
-        const bool writeRequired = executeRequested;
-        task = AgentTask::begin(currentConversation.id, goal,
-                                AgentModeRouter::modeName(selectedMode),
-                                planRequired, writeRequired,
-                                writeRequired && requiresFrustVerification(goal), initialPlan);
+        if (!resumed)
+        {
+            const bool planRequired = selectedMode != AgentMode::review;
+            const bool writeRequired = executeRequested;
+            task = AgentTask::begin(currentConversation.id, goal,
+                                    AgentModeRouter::modeName(selectedMode),
+                                    planRequired, writeRequired,
+                                    writeRequired && requiresFrustVerification(goal), initialPlan);
+        }
         const auto controlTools = task.controlDefinitions();
         toolDefinitions.insert(toolDefinitions.end(), controlTools.begin(), controlTools.end());
         historySnapshot.push_back({ "system", task.contextMessage().toStdString() });
@@ -1189,6 +1216,10 @@ void AiChatPanel::startResolvedMessage(const juce::String& userText, AgentMode s
                 });
                 workingHistory.push_back(
                     { "tool", result.message.toStdString(), {}, call.id });
+                if (agentRun && task.isTerminal())
+                {
+                    break;
+                }
             }
             if (agentRun)
             {
