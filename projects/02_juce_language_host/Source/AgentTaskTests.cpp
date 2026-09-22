@@ -113,6 +113,16 @@ int main()
         R"({"summary":"One correctness issue found."})")).ok,
         "Review mode completes after inspection without a plan or write");
 
+    auto externalEvidence = AgentTask::begin(
+        "external-evidence", "Build the analyzer using D:\\FrustLang\\projects\\frust_json", "execute",
+        true, true, true);
+    externalEvidence.recordEngineerResult("workspace_list", { true, false, "Listed 0 entries." });
+    expect(externalEvidence.currentPhase() == "inspect",
+           "An empty project does not finish inspection when the goal names external evidence");
+    externalEvidence.recordEngineerResult("workspace_read", { true, false, "D:/FrustLang/projects/frust_json/frate.json" });
+    expect(externalEvidence.currentPhase() == "assess",
+           "Reading named external evidence advances the task to capability assessment");
+
     auto blocked = AgentTask::begin("blocked", "Implement parser", "execute", true, true, true);
     blocked.recordEngineerResult("workspace_list", { true, false, "Listed project" });
     auto missing = blocked.executeControl(call("agent_assess_capabilities",

@@ -245,6 +245,13 @@ void AgentTask::recordEngineerResult(const std::string& name, const EngineerTool
 {
     ++toolCalls;
     if (result.ok && name == "workspace_list")
+    {
+        const bool emptyProject = result.message.startsWith("Listed 0 entries");
+        const bool goalNamesExternalEvidence = goal.contains(":\\") || goal.contains(":/");
+        inspected = !emptyProject || !goalNamesExternalEvidence;
+    }
+    if (result.ok && name == "workspace_read" && !inspected
+        && (goal.contains(":\\") || goal.contains(":/")))
         inspected = true;
     const auto commandLine = result.message.upToFirstOccurrenceOf("\n", false, false).toLowerCase();
     const bool releaseCommand = name == "run_command"
