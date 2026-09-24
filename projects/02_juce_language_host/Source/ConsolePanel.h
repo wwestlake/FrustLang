@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include <ReplSession.h>
+#include <CompilerApi.h>
 #include <functional>
 #include <memory>
 
@@ -39,6 +40,7 @@ public:
     // Fired after evaluate()/reset()/load() actually change the bound-
     // variable set, so a companion panel knows to re-pull and redraw.
     std::function<void()> onSessionChanged;
+    std::function<void(std::vector<frust::Diagnostic>)> onDiagnostics;
 
 private:
     void evaluateInput();

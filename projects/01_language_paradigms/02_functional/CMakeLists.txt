@@ -167,16 +167,32 @@ add_library(frust_lang STATIC
     ASTHash.h
     Lexer.h
     Codegen.h
+    Diagnostics.h
+    CompilerApi.h
+    CompilerApi.cpp
+    HostEnvironment.h
+    MemoryEnvironment.h
+    EnvironmentCompile.h
+    EnvironmentCompile.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../05_frate/include/frate/PodBuild.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../05_frate/src/PodBuild.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../05_frate/include/frate/PodEnvironment.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../05_frate/src/PodEnvironment.cpp"
     ReplSession.h
     ReplSession.cpp
     ModuleLoader.h
     ModuleLoader.cpp
+    # The disk half of module loading. Its own object file inside frust_lang: a host that never
+    # references it (an application using a HostEnvironment) does not get it linked in.
+    DiskLoader.h
+    DiskLoader.cpp
     "${FRUST_PARSER_CPP}"
     "${FRUST_LEXER_CPP}"
 )
 
 target_include_directories(frust_lang
     PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}"
+           "${CMAKE_CURRENT_SOURCE_DIR}/../../05_frate/include"
     PRIVATE "${FRUST_GEN_DIR}" "${FRUST_FLEXLEXER_INCLUDE_DIR}"
 )
 
@@ -234,7 +250,7 @@ target_compile_definitions(frust_compiler PRIVATE
 # executable's global symbols aren't in the dynamic symbol table by default
 # regardless of visibility attributes - ENABLE_EXPORTS adds -rdynamic there
 # (a no-op on Windows, where dllexport is already doing the job).
-set_target_properties(frust_compiler PROPERTIES ENABLE_EXPORTS ON)
+set_target_properties(frust_compiler PROPERTIES OUTPUT_NAME "frust_compiler_x" ENABLE_EXPORTS ON)
 
 target_include_directories(frust_compiler PRIVATE
     "${FRUST_GEN_DIR}"
@@ -245,6 +261,36 @@ if(WIN32)
     target_compile_definitions(frust_compiler PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 target_link_libraries(frust_compiler PRIVATE frust_lang frust_runtime ${FRUST_LLVM_LIBS})
+
+# ------------------------------------------------------------------------------
+# frust_compiler_api_smoke: checks the embeddable compiler (CompilerApi.h) -
+# source text in, diagnostics and object bytes out, and that it touches no file.
+# Exit code 0 = pass.
+# ------------------------------------------------------------------------------
+add_executable(frust_compiler_api_smoke tests/CompilerApiSmoke.cpp)
+target_include_directories(frust_compiler_api_smoke PRIVATE "${FRUST_GEN_DIR}" "${FRUST_FLEXLEXER_INCLUDE_DIR}")
+if(WIN32)
+    target_compile_definitions(frust_compiler_api_smoke PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+target_link_libraries(frust_compiler_api_smoke PRIVATE frust_lang frust_runtime ${FRUST_LLVM_LIBS})
+
+# frate_pod_build_smoke: building a pod entirely in memory (frate/PodBuild.h,
+# frate/PodArchive.h) - pod files in, diagnostics and object bytes out, no file touched.
+add_executable(frate_pod_build_smoke "${CMAKE_CURRENT_SOURCE_DIR}/../../05_frate/tests/PodBuildSmoke.cpp")
+target_include_directories(frate_pod_build_smoke PRIVATE "${FRUST_GEN_DIR}" "${FRUST_FLEXLEXER_INCLUDE_DIR}")
+if(WIN32)
+    target_compile_definitions(frate_pod_build_smoke PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+target_link_libraries(frate_pod_build_smoke PRIVATE frust_lang frust_runtime frate_lib ${FRUST_LLVM_LIBS})
+
+# frust_environment_smoke: the compiler and Frate over a HostEnvironment (files and log through the
+# environment only) - see HostEnvironment.h.
+add_executable(frust_environment_smoke tests/EnvironmentSmoke.cpp)
+target_include_directories(frust_environment_smoke PRIVATE "${FRUST_GEN_DIR}" "${FRUST_FLEXLEXER_INCLUDE_DIR}")
+if(WIN32)
+    target_compile_definitions(frust_environment_smoke PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+target_link_libraries(frust_environment_smoke PRIVATE frust_lang frust_runtime frate_lib ${FRUST_LLVM_LIBS})
 
 # ------------------------------------------------------------------------------
 # Install - on Linux, CMAKE_INSTALL_PREFIX is set by the "linux" preset to

@@ -35,6 +35,17 @@ the signal to stop and just build the Windows version.
 - Never configure Frust with vcpkg's CMake toolchain file and never run `vcpkg install` from this repo as part of a normal Frust build. The Windows preset consumes the already-built LLVM install at `D:/000 Creation Suite/apps/CreationEngine/vcpkg_installed/x64-windows`; `CMakeLists.txt` must fail if LLVM is not found inside that existing install tree.
 - Other subprojects (`09_frust_plugin_host`, `10_node_compiler`, `02_juce_language_host`) pull in Frust core via `add_subdirectory` using a relative path up to `01_language_paradigms/02_functional` - the `projects/` layout must stay intact for these to resolve.
 
+## Project naming
+
+- New project folders under `projects/` use kebab-case with `-` separators, not spaces or numeric prefixes. Example: `frust-linalg`, not `13_frust_linalg` or `Frust Linalg`.
+
+## Frate registry policy
+
+- All formal library pods belong in the Frate registry, including pods that also ship with Frust itself. Bundled pods are the default local copy; the registry is still the version/update channel when a project wants or needs a newer compatible pod version.
+- Formal pods currently include the shipped standard pods (`core`, `meta`, `plugin`) and reusable library pods such as `frust_collections`, `frust_dsp`, `frust_ecs`, `frust_geo`, `frust_graph`, `frust_hep_stats`, `frust_histogram`, `frust_http`, `frust_json`, `frust_linalg`, `frust_net`, `frust_noise`, `frust_numerics`, `frust_osc`, `frust_physics`, `frust_wave`, and `frust_websocket`.
+- Workspace manifests, smoke-test pods, examples, and local experiments are not formal library pods and should not be published to the registry unless the user explicitly promotes them.
+- `frate publish` uses the IDE OAuth session token saved by the LagDaemon Research IDE. If publishing fails with "Not signed in", have the user sign in through the IDE Account menu, then retry while the session token is still current.
+
 ## Standard workflow (every change, no exceptions)
 
 1. Make the change.
@@ -67,3 +78,9 @@ the signal to stop and just build the Windows version.
 ## Toolchain
 
 - LLVM 18.1.6 via vcpkg, WinFlexBison, and JUCE are all machine-level installs referenced by absolute path in `CMakePresets.json` - not part of this repo, don't try to vendor them in.
+
+## Math Packs and Algorithmic Libraries
+
+- **Algorithmic math packs must be general.** When building complex math libraries, simulations, or procedural algorithms (like the Frust effects), design them to be general, reusable, and framework-agnostic. 
+- **The technology calls the math.** The host technology or UI framework should call these general math packs, not the other way around. Do not tightly couple the core algorithms to the UI layer.
+- **Scope restriction:** This rule specifically applies to heavy, reusable *math packs*. It does NOT mean all math must be abstracted. UI components and specific technologies are perfectly free to compute their own trivial math, layout measurements, and localized logic.

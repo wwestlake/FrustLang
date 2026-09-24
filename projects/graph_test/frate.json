@@ -1,0 +1,14 @@
+{
+  "name": "graph_test",
+  "version": "0.1.0",
+  "type": "lib",
+  "description": "User application testing the frust_plot library.",
+  "exports": [
+    "render_graph"
+  ],
+  "dependencies": [
+    { "name": "core", "version": "1.0.1" },
+    { "name": "frust_plot", "version": "0.1.0" },
+    { "name": "frust_noise", "version": "0.1.0" }
+  ]
+}

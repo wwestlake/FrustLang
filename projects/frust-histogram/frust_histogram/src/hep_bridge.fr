@@ -1,0 +1,3 @@
+pub fn hist4_signal_background_model(signal: Hist4f, background: Hist4f, index: i64) -> CountingModel = {
+    counting_model(hist4_count(signal, index), hist4_count(background, index))
+}

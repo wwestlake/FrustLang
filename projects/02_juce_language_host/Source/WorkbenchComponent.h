@@ -11,7 +11,12 @@
 #include "FratePanel.h"
 #include "PluginsPanel.h"
 #include "TerminalPanel.h"
+#include "ErrorListPanel.h"
+#include "PlanReviewPanel.h"
 #include "Auth/DesktopAuthSession.h"
+#include "LocalAgentApi.h"
+
+#include <vector>
 
 class WorkbenchComponent  : public juce::Component,
                            public juce::MenuBarModel
@@ -30,18 +35,35 @@ public:
 
 private:
     void runActiveFileInRepl();
+    void addReadOnlyRoot(const juce::File& folder, bool persist = true);
+    void removeReadOnlyRoot(CreationDock::DockPanel* panel);
+    std::vector<juce::File> getReadOnlyRoots() const;
+    void saveReadOnlyRoots();
 
     std::unique_ptr<juce::MenuBarComponent> menuBar;
     juce::TextButton runButton { "Run" };
+    juce::ImageComponent brandLogo;
+    juce::Label brandName { "Brand", "FrustIDE" };
     std::unique_ptr<juce::ApplicationProperties> appProperties;
     std::unique_ptr<DesktopAuthSession> authSession;
+    std::unique_ptr<LocalAgentApi> localAgentApi;
     std::unique_ptr<CreationDock::DockManager> dockManager;
     FileTreePanel* fileTreePanel = nullptr;
+    struct ReferenceTree
+    {
+        juce::File folder;
+        FileTreePanel* tree = nullptr;
+        CreationDock::DockPanel* panel = nullptr;
+    };
+    std::vector<ReferenceTree> referenceTrees;
     EditorTabComponent* editorTabComponent = nullptr;
     ConsolePanel* consolePanel = nullptr;
     TerminalPanel* terminalPanel = nullptr;
     ContextPanel* contextPanel = nullptr;
+    ErrorListPanel* errorListPanel = nullptr;
+    PlanReviewPanel* planReviewPanel = nullptr;
     FratePanel* fratePanel = nullptr;
+    AiChatPanel* aiChatPanel = nullptr;
     std::unique_ptr<juce::FileChooser> activeFileChooser;
 
     static juce::File getLayoutFile();
@@ -49,6 +71,7 @@ private:
     enum MenuCommands {
         FileNew = 1,
         FileOpenFolder,
+        FileOpenReferenceFolder,
         FileSave,
         FileCloseTab,
         FileExit,

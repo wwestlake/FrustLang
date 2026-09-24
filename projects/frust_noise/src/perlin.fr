@@ -1,0 +1,14 @@
+pub fn perlin_1d(x: f32) -> f32 = {
+    // Stub
+    x * 0.5
+}
+
+pub fn perlin_2d(x: f32, y: f32) -> f32 = {
+    // Stub
+    x * y
+}
+
+pub fn perlin_3d(x: f32, y: f32, z: f32) -> f32 = {
+    // Stub
+    x * y * z
+}

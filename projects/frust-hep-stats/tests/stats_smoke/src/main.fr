@@ -1,0 +1,30 @@
+use core;
+use frust_numerics;
+use frust_hep_stats;
+
+fn pass_if(cond: bool) -> i64 = {
+    if cond == true { 1 } else { 0 }
+}
+
+fn main() -> i64 = {
+    let model: CountingModel = counting_model(5.0, 4.0);
+    let q0: f64 = q0_counting(9.0, model);
+    let z0: f64 = z0_counting(9.0, model);
+    let asimov: AsimovCounting = asimov_counting(3.0, 1.0);
+    let cls: ClsResult = cls_result(0.02, 0.5);
+    let global_p: f64 = trials_factor_p_global(0.001, 20.0);
+    let gv: f64 = gross_vitells_bound(0.001, 2.0, 3.0, 1.0);
+    let dev0: f64 = poisson_deviance(10.0, 10.0);
+    let dev1: f64 = poisson_deviance(4.0, 2.0);
+
+    pass_if(hep_approx_eq_f64(dev0, 0.0, 0.000001)) +
+    pass_if(hep_approx_eq_f64(dev1, 1.5451774, 0.00001)) +
+    pass_if(hep_approx_eq_f64(q0, 4.5967439, 0.00001)) +
+    pass_if(hep_approx_eq_f64(z0, 2.1440018, 0.00001)) +
+    pass_if(hep_approx_eq_f64(asimov.signal_plus_background, 4.0, 0.000001)) +
+    pass_if(hep_approx_eq_f64(asimov.median_discovery_z, 2.2561815, 0.00001)) +
+    pass_if(hep_approx_eq_f64(cls.cl_s, 0.04, 0.000001)) +
+    pass_if(cls.excluded_95 == true) +
+    pass_if(hep_approx_eq_f64(global_p, 0.02, 0.000001)) +
+    pass_if(hep_approx_eq_f64(gv, 0.0376313, 0.00001))
+}

@@ -1,0 +1,5 @@
+struct HttpRequest {
+    method_id: i64, // e.g. GET=0, POST=1
+    uri_ptr: i64,
+    content_length: i64
+}

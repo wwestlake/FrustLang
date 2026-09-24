@@ -1,0 +1,8 @@
+struct OscMessage {
+    address_ptr: i64,
+    typetag_ptr: i64
+}
+
+pub fn osc_message_new(address: i64) -> OscMessage = {
+    OscMessage { address_ptr: address, typetag_ptr: 0 }
+}

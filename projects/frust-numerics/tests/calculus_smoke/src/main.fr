@@ -1,0 +1,32 @@
+use core;
+use frust_numerics;
+
+fn pass_if(cond: bool) -> i64 = {
+    if cond == true { 1 } else { 0 }
+}
+
+fn main() -> i64 = {
+    let trap: f32 = trapezoid_area_f32(2.0, 4.0, 3.0);
+    let simp: f32 = simpson_area_f32(1.0, 4.0, 1.0, 0.5);
+    let integ: f32 = integrate_samples4_trapezoid_f32(0.0, 1.0, 2.0, 3.0, 1.0);
+    let fwd: f32 = forward_diff_f32(3.0, 7.0, 2.0);
+    let back: f32 = backward_diff_f32(5.0, 11.0, 3.0);
+    let cent: f32 = central_diff_f32(1.0, 9.0, 2.0);
+    let second: f32 = second_central_diff_f32(1.0, 4.0, 9.0, 1.0);
+    let euler: f32 = euler_step_f32(10.0, -2.0, 3.0);
+    let midpoint: f32 = midpoint_step_f32(2.0, 5.0, 4.0);
+    let newton: f32 = newton_step_f32(3.0, 1.0, 6.0);
+    let mid: f32 = bisection_midpoint_f32(2.0, 10.0);
+
+    pass_if(trap == 9.0) +
+    pass_if(simp == 3.0) +
+    pass_if(integ == 4.5) +
+    pass_if(fwd == 2.0) +
+    pass_if(back == 2.0) +
+    pass_if(cent == 2.0) +
+    pass_if(second == 2.0) +
+    pass_if(euler == 4.0) +
+    pass_if(midpoint == 22.0) +
+    pass_if(approx_eq_f32(newton, 2.8333333, 0.000001)) +
+    pass_if(mid == 6.0)
+}

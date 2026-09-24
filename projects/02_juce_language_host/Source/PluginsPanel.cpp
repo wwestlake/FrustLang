@@ -5,6 +5,8 @@
 #include <string>
 
 namespace {
+static juce::Component::SafePointer<PluginsPanel> activePluginsPanel;
+
 // metrics.frust's count_functions/count_structs/count_interfaces need
 // this - Frust has no pointer arithmetic, so re-searching text past a
 // previous match (what counting repeated occurrences needs) isn't
@@ -26,16 +28,42 @@ extern "C" int64_t host_count_occurrences(const char* text, const char* needle) 
     }
     return count;
 }
+
+// Host service advertised as `ide.log`.
+//
+// Plugins should discover this through frust_lookup_service("ide.log")
+// and call it when they need to announce themselves or report plugin-
+// level status. The second argument is reserved for severity:
+// 0=info, 1=warning, 2=error. The Plugins panel currently displays all
+// three in one log, but keeping the shape now avoids another ABI bump
+// when the IDE grows a central app log.
+extern "C" int64_t ide_log_service(const char* message, int64_t severity) {
+    auto panel = activePluginsPanel;
+    const juce::String msg = message && *message ? juce::String(message) : juce::String("(empty plugin log message)");
+    const juce::String prefix = severity >= 2 ? "[plugin error] "
+                               : severity == 1 ? "[plugin warning] "
+                                               : "[plugin] ";
+
+    juce::MessageManager::callAsync([panel, msg, prefix] {
+        if (panel != nullptr) {
+            panel->appendPluginLog(prefix + msg);
+        }
+    });
+    return 1;
+}
 } // namespace
 
 PluginsPanel::PluginsPanel(juce::ApplicationProperties* appPropertiesIn)
     : appProperties(appPropertiesIn)
 {
+    activePluginsPanel = this;
+
     // Must happen before scanBuiltInPluginsFolder() below - the
     // compatibility check it runs (via frust_plugin_peek_manifest)
     // needs this already registered to correctly report metrics.frust
     // as compatible.
     frust_plugin_register_host_function("host_count_occurrences", (void*)&host_count_occurrences);
+    frust_register_service("ide.log", (void*)&ide_log_service);
 
     headerLabel.setFont(juce::Font(16.0f, juce::Font::bold));
     addAndMakeVisible(headerLabel);
@@ -96,8 +124,14 @@ PluginsPanel::PluginsPanel(juce::ApplicationProperties* appPropertiesIn)
 PluginsPanel::~PluginsPanel()
 {
     for (auto& p : loaded) {
-        if (p.handle) frust_plugin_unload(p.handle);
+        if (p.runtime && p.runtime->handle) {
+            p.runtime->alive = false;
+            auto* handle = p.runtime->handle;
+            p.runtime->handle = nullptr;
+            frust_plugin_unload(handle);
+        }
     }
+    activePluginsPanel = nullptr;
 }
 
 void PluginsPanel::paint(juce::Graphics& g)
@@ -277,6 +311,7 @@ void PluginsPanel::scanBuiltInPluginsFolder()
 
 void PluginsPanel::loadDiscovered(const DiscoveredPlugin& d)
 {
+    log("Loading: " + d.name + " v" + d.version + " from " + d.sourceFile.getFullPathName());
     FrustPluginHandle h = frust_plugin_load(d.sourceFile.getFullPathName().toRawUTF8());
     if (!h) {
         // This IDE is a windowed app with no console (juce_add_gui_app)
@@ -285,16 +320,73 @@ void PluginsPanel::loadDiscovered(const DiscoveredPlugin& d)
         log("FAILED to load: " + d.name + " - " + juce::String(frust_plugin_last_error()));
         return;
     }
-    frust_plugin_call_on_init(h);
+    int64_t initResult = frust_plugin_call_on_init(h);
+
+    auto runtime = std::make_shared<PluginRuntimeState>();
+    runtime->handle = h;
+    runtime->alive = true;
+    runtime->displayName = d.sourceFile.getFileName();
 
     LoadedPlugin p;
     p.displayName = d.sourceFile.getFileName();
     p.sourceFile = d.sourceFile;
-    p.handle = h;
+    p.runtime = runtime;
     loaded.push_back(p);
     pluginList.updateContent();
     pluginList.selectRow(static_cast<int>(loaded.size()) - 1);
-    log("Loaded: " + d.name);
+    log("Loaded: " + d.name + " (on_init=" + juce::String(initResult) + ")");
+    maybeOpenPluginUi(d, runtime);
+}
+
+void PluginsPanel::maybeOpenPluginUi(const DiscoveredPlugin& d, const std::shared_ptr<PluginRuntimeState>& runtime)
+{
+    if (!onPluginUiPanel || runtime == nullptr || runtime->handle == nullptr)
+        return;
+
+    void* rawFn = frust_plugin_get_fn(runtime->handle, "frusty_ui_manifest_json");
+    if (rawFn == nullptr)
+        return;
+
+    using ManifestFn = const char* (*)();
+    auto fn = reinterpret_cast<ManifestFn>(rawFn);
+    const char* rawManifest = fn();
+    if (rawManifest == nullptr || *rawManifest == 0) {
+        log("Plugin UI manifest was empty for " + d.name);
+        return;
+    }
+
+    const auto manifest = juce::JSON::parse(juce::String(rawManifest));
+    if (manifest.isVoid()) {
+        log("Plugin UI manifest is not valid JSON for " + d.name);
+        return;
+    }
+
+    auto panels = manifest.getProperty("panels", {});
+    auto* panelArray = panels.getArray();
+    if (panelArray == nullptr || panelArray->isEmpty()) {
+        log("Plugin UI manifest has no panels for " + d.name);
+        return;
+    }
+
+    for (const auto& panelManifest : *panelArray) {
+        const auto rawPanelId = panelManifest.getProperty("id", d.name).toString().trim();
+        const auto fallbackId = d.name.retainCharacters("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-");
+        const auto safePanelId = rawPanelId.retainCharacters("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-");
+        const auto panelId = safePanelId.isNotEmpty() ? safePanelId : fallbackId;
+        const auto panelTitle = panelManifest.getProperty("title", d.name + " UI").toString();
+
+        auto panel = std::make_unique<PluginUiPanel>(
+            panelId,
+            panelTitle,
+            panelManifest,
+            runtime,
+            [safeThis = juce::Component::SafePointer<PluginsPanel>(this)](const juce::String& msg) {
+                if (safeThis != nullptr) safeThis->appendPluginLog(msg);
+            });
+
+        onPluginUiPanel("plugin-ui-" + panelId, panelTitle, std::move(panel));
+        log("Opened plugin UI panel: " + panelTitle);
+    }
 }
 
 void PluginsPanel::loadSelectedDiscoveredClicked()
@@ -365,19 +457,27 @@ void PluginsPanel::reloadSelectedClicked()
     if (idx < 0 || idx >= static_cast<int>(loaded.size())) return;
 
     auto& p = loaded[static_cast<size_t>(idx)];
-    FrustPluginHandle newHandle = frust_plugin_reload(p.handle);
+    FrustPluginHandle oldHandle = p.runtime ? p.runtime->handle : nullptr;
+    FrustPluginHandle newHandle = frust_plugin_reload(oldHandle);
     // frust_plugin_reload() tears down the old handle either way, even
     // on failure (see FrustPluginHost.h) - don't try to keep using it.
     // (frust_plugin_reload() itself re-runs on_init() on a genuine
     // content-changed reload, so event/service registrations survive -
     // no separate call needed here, unlike loadDiscovered's first load.)
-    p.handle = newHandle;
     if (!newHandle) {
+        if (p.runtime) {
+            p.runtime->alive = false;
+            p.runtime->handle = nullptr;
+        }
         log("Hot-reload FAILED for " + p.displayName + " - " + juce::String(frust_plugin_last_error()) + " (it is now unloaded)");
         loaded.erase(loaded.begin() + idx);
         pluginList.updateContent();
         refreshManifestView();
         return;
+    }
+    if (p.runtime) {
+        p.runtime->handle = newHandle;
+        p.runtime->alive = true;
     }
     log("Hot-reloaded: " + p.displayName);
 }
@@ -388,7 +488,12 @@ void PluginsPanel::unloadSelectedClicked()
     if (idx < 0 || idx >= static_cast<int>(loaded.size())) return;
 
     auto& p = loaded[static_cast<size_t>(idx)];
-    frust_plugin_unload(p.handle);
+    if (p.runtime && p.runtime->handle) {
+        auto* handle = p.runtime->handle;
+        p.runtime->alive = false;
+        p.runtime->handle = nullptr;
+        frust_plugin_unload(handle);
+    }
     log("Unloaded: " + p.displayName);
     loaded.erase(loaded.begin() + idx);
     pluginList.updateContent();
@@ -408,7 +513,12 @@ void PluginsPanel::refreshManifestView()
     // parsed and verified for this handle - not a second,
     // independently-read copy (there's no companion file to read
     // anymore; the manifest lives embedded in the plugin's own source).
-    FrustPluginManifestHandle m = frust_plugin_get_manifest(p.handle);
+    if (!p.runtime || !p.runtime->handle) {
+        manifestView.setText("(plugin handle is not live)");
+        return;
+    }
+
+    FrustPluginManifestHandle m = frust_plugin_get_manifest(p.runtime->handle);
     if (!m) {
         manifestView.setText("(no manifest on this handle - should not happen for a loaded plugin)");
         return;
@@ -444,7 +554,12 @@ void PluginsPanel::callClicked()
         return;
     }
 
-    void* rawFn = frust_plugin_get_fn(p.handle, fnName.toRawUTF8());
+    if (!p.runtime || !p.runtime->handle) {
+        log("Plugin handle is not live for " + p.displayName);
+        return;
+    }
+
+    void* rawFn = frust_plugin_get_fn(p.runtime->handle, fnName.toRawUTF8());
     if (!rawFn) {
         log("No such function '" + fnName + "' in " + p.displayName);
         return;
@@ -467,4 +582,9 @@ void PluginsPanel::log(const juce::String& msg)
 {
     outputLog.moveCaretToEnd();
     outputLog.insertTextAtCaret(msg + "\n");
+}
+
+void PluginsPanel::appendPluginLog(const juce::String& msg)
+{
+    log(msg);
 }

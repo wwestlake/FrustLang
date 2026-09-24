@@ -36,6 +36,12 @@ juce::String loadIdeAuthToken() {
     return token;
 }
 
+static juce::File resolveSiblingTool(const juce::String& exeName) {
+    return juce::File::getSpecialLocation(juce::File::currentExecutableFile)
+        .getParentDirectory()
+        .getChildFile(exeName);
+}
+
 static juce::File resolveLlvmLibDir(const juce::String& configName) {
     // A release package cannot know where its user installed LLVM. CI and
     // callers can supply that root explicitly; source builds retain the
@@ -53,6 +59,30 @@ static juce::File resolveLlvmLibDir(const juce::String& configName) {
     return configName == "Debug"
         ? root.getChildFile("debug").getChildFile("lib")
         : root.getChildFile("lib");
+}
+
+static bool finishChildProcess(juce::ChildProcess& process, juce::String& output,
+                               int& exitCode, int timeoutMs = 10 * 60 * 1000) {
+    const auto deadline = juce::Time::getMillisecondCounterHiRes() + timeoutMs;
+    char buffer[4096];
+    while (process.isRunning()) {
+        const int bytesRead = process.readProcessOutput(buffer, static_cast<int>(sizeof(buffer)));
+        if (bytesRead > 0) output.append(buffer, bytesRead);
+        else juce::Thread::sleep(10);
+        if (juce::Time::getMillisecondCounterHiRes() >= deadline) {
+            process.kill();
+            output += "\nProcess timed out.";
+            exitCode = -1;
+            return false;
+        }
+    }
+    for (;;) {
+        const int bytesRead = process.readProcessOutput(buffer, static_cast<int>(sizeof(buffer)));
+        if (bytesRead <= 0) break;
+        output.append(buffer, bytesRead);
+    }
+    exitCode = process.getExitCode();
+    return true;
 }
 
 bool linkExecutable(const std::vector<juce::String>& objFiles, const juce::File& finalBin,
@@ -80,8 +110,10 @@ bool linkExecutable(const std::vector<juce::String>& objFiles, const juce::File&
         linkerArgs.add(finalBin.getFullPathName());
         
         if (linker.start(linkerArgs)) {
-            juce::String linkerOut = linker.readAllProcessOutput();
-            if (linker.getExitCode() != 0) {
+            juce::String linkerOut;
+            int linkerExit = -1;
+            finishChildProcess(linker, linkerOut, linkerExit);
+            if (linkerExit != 0) {
                 std::cerr << "Linker failed:\n" << linkerOut << "\n";
                 return false;
             }
@@ -95,7 +127,10 @@ bool linkExecutable(const std::vector<juce::String>& objFiles, const juce::File&
             juce::ChildProcess vswhere;
             juce::String vsWhereCmd = "\"" + vsWherePath + "\" -latest -property installationPath";
             if (vswhere.start(vsWhereCmd)) {
-                juce::String vsPath = vswhere.readAllProcessOutput().trim();
+                juce::String vsPath;
+                int vswhereExit = -1;
+                finishChildProcess(vswhere, vsPath, vswhereExit, 10000);
+                vsPath = vsPath.trim();
                 if (vsPath.isNotEmpty()) {
                     juce::String vsDevCmd = vsPath + "\\Common7\\Tools\\VsDevCmd.bat";
                     if (juce::File(vsDevCmd).existsAsFile()) {
@@ -237,8 +272,10 @@ bool linkExecutable(const std::vector<juce::String>& objFiles, const juce::File&
 
                         juce::String fullCmd = "cmd.exe /c \"" + linkCmd + "\"";
                         if (linker.start(fullCmd)) {
-                            juce::String linkerOut = linker.readAllProcessOutput();
-                            if (linker.getExitCode() != 0) {
+                            juce::String linkerOut;
+                            int linkerExit = -1;
+                            finishChildProcess(linker, linkerOut, linkerExit);
+                            if (linkerExit != 0) {
                                 std::cerr << "Linker failed:\n" << linkerOut << "\n";
                                 return false;
                             }
@@ -355,19 +392,6 @@ static bool collectImportedPodFiles(const juce::File& entryFile, const frate::Fr
                 return false;
             }
             version = versionQuoted.substring(1, versionQuoted.length() - 1);
-            isCrossPodImport = true;
-        } else if (line.startsWith("use ") && !line.startsWith("use self::")) {
-            if (!line.endsWith(";")) {
-                errorOut = "Malformed 'use' directive (missing ';'): " + rawLine.trim();
-                return false;
-            }
-
-            podName = line.substring(juce::String("use").length(), line.length() - 1).trim();
-            if (podName.isEmpty() || podName.containsAnyOf(" \t,:\"") || podName.contains("::")) {
-                // Not the v1 cross-pod shorthand. Leave future symbol imports
-                // (`use pod::Thing;`) for the compiler-level name resolver.
-                continue;
-            }
             isCrossPodImport = true;
         }
 
@@ -495,8 +519,44 @@ bool buildPod(const juce::File& podDir, bool isRun, const std::map<std::string, 
         }
         
         if (!depObj.existsAsFile()) {
-            std::cerr << "Error: Dependency object file not found: " << depObj.getFullPathName() << "\n";
-            return false;
+            // Compile the dependency from its cached source.
+            // This is normal - a freshly pulled pod has source but no .o yet.
+            juce::Array<juce::File> depSourceFiles;
+            juce::String depCollectError;
+            if (!collectSelfUseFiles(depSrc, depSourceFiles, depCollectError)) {
+                std::cerr << "Error: Could not collect source files for dep '" << dep.name << "': " << depCollectError << "\n";
+                return false;
+            }
+            juce::File depCompilerExe = resolveSiblingTool("frust_compiler_x.exe");
+            if (!depCompilerExe.existsAsFile()) depCompilerExe = resolveSiblingTool("frust_compiler.exe");
+            if (!depCompilerExe.existsAsFile()) {
+                std::cerr << "Error: frust_compiler not found, cannot compile dependency '" << dep.name << "'\n";
+                return false;
+            }
+            juce::StringArray depArgs;
+            depArgs.add(depCompilerExe.getFullPathName());
+            depArgs.add("--emit-obj");
+            depArgs.add(depObj.getFullPathName());
+            // No --namespace here: building the dep's own .o is identical to
+            // running `frate build` inside its directory. --namespace is only
+            // used by the consumer's compiler (ModuleLoader) when importing
+            // the dep's AST, not when compiling the dep itself.
+            for (const auto& f : depSourceFiles) depArgs.add(f.getFullPathName());
+
+            std::cout << "Compiling cached dependency '" << dep.name << "' v" << dep.version << "...\n";
+            juce::ChildProcess depCompiler;
+            if (depCompiler.start(depArgs)) {
+                juce::String depOut;
+                int depExit = -1;
+                finishChildProcess(depCompiler, depOut, depExit);
+                if (depExit != 0) {
+                    std::cerr << "Error compiling dependency '" << dep.name << "':\n" << depOut << "\n";
+                    return false;
+                }
+            } else {
+                std::cerr << "Error: Failed to launch compiler for dependency '" << dep.name << "'\n";
+                return false;
+            }
         }
         
         objFiles.push_back(depObj.getFullPathName());
@@ -527,19 +587,30 @@ bool buildPod(const juce::File& podDir, bool isRun, const std::map<std::string, 
     std::cout << "Compiling " << meta.name << " (" << sourceFiles.size() << " source file(s))...\n";
     juce::ChildProcess compiler;
     juce::StringArray args;
-    args.add("frust_compiler");
+    juce::File compilerExe = resolveSiblingTool("frust_compiler_x.exe");
+    if (!compilerExe.existsAsFile()) compilerExe = resolveSiblingTool("frust_compiler.exe");
+    if (!compilerExe.existsAsFile()) {
+        std::cerr << "Tested: " << compilerExe.getFullPathName() << "\n";
+        std::cerr << "Error: frust_compiler not found next to frate at "
+                  << juce::File::getSpecialLocation(juce::File::currentExecutableFile).getParentDirectory().getFullPathName()
+                  << "\n";
+        return false;
+    }
+    args.add(compilerExe.getFullPathName());
     args.add("--emit-obj");
     args.add(mainObj.getFullPathName());
     for (const auto& f : sourceFiles) args.add(f.getFullPathName());
 
     if (compiler.start(args)) {
-        juce::String output = compiler.readAllProcessOutput();
-        if (compiler.getExitCode() != 0) {
-            std::cerr << "Compiler exited with code " << compiler.getExitCode() << "\n" << output << "\n";
+        juce::String output;
+        int compilerExit = -1;
+        finishChildProcess(compiler, output, compilerExit);
+        if (compilerExit != 0) {
+            std::cerr << "Compiler exited with code " << compilerExit << "\n" << output << "\n";
             return false;
         }
     } else {
-        std::cerr << "Error: Failed to launch frust_compiler. Ensure it is in your PATH.\n";
+        std::cerr << "Error: Failed to launch frust_compiler at " << compilerExe.getFullPathName() << "\n";
         return false;
     }
     
@@ -568,8 +639,10 @@ bool buildPod(const juce::File& podDir, bool isRun, const std::map<std::string, 
             juce::StringArray runArgs;
             runArgs.add(finalBin.getFullPathName());
             if (runner.start(runArgs)) {
-                std::cout << runner.readAllProcessOutput();
-                int exitCode = runner.getExitCode();
+                juce::String runnerOutput;
+                int exitCode = -1;
+                finishChildProcess(runner, runnerOutput, exitCode);
+                std::cout << runnerOutput;
                 if (exitCode != 0) std::cerr << "Process exited with code " << exitCode << "\n";
                 return exitCode == 0;
             } else {

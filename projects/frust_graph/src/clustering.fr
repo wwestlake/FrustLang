@@ -1,0 +1,4 @@
+// Stub for topology clustering
+pub fn clustering_score(n: GraphNode) -> f32 = {
+    n.weight * 2.0
+}

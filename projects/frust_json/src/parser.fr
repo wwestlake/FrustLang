@@ -1,0 +1,218 @@
+use self::ast;
+
+fn byte_at(buf: String, pos: i64) -> i64 = {
+    let word: i64 = frust_buf_get_i64(buf, pos / 8);
+    (word >> ((pos % 8) * 8)) & 255
+}
+
+fn byte_put(buf: String, pos: i64, value: i64) = {
+    let slot: i64 = pos / 8;
+    let shift: i64 = (pos % 8) * 8;
+    let old: i64 = frust_buf_get_i64(buf, slot);
+    let mask: i64 = 255 << shift;
+    frust_buf_set_i64(buf, slot, (old & (0 - mask - 1)) | ((value & 255) << shift))
+}
+
+fn set_error(doc: JsonDocument, code: i64, message_offset: i64) = {
+    if (frust_buf_get_i64(doc.control, 3) == 0) {
+        frust_buf_set_i64(doc.control, 2, frust_buf_get_i64(doc.control, 0));
+        frust_buf_set_i64(doc.control, 3, code);
+        frust_buf_set_i64(doc.control, 6, message_offset)
+    }
+}
+
+fn skip_ws(doc: JsonDocument) = {
+    let mut p: i64 = frust_buf_get_i64(doc.control, 0);
+    let n: i64 = frust_buf_get_i64(doc.control, 7);
+    let mut scanning: bool = true;
+    while (scanning) {
+        if (p >= n) { scanning = false; }
+        else {
+            let c: i64 = byte_at(doc.source, p);
+            if (c == 32) { p = p + 1; }
+            else if (c == 9) { p = p + 1; }
+            else if (c == 10) { p = p + 1; }
+            else if (c == 13) { p = p + 1; }
+            else { scanning = false; };
+        };
+    };
+    frust_buf_set_i64(doc.control, 0, p)
+}
+
+fn new_idx(doc: JsonDocument, kind: i64) -> i64 = {
+    let idx: i64 = frust_buf_get_i64(doc.control, 1);
+    frust_buf_set_i64(doc.control, 1, idx + 1);
+    frust_buf_set_i64(doc.kinds, idx, kind);
+    frust_buf_set_i64(doc.first_children, idx, -1);
+    frust_buf_set_i64(doc.next_siblings, idx, -1);
+    frust_buf_set_i64(doc.child_counts, idx, 0);
+    idx
+}
+
+fn add_child(doc: JsonDocument, parent: i64, child: i64) = {
+    let count: i64 = frust_buf_get_i64(doc.child_counts, parent);
+    if (count == 0) { frust_buf_set_i64(doc.first_children, parent, child); }
+    else {
+        let mut p: i64 = frust_buf_get_i64(doc.first_children, parent);
+        let mut i: i64 = 1;
+        while (i < count) { p = frust_buf_get_i64(doc.next_siblings, p); i = i + 1; };
+        frust_buf_set_i64(doc.next_siblings, p, child)
+    };
+    frust_buf_set_i64(doc.child_counts, parent, count + 1)
+}
+
+fn hex_value(c: i64) -> i64 = {
+    if (c >= 48) { if (c <= 57) { c - 48 }
+    else if (c >= 65) { if (c <= 70) { c - 55 }
+    else if (c >= 97) { if (c <= 102) { c - 87 } else { -1 } }
+    else { -1 } } else { -1 } } else { -1 }
+}
+
+fn read_u4(doc: JsonDocument) -> i64 = {
+    let p: i64 = frust_buf_get_i64(doc.control, 0);
+    let n: i64 = frust_buf_get_i64(doc.control, 7);
+    if (p + 4 > n) { set_error(doc, 7, 7); -1 }
+    else {
+        let a: i64 = hex_value(byte_at(doc.source, p));
+        let b: i64 = hex_value(byte_at(doc.source, p + 1));
+        let c: i64 = hex_value(byte_at(doc.source, p + 2));
+        let d: i64 = hex_value(byte_at(doc.source, p + 3));
+        if (a < 0) { set_error(doc, 7, 7); -1 }
+        else if (b < 0) { set_error(doc, 7, 7); -1 }
+        else if (c < 0) { set_error(doc, 7, 7); -1 }
+        else if (d < 0) { set_error(doc, 7, 7); -1 }
+        else { frust_buf_set_i64(doc.control, 0, p + 4); a * 4096 + b * 256 + c * 16 + d }
+    }
+}
+
+fn put_utf8(dest: String, at: i64, cp: i64) -> i64 = {
+    if (cp < 128) { byte_put(dest, at, cp); at + 1 }
+    else if (cp < 2048) {
+        byte_put(dest, at, 192 | (cp >> 6)); byte_put(dest, at + 1, 128 | (cp & 63)); at + 2
+    } else if (cp < 65536) {
+        byte_put(dest, at, 224 | (cp >> 12)); byte_put(dest, at + 1, 128 | ((cp >> 6) & 63)); byte_put(dest, at + 2, 128 | (cp & 63)); at + 3
+    } else {
+        byte_put(dest, at, 240 | (cp >> 18)); byte_put(dest, at + 1, 128 | ((cp >> 12) & 63)); byte_put(dest, at + 2, 128 | ((cp >> 6) & 63)); byte_put(dest, at + 3, 128 | (cp & 63)); at + 4
+    }
+}
+
+fn parse_string_data(doc: JsonDocument) -> String = {
+    let n: i64 = frust_buf_get_i64(doc.control, 7);
+    let dest: String = malloc(n + 1);
+    memset(dest, 0, n + 1);
+    let mut w: i64 = 0;
+    let mut done: bool = false;
+    let mut p: i64 = frust_buf_get_i64(doc.control, 0) + 1;
+    frust_buf_set_i64(doc.control, 0, p);
+    while (!done) {
+        p = frust_buf_get_i64(doc.control, 0);
+        if (p >= n) { set_error(doc, 4, 4); done = true; }
+        else {
+            let c: i64 = byte_at(doc.source, p);
+            frust_buf_set_i64(doc.control, 0, p + 1);
+            if (c == 34) { done = true; }
+            else if (c < 32) { set_error(doc, 5, 5); done = true; }
+            else if (c != 92) { byte_put(dest, w, c); w = w + 1; }
+            else {
+                let q: i64 = frust_buf_get_i64(doc.control, 0);
+                if (q >= n) { set_error(doc, 4, 4); done = true; }
+                else {
+                    let e: i64 = byte_at(doc.source, q);
+                    frust_buf_set_i64(doc.control, 0, q + 1);
+                    if (e == 34) { byte_put(dest, w, 34); w = w + 1; }
+                    else if (e == 92) { byte_put(dest, w, 92); w = w + 1; }
+                    else if (e == 47) { byte_put(dest, w, 47); w = w + 1; }
+                    else if (e == 98) { byte_put(dest, w, 8); w = w + 1; }
+                    else if (e == 102) { byte_put(dest, w, 12); w = w + 1; }
+                    else if (e == 110) { byte_put(dest, w, 10); w = w + 1; }
+                    else if (e == 114) { byte_put(dest, w, 13); w = w + 1; }
+                    else if (e == 116) { byte_put(dest, w, 9); w = w + 1; }
+                    else if (e == 117) {
+                        let mut cp: i64 = read_u4(doc);
+                        if (cp >= 55296) { if (cp <= 56319) {
+                            let s: i64 = frust_buf_get_i64(doc.control, 0);
+                            if (byte_at(doc.source, s) == 92) { if (byte_at(doc.source, s + 1) == 117) {
+                                frust_buf_set_i64(doc.control, 0, s + 2);
+                                let low: i64 = read_u4(doc);
+                                if (low >= 56320) { if (low <= 57343) { cp = 65536 + (cp - 55296) * 1024 + low - 56320; } else { set_error(doc, 8, 8); }; } else { set_error(doc, 8, 8); };
+                            } else { set_error(doc, 8, 8); }; } else { set_error(doc, 8, 8); };
+                        } else if (cp <= 57343) { set_error(doc, 8, 8); }; };
+                        if (frust_buf_get_i64(doc.control, 3) == 0) { w = put_utf8(dest, w, cp); };
+                    } else { set_error(doc, 6, 6); done = true; };
+                };
+            };
+        };
+    };
+    dest
+}
+
+fn literal_at(doc: JsonDocument, a: i64, b: i64, c: i64, d: i64, size: i64) -> bool = {
+    let p: i64 = frust_buf_get_i64(doc.control, 0);
+    let n: i64 = frust_buf_get_i64(doc.control, 7);
+    if (p + size > n) { false }
+    else if (byte_at(doc.source, p) != a) { false }
+    else if (byte_at(doc.source, p + 1) != b) { false }
+    else if (byte_at(doc.source, p + 2) != c) { false }
+    else if (size == 4) { byte_at(doc.source, p + 3) == d }
+    else { true }
+}
+
+fn is_digit(c: i64) -> bool = { if (c >= 48) { c <= 57 } else { false } }
+
+fn scan_digits(doc:JsonDocument,start:i64)->i64={let n:i64=frust_buf_get_i64(doc.control,7);let mut p:i64=start;let mut more:bool=true;while(more){if(p>=n){more=false;}else if(is_digit(byte_at(doc.source,p))){p=p+1;}else{more=false;};};p}
+
+fn parse_number_idx(doc:JsonDocument)->i64={
+    let start:i64=frust_buf_get_i64(doc.control,0);let n:i64=frust_buf_get_i64(doc.control,7);let mut p:i64=start;
+    if(byte_at(doc.source,p)==45){p=p+1;};
+    if(p>=n){set_error(doc,10,10);}else if(byte_at(doc.source,p)==48){p=p+1;if(p<n){if(is_digit(byte_at(doc.source,p))){set_error(doc,10,10);};};}else if(is_digit(byte_at(doc.source,p))){p=scan_digits(doc,p);}else{set_error(doc,10,10);};
+    if(p<n){if(byte_at(doc.source,p)==46){p=p+1;let before:i64=p;p=scan_digits(doc,p);if(p==before){set_error(doc,10,10);};};};
+    if(p<n){let e:i64=byte_at(doc.source,p);if(e==101){p=p+1;if(p<n){let sign:i64=byte_at(doc.source,p);if(sign==43){p=p+1;}else if(sign==45){p=p+1;};};let before:i64=p;p=scan_digits(doc,p);if(p==before){set_error(doc,10,10);};}else if(e==69){p=p+1;if(p<n){let sign2:i64=byte_at(doc.source,p);if(sign2==43){p=p+1;}else if(sign2==45){p=p+1;};};let before2:i64=p;p=scan_digits(doc,p);if(p==before2){set_error(doc,10,10);};};};
+    frust_buf_set_i64(doc.control,0,p);let text:String=malloc(p-start+1);memset(text,0,p-start+1);let mut i:i64=0;while(i<p-start){byte_put(text,i,byte_at(doc.source,start+i));i=i+1;};let idx:i64=new_idx(doc,4);frust_buf_set_ptr(doc.values,idx,text);idx
+}
+
+fn parse_value(doc: JsonDocument) -> i64 = {
+    skip_ws(doc);
+    let p: i64 = frust_buf_get_i64(doc.control, 0);
+    let n: i64 = frust_buf_get_i64(doc.control, 7);
+    if (p >= n) { set_error(doc, 2, 2); -1 }
+    else {
+        let c: i64 = byte_at(doc.source, p);
+        if (c == 34) { let s: String = parse_string_data(doc); let idx: i64 = new_idx(doc, 3); frust_buf_set_ptr(doc.values, idx, s); idx }
+        else if (c == 123) { parse_object(doc) }
+        else if (c == 91) { parse_array(doc) }
+        else if (c == 116) { if (literal_at(doc,116,114,117,101,4)) { frust_buf_set_i64(doc.control,0,p+4); let idx:i64=new_idx(doc,5); frust_buf_set_i64(doc.values,idx,1); idx } else { set_error(doc,9,9); -1 } }
+        else if (c == 102) { if (literal_at(doc,102,97,108,115,4)) { if (byte_at(doc.source,p+4)==101) { frust_buf_set_i64(doc.control,0,p+5); let idx:i64=new_idx(doc,5); frust_buf_set_i64(doc.values,idx,0); idx } else { set_error(doc,9,9); -1 } } else { set_error(doc,9,9); -1 } }
+        else if (c == 110) { if (literal_at(doc,110,117,108,108,4)) { frust_buf_set_i64(doc.control,0,p+4); new_idx(doc,6) } else { set_error(doc,9,9); -1 } }
+        else if (c == 45) { parse_number_idx(doc) }
+        else if (is_digit(c)) { parse_number_idx(doc) }
+        else { set_error(doc,2,2); -1 }
+    }
+}
+
+fn parse_array(doc: JsonDocument) -> i64 = {
+    let parent: i64 = new_idx(doc, 2); frust_buf_set_i64(doc.control,0,frust_buf_get_i64(doc.control,0)+1); skip_ws(doc);
+    if (byte_at(doc.source,frust_buf_get_i64(doc.control,0))==93) { frust_buf_set_i64(doc.control,0,frust_buf_get_i64(doc.control,0)+1); parent }
+    else { let mut done:bool=false; while (!done) { let child:i64=parse_value(doc); if (child>=0) { add_child(doc,parent,child); }; skip_ws(doc); let p:i64=frust_buf_get_i64(doc.control,0); let c:i64=byte_at(doc.source,p); if (c==44) { frust_buf_set_i64(doc.control,0,p+1); } else if (c==93) { frust_buf_set_i64(doc.control,0,p+1); done=true; } else { set_error(doc,12,12); done=true; }; }; parent }
+}
+
+fn parse_object(doc: JsonDocument) -> i64 = {
+    let parent:i64=new_idx(doc,1); frust_buf_set_i64(doc.control,0,frust_buf_get_i64(doc.control,0)+1); skip_ws(doc);
+    if (byte_at(doc.source,frust_buf_get_i64(doc.control,0))==125) { frust_buf_set_i64(doc.control,0,frust_buf_get_i64(doc.control,0)+1); parent }
+    else { let mut done:bool=false; while (!done) { skip_ws(doc); let p:i64=frust_buf_get_i64(doc.control,0); if (byte_at(doc.source,p)!=34) { set_error(doc,11,11); done=true; } else { let key:String=parse_string_data(doc); skip_ws(doc); let q:i64=frust_buf_get_i64(doc.control,0); if (byte_at(doc.source,q)!=58) { set_error(doc,13,13); done=true; } else { frust_buf_set_i64(doc.control,0,q+1); let child:i64=parse_value(doc); if (child>=0) { frust_buf_set_ptr(doc.keys,child,key); add_child(doc,parent,child); }; skip_ws(doc); let r:i64=frust_buf_get_i64(doc.control,0); let c:i64=byte_at(doc.source,r); if (c==44) { frust_buf_set_i64(doc.control,0,r+1); } else if (c==125) { frust_buf_set_i64(doc.control,0,r+1); done=true; } else { set_error(doc,12,12); done=true; }; }; }; }; parent }
+}
+
+fn error_message(code: i64) -> String = {
+    if (code==2) { "expected a JSON value" } else if (code==4) { "unterminated string" } else if (code==5) { "unescaped control character in string" } else if (code==6) { "invalid string escape" } else if (code==7) { "invalid Unicode escape" } else if (code==8) { "invalid Unicode surrogate pair" } else if (code==9) { "invalid literal" } else if (code==10) { "invalid number" } else if (code==11) { "expected object member name" } else if (code==12) { "expected comma or closing delimiter" } else if (code==13) { "expected colon after object member name" } else if (code==14) { "trailing characters after JSON value" } else { "no error" }
+}
+
+pub fn json_parse(data: String) -> JsonParseResult = {
+    let n:i64=strlen(data); let padded:String=malloc(n+16); memset(padded,0,n+16); memcpy(padded,data,n);
+    let cap:i64=n+2; let kinds:String=malloc(cap*8); let values:String=malloc(cap*8); let keys:String=malloc(cap*8); let first:String=malloc(cap*8); let next:String=malloc(cap*8); let counts:String=malloc(cap*8); let control:String=malloc(8*8);
+    memset(kinds,0,cap*8); memset(values,0,cap*8); memset(keys,0,cap*8); memset(first,0,cap*8); memset(next,0,cap*8); memset(counts,0,cap*8); memset(control,0,8*8); frust_buf_set_i64(control,7,n);
+    let base:JsonDocument=JsonDocument { source:padded,kinds:kinds,values:values,keys:keys,first_children:first,next_siblings:next,child_counts:counts,control:control,root:-1 };
+    let root:i64=parse_value(base); skip_ws(base); if (frust_buf_get_i64(control,3)==0) { if (frust_buf_get_i64(control,0)!=n) { set_error(base,14,14); }; };
+    let doc:JsonDocument=JsonDocument { source:padded,kinds:kinds,values:values,keys:keys,first_children:first,next_siblings:next,child_counts:counts,control:control,root:root };
+    let code:i64=frust_buf_get_i64(control,3); let offset:i64=frust_buf_get_i64(control,2); let mut line:i64=1; let mut column:i64=1; let mut i:i64=0; while (i<offset) { if (byte_at(padded,i)==10) { line=line+1; column=1; } else { column=column+1; }; i=i+1; };
+    let err:JsonError=JsonError { code:code,offset:offset,line:line,column:column,message:error_message(code) };
+    JsonParseResult { ok:code==0,document:doc,error:err }
+}

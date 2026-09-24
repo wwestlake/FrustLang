@@ -1,0 +1,338 @@
+#include "EngineerTools.h"
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <iostream>
+#include <mutex>
+#include <thread>
+
+namespace
+{
+int failures = 0;
+
+void expect(bool condition, const char* message)
+{
+    if (condition) return;
+    std::cerr << "FAIL: " << message << "\n";
+    ++failures;
+}
+
+ai_provider::ToolCall call(const std::string& name, const std::string& arguments)
+{
+    return { "test-call", name, arguments };
+}
+}
+
+int main()
+{
+    const auto base = juce::File::getSpecialLocation(juce::File::tempDirectory)
+        .getNonexistentChildFile("frust-engineer-tools", {}, true);
+    expect(base.createDirectory().wasOk(), "temporary project is created");
+
+    EngineerTools observe(base, EngineerTools::AccessLevel::observe);
+    EngineerTools workspace(base, EngineerTools::AccessLevel::workspace);
+    const auto observeDefinitions = observe.definitions();
+    expect(observeDefinitions.size() == 6, "Observe exposes read-only, registry, verification, and memory-list tools");
+    expect(workspace.definitions().size() == 17, "Workspace exposes all seventeen engineering tools: plugin release packet included");
+    EngineerTools full(base, EngineerTools::AccessLevel::full);
+    expect(full.definitions().size() == 17, "Full Access exposes all engineering tools");
+    expect(!workspace.execute(call("user_test", R"({"command":"x","instructions":"try it","reason":"r"})")).ok, "with no one to give a verdict, user_test opens nothing and fails");
+    expect(std::none_of(observeDefinitions.begin(), observeDefinitions.end(), [](const auto& tool) {
+        return tool.name == "run_command";
+    }), "Observe cannot run commands");
+    expect(std::any_of(observeDefinitions.begin(), observeDefinitions.end(), [](const auto& tool) {
+        return tool.name == "registry_search";
+    }), "Registry search is available at Observe access");
+    EngineerTools noProject({}, EngineerTools::AccessLevel::observe);
+    expect(noProject.definitions().size() == 1
+           && noProject.definitions().front().name == "registry_search",
+           "Registry search remains available without an open project");
+
+    auto denied = observe.execute(call(
+        "workspace_create_file", R"({"path":"src/main.fr","content":"fn main() = 42"})"));
+    expect(!denied.ok, "Observe cannot create a file");
+
+    auto created = workspace.execute(call(
+        "workspace_create_file", R"({"path":"src/main.fr","content":"fn main() = 42"})"));
+    expect(created.ok && created.workspaceChanged, "Workspace creates a source file");
+    expect(base.getChildFile("src/main.fr").existsAsFile(), "Created source exists on disk");
+
+    auto read = workspace.execute(call(
+        "workspace_read", R"({"path":"src/main.fr"})"));
+    expect(read.ok && read.message.contains("fn main() = 42"), "Read returns source content");
+
+    auto emptyRootList = workspace.execute(call("workspace_list", R"({"path":""})"));
+    expect(emptyRootList.ok, "An empty list path means the open project root");
+
+    auto edited = workspace.execute(call(
+        "workspace_replace_text",
+        R"({"path":"src/main.fr","old_text":"42","new_text":"84"})"));
+    expect(edited.ok, "Exact source edit succeeds");
+    expect(base.getChildFile("src/main.fr").loadFileAsString().contains("84"),
+           "Exact source edit reaches disk");
+
+    const auto currentText = base.getChildFile("src/main.fr").loadFileAsString();
+    const auto currentHash = juce::SHA256(currentText.toRawUTF8(),
+        static_cast<size_t>(currentText.getNumBytesAsUTF8())).toHexString();
+    auto staleWrite = workspace.execute(call(
+        "workspace_write_file",
+        R"({"path":"src/main.fr","content":"fn main() = 21","expected_sha256":"0000000000000000000000000000000000000000000000000000000000000000"})"));
+    expect(!staleWrite.ok && staleWrite.message.contains(currentHash),
+           "Whole-file write rejects a stale revision and returns the current hash");
+    auto rewritten = workspace.execute(call(
+        "workspace_write_file",
+        "{\"path\":\"src/main.fr\",\"content\":\"fn main() = 84\",\"expected_sha256\":\""
+            + currentHash.toStdString() + "\"}"));
+    expect(rewritten.ok && rewritten.workspaceChanged, "Whole-file write accepts the current revision");
+
+    auto checked = workspace.execute(call(
+        "workspace_check_frust", R"({"path":"src/main.fr"})"));
+    expect(checked.ok && checked.verificationPerformed, "Valid Frust source passes verification");
+
+    expect(base.getChildFile("frate.json").replaceWithText(R"({
+  "name": "engineer_tools_test",
+  "version": "1.0.0",
+  "type": "bin",
+  "dependencies": [
+    { "name": "core", "version": "1.0.3" }
+  ]
+})"), "dependency manifest is created");
+    expect(base.getChildFile("src/main.fr").replaceWithText(R"(import core, "current";
+
+fn main() -> i64 = {
+    core::println_str("ready");
+    0
+}
+)"), "pod-dependent source is created");
+    checked = workspace.execute(call(
+        "workspace_check_frust", R"({"path":"src/main.fr"})"));
+    if (!checked.ok)
+        std::cerr << checked.message << "\n";
+    expect(checked.ok && checked.verificationPerformed,
+           "Frust verification resolves pods declared by the project manifest");
+
+    auto broken = workspace.execute(call(
+        "workspace_replace_text",
+        R"({"path":"src/main.fr","old_text":"core::println_str(\"ready\");","new_text":"{"})"));
+    expect(broken.ok, "Test can introduce invalid Frust source");
+    checked = workspace.execute(call(
+        "workspace_check_frust", R"({"path":"src/main.fr"})"));
+    expect(!checked.ok && checked.verificationPerformed,
+           "Invalid Frust source returns a failed verification");
+
+    auto escaped = workspace.execute(call(
+        "workspace_create_file", R"({"path":"../outside.txt","content":"no"})"));
+    expect(!escaped.ok, "Workspace path cannot escape the project root");
+
+    const auto reference = base.getSiblingFile(base.getFileName() + "-reference");
+    expect(reference.createDirectory().wasOk(), "temporary reference folder is created");
+    expect(reference.getChildFile("evidence.txt").replaceWithText("immutable evidence"),
+           "reference evidence is created");
+    auto externalReader = observe;
+    int externalQuestions = 0;
+    EngineerTools::CommandServices externalServices;
+    externalServices.approveExternalRead = [&externalQuestions](const juce::File&) {
+        ++externalQuestions;
+        return EngineerTools::ExternalReadDecision::allowOnce;
+    };
+    externalReader.setCommandServices(externalServices);
+    auto externalRead = externalReader.execute(call("workspace_read",
+        "{\"path\":\"" + reference.getChildFile("evidence.txt").getFullPathName()
+            .replaceCharacter('\\', '/').toStdString() + "\"}"));
+    expect(externalRead.ok && externalRead.message.contains("immutable evidence") && externalQuestions == 1,
+           "an approved external read succeeds once");
+
+    workspace.setReferenceRoots({ reference });
+    auto referenceWrite = workspace.execute(call("workspace_create_file",
+        "{\"path\":\"" + reference.getChildFile("changed.txt").getFullPathName()
+            .replaceCharacter('\\', '/').toStdString() + "\",\"content\":\"no\"}"));
+    expect(!referenceWrite.ok && !reference.getChildFile("changed.txt").exists(),
+           "a read-only reference remains protected at Workspace access");
+
+    auto fullWrite = full.execute(call("workspace_create_file",
+        "{\"path\":\"" + base.getSiblingFile(base.getFileName() + "-full-access.txt").getFullPathName()
+            .replaceCharacter('\\', '/').toStdString() + "\",\"content\":\"allowed\"}"));
+    expect(fullWrite.ok, "Full Access may write outside the project without a path approval");
+
+    auto memoryCreated = workspace.execute(call("memory_upsert_card",
+        R"({"scope":"project","id":"memory.project.test-rule","title":"Test Rule","tokens":["test","memory"],"priority":80,"text":"Remember this test rule."})"));
+    expect(memoryCreated.ok && base.getChildFile(".frusty/MEMORY_PROJECT_CARDS.jsonl").existsAsFile(),
+           "Workspace can create a project memory card");
+    auto memoryListed = observe.execute(call("memory_list_cards", R"({"scope":"project"})"));
+    expect(memoryListed.ok && memoryListed.message.contains("memory.project.test-rule"),
+           "Observe can list project memory cards");
+    auto globalDenied = workspace.execute(call("memory_upsert_card",
+        R"({"scope":"global","id":"memory.global.nope","title":"Nope","text":"Global writes require Full Access."})"));
+    expect(!globalDenied.ok && globalDenied.message.contains("Full Access"),
+           "Global memory writes require Full Access");
+    auto memoryDeleted = workspace.execute(call("memory_delete_card",
+        R"({"scope":"project","id":"memory.project.test-rule"})"));
+    expect(memoryDeleted.ok, "Workspace can delete a project memory card");
+
+    auto releasePacket = workspace.execute(call("plugin_prepare_release_packet",
+        R"({"plugin_name":"Frusty Helper","summary":"Adds a small helper panel to FrustIDE.","capabilities":["Shows contextual helper actions"],"permissions":["Reads the open project"],"files":["plugins/frusty_helper.frust"],"tests":["Load plugin in FrustIDE"]})"));
+    expect(releasePacket.ok && releasePacket.workspaceChanged,
+           "Workspace can prepare a plugin release packet");
+    expect(base.getChildFile("plugins/frusty_helper/PLUGIN_RELEASE_PACKET.md").existsAsFile()
+           && base.getChildFile("plugins/frusty_helper/REGISTRY_METADATA.json").existsAsFile()
+           && base.getChildFile("plugins/frusty_helper/FORUM_ANNOUNCEMENT_DRAFT.md").existsAsFile(),
+           "Plugin release packet contains checklist, registry metadata, and forum draft");
+
+    // ---- run_command: the rules (nothing is run here) ----
+    {
+        using command_tool::Verdict;
+        auto verdictOf = [](const char* command, const juce::StringArray& allowed = {}) {
+            return command_tool::assess(command, allowed);
+        };
+        expect(verdictOf("git status").verdict == Verdict::allow, "git status runs without asking");
+        expect(verdictOf("git status").readOnly, "git status is read-only");
+        expect(verdictOf("dotnet build").verdict == Verdict::ask, "a build is asked the first time");
+        expect(verdictOf("dotnet build", { "dotnet build" }).verdict == Verdict::allow, "a saved rule allows it after that");
+        expect(verdictOf("dotnet build src/App.csproj", { "dotnet build" }).verdict == Verdict::allow, "a rule covers its arguments");
+        expect(verdictOf("dotnet test", { "dotnet build" }).verdict == Verdict::ask, "a rule for build does not cover test");
+        expect(verdictOf("dotnet build").command == "dotnet build -m:1", "the host adds -m:1 to a dotnet build");
+        expect(verdictOf("dotnet build -m:1").command == "dotnet build -m:1", "and not twice");
+        expect(verdictOf("dotnet build -m:8").verdict == Verdict::deny, "a parallel dotnet build is refused");
+        expect(verdictOf("cargo build").command == "cargo build -j 1", "the host adds -j 1 to cargo");
+        expect(verdictOf("cargo build -j 1").verdict != Verdict::deny && verdictOf("cargo build -j 1").command == "cargo build -j 1",
+               "-j 1 written as two words is single-core, not refused and not doubled");
+        expect(verdictOf("cmake --build build --config Debug").verdict == Verdict::deny, "cmake --build without a target is refused");
+        expect(verdictOf("cmake --build build --config Debug --target app").verdict == Verdict::ask, "with a target it is asked");
+        expect(verdictOf("cmake --build build --target app --parallel 8").verdict == Verdict::deny, "a parallel cmake build is refused");
+        expect(verdictOf("msbuild app.sln /t:app /m").verdict == Verdict::deny, "msbuild /m is refused");
+        expect(verdictOf("msbuild app.sln /p:Configuration=Debug").verdict == Verdict::deny, "msbuild without /t: is refused");
+        expect(verdictOf("vcpkg install llvm").verdict == Verdict::deny, "vcpkg install is refused");
+        expect(verdictOf("cmake --build D:/llvm/build --target install").verdict == Verdict::deny, "building LLVM is refused");
+        expect(verdictOf("git push --force").verdict == Verdict::deny, "a force push is refused");
+        expect(verdictOf("git reset --hard HEAD~1").verdict == Verdict::deny, "git reset --hard is refused");
+        expect(verdictOf("shutdown /s").verdict == Verdict::deny, "shutting the machine down is refused");
+        expect(verdictOf("powershell -EncodedCommand AAAA").verdict == Verdict::deny, "an encoded command is refused");
+        expect(verdictOf("(Get-Content src/main.fr) -replace 'a','b' | Set-Content src/main.fr").verdict == Verdict::deny,
+               "the shell cannot be used as an untracked source editor");
+        expect(verdictOf("echo ready > NOTES.md").verdict == Verdict::deny,
+               "shell redirection cannot bypass revision-checked workspace edits");
+        expect(verdictOf("echo \"a > b\"").verdict == Verdict::allow,
+               "a redirection character inside a quoted argument remains ordinary text");
+        expect(verdictOf("Remove-Item C:\\Windows\\foo").verdict == Verdict::deny, "deleting outside the project is refused");
+        expect(verdictOf("Remove-Item build\\obj -Recurse").verdict == Verdict::ask, "deleting inside the project is asked");
+        expect(verdictOf("Remove-Item build", { "remove-item" }).verdict == Verdict::ask, "and a saved rule never allows a deletion");
+        expect(verdictOf("Remove-Item build").rulePrefix.isEmpty(), "so Always allow is not offered for it");
+        expect(verdictOf("git push", { "git push" }).verdict == Verdict::ask, "a push is always asked");
+        expect(verdictOf("type C:\\Users\\someone\\secrets.txt").verdict == Verdict::ask, "reading outside the project is asked");
+        expect(verdictOf("type C:\\Users\\someone\\secrets.txt", { "type" }).verdict == Verdict::ask, "even with a rule");
+        expect(verdictOf("git status && dotnet build").verdict == Verdict::ask, "a chain is only allowed when every part is");
+        expect(verdictOf("git status && dotnet build").command == "git status && dotnet build -m:1",
+               "an added flag lands on its own part and && keeps its meaning");
+        expect(verdictOf("git status; vcpkg install zlib").verdict == Verdict::deny, "one refused part refuses the chain");
+        expect(verdictOf("echo \"a; vcpkg install x\"").verdict == Verdict::allow, "separators inside quotes are not split");
+        expect(verdictOf("dotnet build $(Get-Secret)", { "dotnet build" }).verdict == Verdict::ask, "a sub-expression is always asked");
+        expect(command_tool::prefixOf("dotnet build src/App.csproj") == "dotnet build", "the rule for a dotnet build");
+        expect(command_tool::prefixOf("cmake --build build --target x") == "cmake --build", "the rule for a cmake build");
+        expect(command_tool::prefixOf("C:\\tools\\ninja.exe -C out") == "ninja", "a path to a program is its name");
+        expect(command_tool::splitCommands("a && b || c; d | e").size() == 5, "a chain splits into its commands");
+        expect(verdictOf("dotnet run").runsProgram && !verdictOf("dotnet run").build, "dotnet run starts a program; it is not a build");
+        expect(verdictOf("dotnet run").command == "dotnet run", "and gets no build flag");
+        expect(verdictOf("cargo run").runsProgram && verdictOf("cargo build").build, "cargo run starts a program, cargo build builds");
+    }
+
+    // ---- run_command: really running (PowerShell, headless, inside a temporary project) ----
+    {
+        const auto rulesFolder = base.getChildFile("rules");
+        const auto logs = base.getChildFile("logs");
+        int asked = 0;
+        auto approving = workspace;
+        approving.setCommandServices({ [&asked](const command_tool::ApprovalRequest&) { ++asked; return command_tool::Approval::once; },
+                                       logs, rulesFolder });
+
+        auto echoed = approving.execute(call("run_command", R"({"command":"Write-Output hello-from-the-shell","reason":"test"})"));
+        expect(echoed.ok && echoed.message.contains("hello-from-the-shell") && asked == 0,
+               "a read-only command runs without asking and its output comes back");
+        expect(!echoed.workspaceChanged && !echoed.verificationPerformed, "a read-only command is neither a change nor verification");
+
+        const auto companion = command_tool::run(
+            "(Get-Command frate -ErrorAction Stop).Source", base, 10);
+        expect(companion.started && companion.exitCode == 0 && companion.output.containsIgnoreCase("frate.exe"),
+               "the command environment exposes companion tools beside the IDE executable");
+
+        auto failing = approving.execute(call("run_command", R"({"command":"cmd /c exit 3","reason":"test exit codes"})"));
+        expect(!failing.ok && failing.message.contains("Exit code 3") && asked == 1, "an unknown command is asked, and its exit code comes back");
+
+        base.getChildFile("sub").createDirectory();
+        auto located = approving.execute(call("run_command", R"({"command":"Get-Location","cwd":"sub","reason":"test"})"));
+        expect(located.ok && located.message.contains("sub"), "it runs in the folder asked for");
+
+        auto outside = approving.execute(call("run_command", R"({"command":"Get-Location","cwd":"..","reason":"test"})"));
+        expect(!outside.ok, "it cannot run outside the project");
+
+        auto missingDirectory = approving.execute(call(
+            "workspace_list", R"({"path":"missing-folder"})"));
+        expect(!missingDirectory.ok && missingDirectory.message.contains("missing-folder"),
+               "a missing directory error identifies the resolved path");
+
+        auto slow = approving.execute(call("run_command", R"({"command":"Start-Sleep -Seconds 30","reason":"test","timeout_seconds":5})"));
+        expect(!slow.ok && slow.message.contains("time limit"), "a command that runs too long is stopped");
+
+        auto chatty = approving.execute(call("run_command", R"({"command":"1..20000 | ForEach-Object { 'line ' + $_ }","reason":"test"})"));
+        expect(chatty.ok && chatty.message.contains("line 1") && chatty.message.contains("line 20000") && chatty.message.contains("left out"),
+               "long output keeps its start and end and says what was left out");
+        expect(logs.getNumberOfChildFiles(juce::File::findFiles) > 0, "the full output is kept in a log");
+
+        auto refusing = workspace;
+        refusing.setCommandServices({ [](const command_tool::ApprovalRequest&) { return command_tool::Approval::deny; }, logs, rulesFolder });
+        auto refused = refusing.execute(call("run_command", R"({"command":"cmd /c echo no","reason":"test"})"));
+        expect(!refused.ok && refused.message.contains("did not allow"), "when the user says no, it does not run");
+
+        auto always = workspace;
+        int alwaysAsked = 0;
+        always.setCommandServices({ [&alwaysAsked](const command_tool::ApprovalRequest&) { ++alwaysAsked; return command_tool::Approval::always; },
+                                    logs, rulesFolder });
+        always.execute(call("run_command", R"({"command":"cmd /c echo first","reason":"test"})"));
+        always.execute(call("run_command", R"({"command":"cmd /c echo second","reason":"test"})"));
+        expect(alwaysAsked == 1, "after Always allow, the same kind of command is not asked again");
+
+        auto noOneToAsk = workspace.execute(call("run_command", R"({"command":"cmd /c echo x","reason":"test"})"));
+        expect(!noOneToAsk.ok, "with no one to ask, a command that needs approval does not run");
+
+        // Stop ends a running command at once, and progress is reported while it runs.
+        std::atomic<bool> stopNow { false };
+        std::atomic<int> progressCalls { 0 };
+        juce::String lastProgress;
+        std::mutex progressLock;
+        auto stoppable = workspace;
+        EngineerTools::CommandServices services;
+        services.approve = [](const command_tool::ApprovalRequest&) { return command_tool::Approval::once; };
+        services.logFolder = logs;
+        services.rulesFolder = rulesFolder;
+        services.shouldStop = [&stopNow] { return stopNow.load(); };
+        services.progress = [&](const juce::String& line) {
+            ++progressCalls;
+            std::lock_guard<std::mutex> lock(progressLock);
+            lastProgress = line;
+        };
+        stoppable.setCommandServices(services);
+        std::thread stopper([&stopNow] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(3500));
+            stopNow = true;
+        });
+        const auto startedAt = juce::Time::getMillisecondCounterHiRes();
+        auto stoppedRun = stoppable.execute(call("run_command",
+            R"({"command":"Write-Output ticking; Start-Sleep -Seconds 60","reason":"test stop","timeout_seconds":120})"));
+        const auto took = (juce::Time::getMillisecondCounterHiRes() - startedAt) / 1000.0;
+        stopper.join();
+        expect(!stoppedRun.ok && stoppedRun.message.contains("stopped it"), "Stop ends a running command, and says so");
+        expect(took < 15.0, "and promptly, not at the time limit");
+        expect(progressCalls >= 2, "progress is reported while it runs");
+        {
+            std::lock_guard<std::mutex> lock(progressLock);
+            expect(lastProgress.contains("Running") && lastProgress.contains("ticking"), "with the elapsed time and the last line it printed");
+        }
+    }
+
+    reference.deleteRecursively();
+    base.getSiblingFile(base.getFileName() + "-full-access.txt").deleteFile();
+    base.deleteRecursively();
+    if (failures == 0)
+        std::cout << "EngineerToolsTests: all checks passed\n";
+    return failures == 0 ? 0 : 1;
+}

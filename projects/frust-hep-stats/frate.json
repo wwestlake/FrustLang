@@ -1,0 +1,15 @@
+{
+  "name": "frust_hep_stats_workspace",
+  "version": "0.1.0",
+  "type": "bin",
+  "description": "Research workspace for high-energy physics statistics helpers.",
+  "exports": [],
+  "dependencies": [],
+  "workspace": {
+    "members": [
+      "frust_hep_stats",
+      "tests/stats_smoke",
+      "tests/unfolding_smoke"
+    ]
+  }
+}

@@ -1,0 +1,23 @@
+use core;
+use frust_numerics;
+use frust_hep_stats;
+
+fn pass_if(cond: bool) -> i64 = {
+    if cond == true { 1 } else { 0 }
+}
+
+fn main() -> i64 = {
+    let response: Response2x2 = response2x2(0.8, 0.2, 0.1, 0.9);
+    let obs0: f64 = response2x2_apply0(response, 100.0, 50.0);
+    let obs1: f64 = response2x2_apply1(response, 100.0, 50.0);
+    let direct: Unfold2Result = unfold2_direct(response, obs0, obs1);
+    let smooth: Unfold2Result = unfold2_tikhonov(response, obs0, obs1, 0.1);
+
+    pass_if(hep_approx_eq_f64(obs0, 90.0, 0.000001)) +
+    pass_if(hep_approx_eq_f64(obs1, 55.0, 0.000001)) +
+    pass_if(hep_approx_eq_f64(direct.true0, 100.0, 0.00001)) +
+    pass_if(hep_approx_eq_f64(direct.true1, 50.0, 0.00001)) +
+    pass_if(hep_approx_eq_f64(direct.determinant, 0.7, 0.000001)) +
+    pass_if(hep_approx_eq_f64(smooth.true0, 92.0289855, 0.0001)) +
+    pass_if(hep_approx_eq_f64(smooth.true1, 56.5217391, 0.0001))
+}

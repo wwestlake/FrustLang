@@ -1,0 +1,5 @@
+// Stub for A* pathfinding
+pub fn path_find_shortest(start_id: i64, end_id: i64) -> i64 = {
+    // Return cost stub
+    0
+}

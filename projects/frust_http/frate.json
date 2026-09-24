@@ -1,0 +1,13 @@
+{
+  "name": "frust_http",
+  "version": "0.1.0",
+  "type": "lib",
+  "description": "HTTP 1.1 client and parser.",
+  "exports": [
+    "HttpRequest", "HttpResponse", "http_get"
+  ],
+  "dependencies": [
+    { "name": "core", "version": "1.0.1" },
+    { "name": "frust_net", "version": "0.1.0" }
+  ]
+}

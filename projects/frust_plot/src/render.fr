@@ -1,0 +1,48 @@
+extern fn host_set_pixel(pixels: raw* i32, idx: i64, color: i32);
+extern fn host_f32_to_i64(v: f32) -> i64;
+extern fn perlin_1d(x: f32) -> f32; // from frust_noise
+
+pub fn render_plot(pixels: raw* i32, width: i64, height: i64) = {
+    let mut y: i64 = 0;
+    let mut x: i64 = 0;
+    let mut color: i32 = 0;
+    let mut idx: i64 = 0;
+    
+    // Clear background
+    while (y < height) {
+        x = 0;
+        while (x < width) {
+            color = (255 * 16777216) + (30 * 65536) + (30 * 256) + 30;
+            idx = (y * width) + x;
+            host_set_pixel(pixels, idx, color);
+            x = x + 1;
+        };
+        y = y + 1;
+    };
+    
+    x = 0;
+    let mut x_float: f32 = 0.0;
+    let mut noise_val: f32 = 0.0;
+    let mut y_val: i64 = 0;
+    let mid_y: i64 = height / 2;
+    
+    // Plot a Perlin Noise landscape across the screen!
+    while (x < width) {
+        noise_val = perlin_1d(x_float);
+        
+        let offset: f32 = noise_val * 200.0;
+        
+        // Use C++ host to cast f32 to i64 to bypass LLVM codegen bug
+        let offset_i: i64 = host_f32_to_i64(offset);
+        y_val = mid_y + offset_i;
+        
+        if ((y_val >= 0) * (y_val < height)) {
+            color = (255 * 16777216) + (255 * 65536) + (100 * 256) + 255;
+            idx = (y_val * width) + x;
+            host_set_pixel(pixels, idx, color);
+        };
+        
+        x = x + 1;
+        x_float = x_float + 0.02;
+    }
+}

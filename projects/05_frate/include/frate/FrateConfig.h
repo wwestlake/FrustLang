@@ -13,6 +13,10 @@ public:
     bool load(const juce::File& frateJsonFile);
     bool save(const juce::File& frateJsonFile) const;
 
+    // The same, from and to text - for hosts that keep pods somewhere other than the disk.
+    bool loadFromString(const std::string& frateJsonText);
+    std::string toJsonString() const;
+
     const PodMetadata& getMetadata() const { return metadata; }
     void setMetadata(const PodMetadata& meta) { metadata = meta; }
 

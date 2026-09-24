@@ -131,42 +131,19 @@ bool FrateRegistryClient::publishPod(const PodMetadata& metadata, const juce::St
     return statusCode == 200;
 }
 
-bool FrateRegistryClient::uploadToS3(const juce::String& presignedUrl, const juce::File& frpodFile) {
+bool FrateRegistryClient::downloadToMemory(const juce::String& presignedUrl, juce::MemoryBlock& bytes) {
     juce::URL url(presignedUrl);
 
-    juce::MemoryBlock block;
-    frpodFile.loadFileAsData(block);
-    url = url.withPOSTData(block);
-
-    int statusCode = 0;
-    std::unique_ptr<juce::InputStream> stream(url.createInputStream(
-        juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
-            .withHttpRequestCmd("PUT")
-            .withStatusCode(&statusCode)
-    ));
-
-    return statusCode == 200;
-}
-
-bool FrateRegistryClient::downloadFromS3(const juce::String& presignedUrl, const juce::File& targetFile) {
-    juce::URL url(presignedUrl);
-    
     int statusCode = 0;
     std::unique_ptr<juce::InputStream> stream(url.createInputStream(
         juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
             .withStatusCode(&statusCode)
     ));
-    
-    if (stream && statusCode == 200) {
-        targetFile.deleteFile();
-        std::unique_ptr<juce::FileOutputStream> outStream = targetFile.createOutputStream();
-        if (outStream) {
-            outStream->writeFromInputStream(*stream, -1);
-            return true;
-        }
-    }
-    
-    return false;
+
+    if (stream == nullptr || statusCode != 200) return false;
+    bytes.reset();
+    stream->readIntoMemoryBlock(bytes);
+    return bytes.getSize() > 0;
 }
 
 } // namespace frate

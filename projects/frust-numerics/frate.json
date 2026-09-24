@@ -1,0 +1,16 @@
+{
+  "name": "frust_numerics_workspace",
+  "version": "0.1.0",
+  "type": "bin",
+  "description": "Research workspace for the Frust numerical methods pack.",
+  "exports": [],
+  "dependencies": [],
+  "workspace": {
+    "members": [
+      "frust_numerics",
+      "tests/interpolation_smoke",
+      "tests/calculus_smoke",
+      "tests/stats_signal_smoke"
+    ]
+  }
+}

@@ -4,10 +4,11 @@
 // plugins instead of one throwaway run.
 
 #include "frust_plugin_host/FrustPluginHost.h"
+#include "frust_plugin_host/FrustPluginHostSource.h"
 #include "frust_plugin_host/FrustPluginManifest.h"
 
 #include <algorithm>
-#include <fstream>
+#include <sstream>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -22,6 +23,8 @@
 #include "ASTHash.h"
 #include "Codegen.h"
 #include "Lexer.h"
+#include "CompilerFrontend.h"
+#include "Diagnostics.h"
 #include "ModuleLoader.h"
 #include "parser.hpp"
 
@@ -186,11 +189,14 @@ bool CompilePluginModule(const std::string& path,
     std::lock_guard<std::mutex> lock(s.mutex);
     if (!s.ensureInit()) return false;
 
-    std::ifstream file(path);
-    if (!file) {
-        reportError("cannot open '" + path + "'");
+    // The path-based load reads through the host's file reader (frust::SetFileReader). The plugin
+    // host itself opens no file: a host that never installs a reader can only load from source text.
+    std::string sourceText;
+    if (!frust::ReadFileThroughHost(path, sourceText)) {
+        reportError("cannot read '" + path + "' (no file access installed, or no such file)");
         return false;
     }
+    std::istringstream file(sourceText);
 
     AstArena arena;
     std::vector<std::string> parseErrors;
@@ -207,7 +213,11 @@ bool CompilePluginModule(const std::string& path,
     // directory (`X.frust` tried first, then `X.fr`), merged directly
     // into `prog`. A no-op for a plugin with no self-use decls at all -
     // every existing single-file plugin is unaffected.
-    if (!ResolveSelfUses(prog, arena, ParentDirOf(path), parseErrors)) {
+    const std::string baseDir = ParentDirOf(path);
+    const frust::SourceProvider siblings = [&baseDir](const std::string& name, std::string& text) {
+        return frust::ReadFileThroughHost(baseDir + "/" + name, text);
+    };
+    if (!ResolveSelfUsesWith(prog, arena, siblings, parseErrors)) {
         std::string msg = std::to_string(parseErrors.size()) + " error(s) resolving 'use self::' for '" + path + "'";
         for (const auto& err : parseErrors) msg += "\n  " + err;
         reportError(msg);
@@ -297,6 +307,67 @@ bool MergeNodeReflection(frust_plugin_host::PluginManifest& manifest, llvm::Modu
     return true;
 }
 
+// Same as CompilePluginModule, but the source is TEXT the host handed over
+// (request.sources[0] is the plugin) and everything else the compile asks for
+// - sibling files for `use self::x;`, pods for `use pod;` / `import` - comes
+// from the request's providers. No file is opened. `request.sources[0].name`
+// is only a label for diagnostics and the reload cache.
+bool CompilePluginSource(const frust::CompileRequest& request,
+                         std::unique_ptr<llvm::LLVMContext>& outContext,
+                         std::unique_ptr<llvm::Module>& outModule,
+                         std::string& outAstHash) {
+    auto& s = state();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    if (!s.ensureInit()) return false;
+
+    const std::string& name = request.sources.front().name;
+
+    AstArena arena;
+    frust::CompileResult front;
+    Program* prog = frust::BuildProgram(request, arena, front);
+    if (prog == nullptr) {
+        std::string msg = std::to_string(front.diagnostics.size()) + " error(s) loading '" + name + "'";
+        for (const auto& d : front.diagnostics) msg += "\n  " + frust::FormatDiagnostic(d);
+        reportError(msg);
+        return false;
+    }
+
+    outAstHash = computeAstHash(*prog);
+    outContext = std::make_unique<llvm::LLVMContext>();
+    outModule = std::make_unique<llvm::Module>(name, *outContext);
+
+    std::ostringstream codegenText;
+    bool codegenOk = false;
+    {
+        frust::DiagnosticCapture capture(codegenText);
+        Codegen codegen(*outContext, *outModule);
+        codegenOk = codegen.compileProgram(*prog);
+    }
+    if (!codegenOk) {
+        std::string msg = "codegen failed for '" + name + "'";
+        if (!codegenText.str().empty()) msg += "\n  " + codegenText.str();
+        reportError(msg);
+        return false;
+    }
+    return true;
+}
+
+// A request for a plugin loaded from a name, text, and the C ABI's sibling-file callback.
+frust::CompileRequest MakeSourceRequest(const std::string& name, const std::string& text,
+                                        FrustPluginSourceProvider provider, void* providerUserData) {
+    frust::CompileRequest request;
+    request.sources.push_back({ name, text });
+    if (provider) {
+        request.siblingFiles = [provider, providerUserData](const std::string& fileName, std::string& out) {
+            const char* content = provider(fileName.c_str(), providerUserData);
+            if (!content) return false;
+            out = content;
+            return true;
+        };
+    }
+    return request;
+}
+
 } // namespace
 
 struct FrustPluginHandleImpl {
@@ -310,16 +381,15 @@ struct FrustPluginHandleImpl {
     frust_plugin_host::PluginManifest manifest;
 };
 
-extern "C" {
-
-FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_load(const char* path) {
+// Phases 2 and 3 of a load: read and check the embedded manifest, then link
+// the compiled module into the JIT. Shared by loading from a path and from
+// source text; `path` is the path or the name given for the source.
+static FrustPluginHandle LinkPlugin(const std::string& pathString,
+                                    std::unique_ptr<llvm::LLVMContext> context,
+                                    std::unique_ptr<llvm::Module> module,
+                                    const std::string& astHash) {
     auto& s = state();
-
-    // Phase 1: parse + codegen, into a fresh, not-yet-linked module.
-    std::unique_ptr<llvm::LLVMContext> context;
-    std::unique_ptr<llvm::Module> module;
-    std::string astHash;
-    if (!CompilePluginModule(path, context, module, astHash)) return nullptr;
+    const char* path = pathString.c_str();
 
     // Phase 2: NO MANIFEST, NO LOAD. Read the embedded manifest straight
     // off the freshly-compiled module - before this module is ever
@@ -384,6 +454,38 @@ FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_load(const char* path) {
     handle->dylib = &JD;
     handle->manifest = std::move(*parsedManifest);
     return handle;
+}
+
+extern "C" {
+
+FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_load(const char* path) {
+    // Phase 1: parse + codegen, into a fresh, not-yet-linked module.
+    std::unique_ptr<llvm::LLVMContext> context;
+    std::unique_ptr<llvm::Module> module;
+    std::string astHash;
+    if (!CompilePluginModule(path, context, module, astHash)) return nullptr;
+
+    return LinkPlugin(path, std::move(context), std::move(module), astHash);
+}
+
+FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_load_source(const char* name,
+                                                                 const char* sourceText,
+                                                                 FrustPluginSourceProvider provider,
+                                                                 void* providerUserData) {
+    if (!name || !sourceText) {
+        reportError("frust_plugin_load_source needs a name and source text");
+        return nullptr;
+    }
+    return frust_plugin_host::loadFromSource(MakeSourceRequest(name, sourceText, provider, providerUserData));
+}
+
+FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_reload_source(FrustPluginHandle handle,
+                                                                   const char* sourceText,
+                                                                   FrustPluginSourceProvider provider,
+                                                                   void* providerUserData) {
+    if (!handle || !sourceText) return nullptr;
+    return frust_plugin_host::reloadFromSource(
+        handle, MakeSourceRequest(handle->path, sourceText, provider, providerUserData));
 }
 
 FRUST_PLUGIN_HOST_API FrustPluginManifestHandle frust_plugin_get_manifest(FrustPluginHandle handle) {
@@ -481,8 +583,9 @@ FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_reload(FrustPluginHandle ha
     // hashes the same as what's already loaded, skip the real work
     // entirely and hand back the existing handle untouched.
     {
-        std::ifstream file(path);
-        if (file) {
+        std::string reloadText;
+        if (frust::ReadFileThroughHost(path, reloadText)) {
+            std::istringstream file(reloadText);
             AstArena arena;
             std::vector<std::string> parseErrors;
             Program* prog = ParsePluginSource(file, arena, parseErrors);
@@ -659,3 +762,54 @@ FRUST_PLUGIN_HOST_API void* frust_lookup_service(const char* name) {
 }
 
 } // extern "C"
+
+namespace frust_plugin_host {
+
+FrustPluginHandle loadFromSource(const frust::CompileRequest& request) {
+    if (request.sources.empty()) {
+        reportError("loadFromSource needs a source");
+        return nullptr;
+    }
+    std::unique_ptr<llvm::LLVMContext> context;
+    std::unique_ptr<llvm::Module> module;
+    std::string astHash;
+    if (!CompilePluginSource(request, context, module, astHash)) return nullptr;
+    return LinkPlugin(request.sources.front().name, std::move(context), std::move(module), astHash);
+}
+
+FrustPluginHandle loadFromEnvironment(frust::HostEnvironment& env, const frust::FileCompileRequest& request) {
+    frust::CompileRequest compileRequest;
+    std::string error;
+    if (!frust::MakeCompileRequest(env, request, compileRequest, error)) {
+        reportError(error);
+        return nullptr;
+    }
+    return loadFromSource(compileRequest);
+}
+
+FrustPluginHandle reloadFromSource(FrustPluginHandle handle, const frust::CompileRequest& request) {
+    if (!handle || request.sources.empty()) return nullptr;
+    const std::string name = handle->path; // copy before unload deletes the handle
+    frust::CompileRequest named = request;
+    named.sources.front().name = name;
+
+    // Same "nothing structurally changed" shortcut as frust_plugin_reload.
+    {
+        std::unique_ptr<llvm::LLVMContext> context;
+        std::unique_ptr<llvm::Module> module;
+        std::string newHash;
+        if (CompilePluginSource(named, context, module, newHash)) {
+            auto& s = state();
+            std::lock_guard<std::mutex> lock(s.mutex);
+            const auto it = s.lastAstHashByPath.find(name);
+            if (it != s.lastAstHashByPath.end() && it->second == newHash) return handle;
+        }
+    }
+
+    frust_plugin_unload(handle);
+    FrustPluginHandle newHandle = loadFromSource(named);
+    if (newHandle) frust_plugin_call_on_init(newHandle);
+    return newHandle;
+}
+
+} // namespace frust_plugin_host

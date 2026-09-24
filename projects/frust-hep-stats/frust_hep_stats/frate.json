@@ -1,0 +1,36 @@
+{
+  "name": "frust_hep_stats",
+  "version": "0.1.0",
+  "type": "lib",
+  "description": "High-energy physics statistical helpers for likelihoods, CLs, Asimov estimates, LEE, and small unfolding problems.",
+  "exports": [
+    "CountingModel",
+    "AsimovCounting",
+    "ClsResult",
+    "Response2x2",
+    "Unfold2Result",
+    "counting_model",
+    "poisson_log_likelihood_no_const",
+    "poisson_deviance",
+    "extended_counting_log_likelihood_no_const",
+    "gaussian_constraint_log_likelihood",
+    "q0_counting",
+    "z0_counting",
+    "asimov_discovery_z",
+    "asimov_counting",
+    "cls_ratio",
+    "cls_excluded_95",
+    "trials_factor_p_global",
+    "gross_vitells_bound",
+    "response2x2",
+    "response2x2_apply0",
+    "response2x2_apply1",
+    "unfold2_tikhonov",
+    "hep_abs_f64",
+    "hep_approx_eq_f64"
+  ],
+  "dependencies": [
+    { "name": "core", "version": "1.0.1" },
+    { "name": "frust_numerics", "version": "0.1.0" }
+  ]
+}

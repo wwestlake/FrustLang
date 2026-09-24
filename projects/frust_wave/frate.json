@@ -1,0 +1,13 @@
+{
+  "name": "frust_wave",
+  "version": "0.1.0",
+  "type": "lib",
+  "description": "Audio file I/O for Frust.",
+  "exports": [
+    "RiffHeader", "riff_header_parse",
+    "pcm_16_to_f32", "pcm_24_to_f32"
+  ],
+  "dependencies": [
+    { "name": "core", "version": "1.0.1" }
+  ]
+}

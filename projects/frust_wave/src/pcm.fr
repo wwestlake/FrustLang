@@ -1,0 +1,9 @@
+pub fn pcm_16_to_f32(sample: i64) -> f32 = {
+    // stub
+    0.0
+}
+
+pub fn pcm_24_to_f32(sample: i64) -> f32 = {
+    // stub
+    0.0
+}

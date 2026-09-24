@@ -1,0 +1,64 @@
+struct CountingModel {
+    signal: f64,
+    background: f64
+}
+
+pub fn counting_model(signal: f64, background: f64) -> CountingModel = {
+    CountingModel { signal: signal, background: background }
+}
+
+pub fn hep_abs_f64(x: f64) -> f64 = {
+    if (x < 0.0) { -x } else { x }
+}
+
+pub fn hep_min_f64(a: f64, b: f64) -> f64 = {
+    if (a < b) { a } else { b }
+}
+
+pub fn hep_max_f64(a: f64, b: f64) -> f64 = {
+    if (a > b) { a } else { b }
+}
+
+pub fn hep_clamp_f64(x: f64, lo: f64, hi: f64) -> f64 = {
+    if (x < lo) { lo } else {
+        if (x > hi) { hi } else { x }
+    }
+}
+
+pub fn hep_approx_eq_f64(a: f64, b: f64, eps: f64) -> bool = {
+    hep_abs_f64(a - b) <= eps
+}
+
+pub fn poisson_log_likelihood_no_const(observed: f64, expected: f64) -> f64 = {
+    if (expected <= 0.0) {
+        -1000000000.0
+    } else {
+        observed * log(expected) - expected
+    }
+}
+
+pub fn poisson_deviance(observed: f64, expected: f64) -> f64 = {
+    if (expected <= 0.0) {
+        1000000000.0
+    } else {
+        if (observed <= 0.0) {
+            2.0 * expected
+        } else {
+            2.0 * (expected - observed + observed * log(observed / expected))
+        }
+    }
+}
+
+pub fn extended_counting_log_likelihood_no_const(observed: f64, mu: f64, model: CountingModel) -> f64 = {
+    poisson_log_likelihood_no_const(observed, mu * model.signal + model.background)
+}
+
+pub fn gaussian_constraint_log_likelihood(value: f64, nominal: f64, sigma: f64) -> f64 = {
+    let z: f64 = (value - nominal) / sigma;
+    -0.5 * z * z
+}
+
+pub fn lognormal_constraint_log_likelihood(value: f64, median: f64, log_sigma: f64) -> f64 = {
+    let z: f64 = log(value / median) / log_sigma;
+    -0.5 * z * z
+}

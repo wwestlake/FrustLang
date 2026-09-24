@@ -1,0 +1,44 @@
+use core;
+use frust_linalg;
+use frust_physics;
+
+fn pass_if(cond: bool) -> i64 = {
+    if cond == true { 1 } else { 0 }
+}
+
+fn main() -> i64 = {
+    let s0: RunningStats1f = running_stats1f();
+    let s1: RunningStats1f = running_stats1f_add(s0, 2.0);
+    let s2: RunningStats1f = running_stats1f_add(s1, 4.0);
+    let s3: RunningStats1f = running_stats1f_add(s2, 6.0);
+    let pop_var: f32 = running_stats1f_variance_population(s3);
+    let samp_var: f32 = running_stats1f_variance_sample(s3);
+    let z: f32 = partition2_f32(0.0, 0.0, 1.0);
+    let expv: f32 = expectation2_f32(10.0, 0.0, 20.0, 0.0, 1.0);
+    let entropy: f32 = entropy2_f32(0.5, 0.5);
+    let accept_downhill: bool = metropolis_accept_f32(-1.0, 1.0, 0.99);
+    let reject_uphill: bool = metropolis_accept_f32(10.0, 1.0, 0.99);
+    let mc: MonteCarloResult = monte_carlo_mean4_f32(1.0, 3.0, 5.0, 7.0);
+    let zscore: f32 = z_score_f32(12.0, 10.0, 2.0);
+    let chi: f32 = chi_square_1d_f32(12.0, 10.0, 2.0);
+    let in_window: bool = inside_symmetric_window_f32(124.5, 125.0, 1.0);
+    let mass_score: f32 = mass_window_score_f32(124.0, 125.0, 0.5);
+    let sb: f32 = signal_background_ratio_f32(20.0, 5.0);
+
+    pass_if(s3.count == 3) +
+    pass_if(s3.mean == 4.0) +
+    pass_if(approx_eq_f32(pop_var, 2.6666667, 0.000001)) +
+    pass_if(samp_var == 4.0) +
+    pass_if(z == 2.0) +
+    pass_if(expv == 15.0) +
+    pass_if(approx_eq_f32(entropy, 0.6931472, 0.000001)) +
+    pass_if(accept_downhill == true) +
+    pass_if(reject_uphill == false) +
+    pass_if(mc.estimate == 4.0) +
+    pass_if(mc.samples == 4) +
+    pass_if(zscore == 1.0) +
+    pass_if(chi == 1.0) +
+    pass_if(in_window == true) +
+    pass_if(mass_score == 2.0) +
+    pass_if(sb == 4.0)
+}

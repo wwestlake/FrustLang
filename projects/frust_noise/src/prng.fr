@@ -1,0 +1,20 @@
+struct PRNGState {
+    s0: i64, s1: i64, s2: i64, s3: i64
+}
+
+struct PRNGResult {
+    value: i64,
+    state: PRNGState
+}
+
+pub fn prng_seed(seed: i64) -> PRNGState = {
+    PRNGState { s0: seed, s1: seed + 1, s2: seed + 2, s3: seed + 3 }
+}
+
+pub fn prng_xoshiro256_next(state: PRNGState) -> PRNGResult = {
+    let result_val: i64 = state.s0 + state.s3;
+    PRNGResult {
+        value: result_val,
+        state: PRNGState { s0: state.s1, s1: state.s2, s2: state.s3, s3: result_val }
+    }
+}

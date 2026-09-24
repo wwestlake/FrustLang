@@ -1,0 +1,14 @@
+{
+  "name": "frust_noise",
+  "version": "0.1.0",
+  "type": "lib",
+  "description": "Procedural generation and noise functions for Frust.",
+  "exports": [
+    "prng_xoshiro256_next", "prng_seed",
+    "perlin_1d", "perlin_2d", "perlin_3d",
+    "simplex_2d", "simplex_3d"
+  ],
+  "dependencies": [
+    { "name": "core", "version": "1.0.1" }
+  ]
+}

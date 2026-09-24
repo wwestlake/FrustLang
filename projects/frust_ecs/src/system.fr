@@ -1,0 +1,4 @@
+// Stub for system iteration
+pub fn system_iter(reg: raw* Registry) = {
+    // stub
+}

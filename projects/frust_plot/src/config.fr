@@ -1,0 +1,15 @@
+struct GraphConfig {
+    bg_color: i32,
+    grid_color: i32,
+    line_color: i32,
+    draw_grid: bool,
+    x_min: f32,
+    x_max: f32,
+    y_min: f32,
+    y_max: f32
+}
+
+struct Dataset {
+    data: raw* f32,
+    length: i64
+}

@@ -3,12 +3,8 @@
 
 namespace frate {
 
-bool FrateConfig::load(const juce::File& frateJsonFile) {
-    if (!frateJsonFile.existsAsFile()) {
-        return false;
-    }
-
-    auto jsonVar = juce::JSON::parse(frateJsonFile);
+bool FrateConfig::loadFromString(const std::string& frateJsonText) {
+    auto jsonVar = juce::JSON::parse(juce::String(frateJsonText));
     if (!jsonVar.isObject()) {
         return false;
     }
@@ -17,10 +13,8 @@ bool FrateConfig::load(const juce::File& frateJsonFile) {
     return true;
 }
 
-bool FrateConfig::save(const juce::File& frateJsonFile) const {
-    auto jsonVar = PodMetadataJson::toJson(metadata);
-    juce::String jsonStr = juce::JSON::toString(jsonVar);
-    return frateJsonFile.replaceWithText(jsonStr);
+std::string FrateConfig::toJsonString() const {
+    return juce::JSON::toString(PodMetadataJson::toJson(metadata)).toStdString();
 }
 
 const std::vector<PodDependency>& FrateConfig::getDependencies() const {

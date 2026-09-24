@@ -1,0 +1,15 @@
+{
+  "name": "frust_physics_workspace",
+  "version": "0.1.0",
+  "type": "bin",
+  "description": "Research workspace for the Frust computational physics pack.",
+  "exports": [],
+  "dependencies": [],
+  "workspace": {
+    "members": [
+      "frust_physics",
+      "tests/core_smoke",
+      "tests/statphys_smoke"
+    ]
+  }
+}

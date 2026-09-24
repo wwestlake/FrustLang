@@ -1,0 +1,7 @@
+struct Registry {
+    entity_count: i64
+}
+
+pub fn registry_new() -> Registry = {
+    Registry { entity_count: 0 }
+}

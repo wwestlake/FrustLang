@@ -1,0 +1,10 @@
+struct WsFrame {
+    fin: bool,
+    opcode: i64,
+    masked: bool,
+    payload_len: i64
+}
+
+pub fn ws_frame_parse(data: raw* i64) -> WsFrame = {
+    WsFrame { fin: true, opcode: 1, masked: false, payload_len: 0 }
+}

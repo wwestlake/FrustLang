@@ -39,8 +39,10 @@ add_library(ai_provider STATIC
     include/ai_provider/AiProvider.h
     include/ai_provider/OpenAiProvider.h
     include/ai_provider/AiConfig.h
+    include/ai_provider/Json.h
     src/OpenAiProvider.cpp
     src/AiConfig.cpp
+    src/Json.cpp
 )
 
 target_include_directories(ai_provider PUBLIC
@@ -49,6 +51,22 @@ target_include_directories(ai_provider PUBLIC
 
 target_link_libraries(ai_provider PUBLIC
     juce::juce_core
+)
+
+add_executable(ai_provider_tests
+    tests/AiConfigTests.cpp
+)
+
+target_link_libraries(ai_provider_tests PRIVATE
+    ai_provider
+)
+
+add_executable(ai_provider_json_tests
+    tests/JsonTests.cpp
+)
+
+target_link_libraries(ai_provider_json_tests PRIVATE
+    ai_provider
 )
 
 # Same gap as frate_lib (see its CMakeLists.txt for the full explanation):

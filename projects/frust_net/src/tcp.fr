@@ -1,0 +1,11 @@
+use self::ip;
+
+struct TcpStream {
+    fd: i64,
+    connected: bool
+}
+
+pub fn tcp_connect(address: i64, port: i64) -> TcpStream = {
+    // Stub
+    TcpStream { fd: -1, connected: false }
+}

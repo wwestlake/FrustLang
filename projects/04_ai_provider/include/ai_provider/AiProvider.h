@@ -5,15 +5,49 @@
 
 namespace ai_provider {
 
+struct ToolCall {
+    std::string id;
+    std::string name;
+    std::string argumentsJson;
+};
+
+struct ToolDefinition {
+    std::string name;
+    std::string description;
+    std::string parametersJson;
+};
+
+enum class ToolChoice {
+    autoSelect,
+    required
+};
+
 struct ChatMessage {
     std::string role;    // "system" | "user" | "assistant"
     std::string content;
+    std::vector<ToolCall> toolCalls;
+    std::string toolCallId;
+    // Exact typed output items returned by stateful provider APIs. Keeping
+    // these between tool rounds preserves reasoning and hosted-tool state.
+    std::string providerItemsJson;
 };
 
 struct ChatResponse {
     bool ok = false;
     std::string content;      // the assistant's reply, when ok
     std::string errorMessage; // human-readable failure reason, when !ok
+    std::vector<ToolCall> toolCalls;
+    std::string providerItemsJson;
+    bool hostedToolUsed = false;
+    int inputTokens = 0;
+    int outputTokens = 0;
+    int totalTokens = 0;
+};
+
+struct ModelListResponse {
+    bool ok = false;
+    std::vector<std::string> models;
+    std::string errorMessage;
 };
 
 // Provider-agnostic chat interface. OpenAiProvider is the one real
@@ -29,7 +63,10 @@ public:
     // Blocking - callers on the message thread should invoke this off a
     // background thread (see AiChatPanel's usage) rather than stall the UI
     // for the length of an HTTP round trip.
-    virtual ChatResponse sendChat(const std::vector<ChatMessage>& messages) = 0;
+    virtual ChatResponse sendChat(const std::vector<ChatMessage>& messages,
+                                  const std::vector<ToolDefinition>& tools = {},
+                                  ToolChoice toolChoice = ToolChoice::autoSelect) = 0;
+    virtual ModelListResponse listModels() = 0;
 };
 
 } // namespace ai_provider

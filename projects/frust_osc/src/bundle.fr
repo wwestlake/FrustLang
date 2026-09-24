@@ -1,0 +1,8 @@
+struct OscBundle {
+    time_tag: i64,
+    num_elements: i64
+}
+
+pub fn osc_bundle_new(time_tag: i64) -> OscBundle = {
+    OscBundle { time_tag: time_tag, num_elements: 0 }
+}

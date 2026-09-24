@@ -1,0 +1,32 @@
+use core;
+use frust_linalg;
+
+fn pass_if(cond: bool) -> i64 = {
+    if cond == true { 1 } else { 0 }
+}
+
+fn main() -> i64 = {
+    let ray: Ray3f = ray3f(vec3f(1.0, 2.0, 3.0), vec3f(10.0, 0.0, -1.0));
+    let ray_point: Vec3f = ray3f_at(ray, 2.0);
+
+    let plane: Plane3f = plane3f_from_point_normal(vec3f(0.0, 5.0, 0.0), vec3f(0.0, 1.0, 0.0));
+    let plane_dist: f32 = plane3f_signed_distance(plane, vec3f(0.0, 8.0, 0.0));
+
+    let a: Aabb3f = aabb3f(vec3f(-1.0, -2.0, -3.0), vec3f(3.0, 4.0, 5.0));
+    let b: Aabb3f = aabb3f(vec3f(-5.0, 0.0, 1.0), vec3f(1.0, 9.0, 2.0));
+    let center: Vec3f = aabb3f_center(a);
+    let extents: Vec3f = aabb3f_extents(a);
+    let joined: Aabb3f = aabb3f_union(a, b);
+    let joined_min: Vec3f = joined.min;
+    let joined_max: Vec3f = joined.max;
+
+    let sphere: Spheref = spheref(vec3f_zero(), 5.0);
+
+    pass_if(ray_point.x == 21.0) + pass_if(ray_point.y == 2.0) + pass_if(ray_point.z == 1.0) +
+    pass_if(plane_dist == 3.0) +
+    pass_if(center.x == 1.0) + pass_if(center.y == 1.0) + pass_if(center.z == 1.0) +
+    pass_if(extents.x == 2.0) + pass_if(extents.y == 3.0) + pass_if(extents.z == 4.0) +
+    pass_if(aabb3f_contains_point(a, vec3f(0.0, 0.0, 0.0))) +
+    pass_if(joined_min.x == -5.0) + pass_if(joined_max.y == 9.0) +
+    pass_if(spheref_contains_point(sphere, vec3f(3.0, 4.0, 0.0)))
+}

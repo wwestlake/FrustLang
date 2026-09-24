@@ -1,0 +1,9 @@
+{
+  "name": "frust_json_tests",
+  "version": "0.2.1",
+  "description": "Executable Frust tests for frust_json.",
+  "entry": "src/main.fr",
+  "dependencies": [
+    { "name": "frust_json", "version": "0.2.1" }
+  ]
+}

@@ -1,0 +1,14 @@
+use self::ast;
+use self::parser;
+use self::emitter;
+
+extern fn strcmp(a:String,b:String)->i32;
+fn test_eq(a:String,b:String)->bool={strcmp(a,b)==0}
+
+fn test_valid_nested()->i64={
+    let r=json_parse("{\"name\":\"Ada\",\"items\":[true,null,-12.5e2],\"escaped\":\"line\\n\\t\\\"ok\\\"\",\"music\":\"\\uD834\\uDD1E\"}");
+    if(!r.ok){10}else{let root:i64=json_root(r.document);let name:i64=json_object_get(r.document,root,"name");let items:i64=json_object_get(r.document,root,"items");if(!test_eq(json_string(r.document,name),"Ada")){11}else if(json_child_count(r.document,items)!=3){12}else if(!json_bool(r.document,json_array_get(r.document,items,0))){13}else if(!json_is_null(r.document,json_array_get(r.document,items,1))){14}else if(json_number(r.document,json_array_get(r.document,items,2))!=-1250.0){15}else{let emitted:String=json_emit(r.document);let again=json_parse(emitted);if(!again.ok){16}else if(!test_eq(json_emit(again.document),emitted)){17}else{0}}}
+}
+fn test_malformed()->i64={let a=json_parse("{\"a\":1,}");let b=json_parse("01");let c=json_parse("\"\\uD800x\"");let d=json_parse("[1 2]");if(a.ok){20}else if(b.ok){21}else if(c.ok){22}else if(d.ok){23}else if(a.error.offset<=0){24}else if(a.error.line!=1){25}else{0}}
+fn test_scalars()->i64={let a=json_parse("false");let b=json_parse("3.25E+2");let c=json_parse("[]");if(!a.ok){30}else if(json_bool(a.document,a.document.root)){31}else if(json_number(b.document,b.document.root)!=325.0){32}else if(json_child_count(c.document,c.document.root)!=0){33}else{0}}
+entry fn main()->i64={let a:i64=test_valid_nested();if(a!=0){a}else{let b:i64=test_malformed();if(b!=0){b}else{test_scalars()}}}

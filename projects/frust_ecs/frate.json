@@ -1,0 +1,14 @@
+{
+  "name": "frust_ecs",
+  "version": "0.1.0",
+  "type": "lib",
+  "description": "Entity Component System for Frust.",
+  "exports": [
+    "EntityId", "entity_new",
+    "Registry", "registry_new",
+    "system_iter"
+  ],
+  "dependencies": [
+    { "name": "core", "version": "1.0.1" }
+  ]
+}

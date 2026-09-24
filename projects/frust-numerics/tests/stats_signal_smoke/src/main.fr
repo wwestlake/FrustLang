@@ -1,0 +1,34 @@
+use core;
+use frust_numerics;
+
+fn pass_if(cond: bool) -> i64 = {
+    if cond == true { 1 } else { 0 }
+}
+
+fn main() -> i64 = {
+    let mean: f32 = mean4_f32(1.0, 3.0, 5.0, 7.0);
+    let pop_var: f32 = variance_population4_f32(1.0, 3.0, 5.0, 7.0);
+    let sample_var: f32 = variance_sample4_f32(1.0, 3.0, 5.0, 7.0);
+    let mv: MeanVariance4f = mean_variance4_f32(1.0, 3.0, 5.0, 7.0);
+    let cov: f32 = covariance4_f32(1.0, 2.0, 3.0, 4.0, 2.0, 4.0, 6.0, 8.0);
+    let corr: f32 = correlation4_f32(1.0, 2.0, 3.0, 4.0, 2.0, 4.0, 6.0, 8.0);
+    let rms: f32 = rms4_f32(1.0, -1.0, 1.0, -1.0);
+    let peak: f32 = peak_abs4_f32(-2.0, 5.0, -9.0, 4.0);
+    let norm: f32 = normalize_peak4_f32(-4.0, 8.0);
+    let sig: Signal4fStats = signal4f_stats(1.0, 2.0, 3.0, 4.0);
+
+    pass_if(mean == 4.0) +
+    pass_if(pop_var == 5.0) +
+    pass_if(approx_eq_f32(sample_var, 6.6666667, 0.000001)) +
+    pass_if(mv.mean == 4.0) +
+    pass_if(mv.population_variance == 5.0) +
+    pass_if(approx_eq_f32(mv.sample_variance, 6.6666667, 0.000001)) +
+    pass_if(cov == 2.5) +
+    pass_if(corr == 1.0) +
+    pass_if(rms == 1.0) +
+    pass_if(peak == 9.0) +
+    pass_if(norm == -0.5) +
+    pass_if(sig.mean == 2.5) +
+    pass_if(approx_eq_f32(sig.rms, 2.738613, 0.000001)) +
+    pass_if(sig.peak_abs == 4.0)
+}

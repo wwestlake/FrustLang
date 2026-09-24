@@ -1,0 +1,63 @@
+struct Quatf {
+    x: f32,
+    y: f32,
+    z: f32,
+    w: f32
+}
+
+pub fn quatf(x: f32, y: f32, z: f32, w: f32) -> Quatf = {
+    Quatf { x: x, y: y, z: z, w: w }
+}
+
+pub fn quatf_identity() -> Quatf = {
+    quatf(0.0, 0.0, 0.0, 1.0)
+}
+
+pub fn quatf_conjugate(q: Quatf) -> Quatf = {
+    quatf(-q.x, -q.y, -q.z, q.w)
+}
+
+pub fn quatf_dot(a: Quatf, b: Quatf) -> f32 = {
+    a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w
+}
+
+pub fn quatf_length_sq(q: Quatf) -> f32 = {
+    quatf_dot(q, q)
+}
+
+pub fn quatf_mul(a: Quatf, b: Quatf) -> Quatf = {
+    quatf(
+        a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+        a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+        a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+        a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z
+    )
+}
+
+pub fn quatf_rotate_vec3(q: Quatf, v: Vec3f) -> Vec3f = {
+    let qv: Vec3f = vec3f(q.x, q.y, q.z);
+    let t: Vec3f = vec3f_scale(vec3f_cross(qv, v), 2.0);
+    vec3f_add(v, vec3f_add(vec3f_scale(t, q.w), vec3f_cross(qv, t)))
+}
+
+pub fn quatf_from_axis_scaled(axis_unit: Vec3f, sin_half: f32, cos_half: f32) -> Quatf = {
+    quatf(axis_unit.x * sin_half, axis_unit.y * sin_half, axis_unit.z * sin_half, cos_half)
+}
+
+pub fn quatf_from_axis_angle(axis: Vec3f, radians: f32) -> Quatf = {
+    let unit_axis: Vec3f = vec3f_normalize(axis);
+    let half: f32 = radians * 0.5;
+    quatf_from_axis_scaled(unit_axis, sin(half), cos(half))
+}
+
+pub fn quatf_x_180() -> Quatf = {
+    quatf(1.0, 0.0, 0.0, 0.0)
+}
+
+pub fn quatf_y_180() -> Quatf = {
+    quatf(0.0, 1.0, 0.0, 0.0)
+}
+
+pub fn quatf_z_180() -> Quatf = {
+    quatf(0.0, 0.0, 1.0, 0.0)
+}

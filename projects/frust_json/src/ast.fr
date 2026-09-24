@@ -1,0 +1,45 @@
+// Arena-backed JSON tree. String is Frust's current pointer-shaped byte-string type.
+extern fn strlen(s:String)->i64;
+extern fn malloc(size:i64)->String;
+extern fn free(p:String);
+extern fn memcpy(dest:String,src:String,n:i64)->String;
+extern fn memset(dest:String,value:i64,n:i64)->String;
+extern fn atof(s:String)->f64;
+extern fn strcmp(a:String,b:String)->i32;
+extern fn frust_buf_get_i64(base:String,idx:i64)->i64;
+extern fn frust_buf_set_i64(base:String,idx:i64,value:i64);
+extern fn frust_buf_get_ptr(base:String,idx:i64)->String;
+extern fn frust_buf_set_ptr(base:String,idx:i64,value:String);
+fn json_streq(a:String,b:String)->bool={strcmp(a,b)==0}
+
+type JsonType = i64
+
+struct JsonDocument {
+    source: String,
+    kinds: String,
+    values: String,
+    keys: String,
+    first_children: String,
+    next_siblings: String,
+    child_counts: String,
+    control: String,
+    root: i64
+}
+struct JsonError { code: i64, offset: i64, line: i64, column: i64, message: String }
+struct JsonParseResult { ok: bool, document: JsonDocument, error: JsonError }
+
+pub fn json_root(doc: JsonDocument) -> i64 = { doc.root }
+pub fn json_kind(doc:JsonDocument,idx:i64)->i64={frust_buf_get_i64(doc.kinds,idx)}
+pub fn json_child_count(doc:JsonDocument,idx:i64)->i64={frust_buf_get_i64(doc.child_counts,idx)}
+pub fn json_first_child(doc:JsonDocument,idx:i64)->i64={frust_buf_get_i64(doc.first_children,idx)}
+pub fn json_next_sibling(doc:JsonDocument,idx:i64)->i64={frust_buf_get_i64(doc.next_siblings,idx)}
+pub fn json_string(doc:JsonDocument,idx:i64)->String={frust_buf_get_ptr(doc.values,idx)}
+pub fn json_number_text(doc:JsonDocument,idx:i64)->String={frust_buf_get_ptr(doc.values,idx)}
+pub fn json_number(doc:JsonDocument,idx:i64)->f64={atof(frust_buf_get_ptr(doc.values,idx))}
+pub fn json_bool(doc:JsonDocument,idx:i64)->bool={frust_buf_get_i64(doc.values,idx)!=0}
+pub fn json_key(doc:JsonDocument,idx:i64)->String={frust_buf_get_ptr(doc.keys,idx)}
+pub fn json_array_get(doc:JsonDocument,array:i64,index:i64)->i64={let mut child:i64=json_first_child(doc,array);let mut i:i64=0;while(i<index){child=json_next_sibling(doc,child);i=i+1;};child}
+pub fn json_object_get(doc:JsonDocument,object:i64,key:String)->i64={let mut child:i64=json_first_child(doc,object);let mut left:i64=json_child_count(doc,object);let mut found:i64=0-1;while(left>0){if(found<0){if(json_streq(json_key(doc,child),key)){found=child;};};child=json_next_sibling(doc,child);left=left-1;};found}
+pub fn json_is_null(doc:JsonDocument,idx:i64)->bool={frust_buf_get_i64(doc.kinds,idx)==6}
+
+type JsonValue = i64

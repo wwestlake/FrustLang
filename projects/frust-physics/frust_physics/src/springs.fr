@@ -1,0 +1,14 @@
+pub fn spring3f_force(a: Vec3f, b: Vec3f, rest_length: f32, stiffness: f32) -> Vec3f = {
+    let delta: Vec3f = vec3f_sub(b, a);
+    let len: f32 = vec3f_length(delta);
+    if (near_zero_f32(len, default_physics_epsilon_f32())) {
+        vec3f_zero()
+    } else {
+        vec3f_scale(vec3f_normalize(delta), stiffness * (len - rest_length))
+    }
+}
+
+pub fn spring_potential_energy_f32(length: f32, rest_length: f32, stiffness: f32) -> f32 = {
+    let x: f32 = length - rest_length;
+    0.5 * stiffness * x * x
+}

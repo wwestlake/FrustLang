@@ -1,0 +1,4 @@
+pub fn curve_bezier_quadratic(t: f32, p0: f32, p1: f32, p2: f32) -> f32 = {
+    let u: f32 = 1.0 - t;
+    (u * u * p0) + (2.0 * u * t * p1) + (t * t * p2)
+}

@@ -1,0 +1,19 @@
+{
+  "name": "frust_numerics",
+  "version": "0.1.0",
+  "type": "lib",
+  "description": "Numerical methods and sample-based analysis primitives for Frust.",
+  "exports": [
+    "inverse_lerp_f32", "remap_f32", "smoothstep_range_f32", "smootherstep_range_f32",
+    "cubic_hermite_f32", "trapezoid_area_f32", "simpson_area_f32",
+    "integrate_samples4_trapezoid_f32", "forward_diff_f32", "backward_diff_f32",
+    "central_diff_f32", "second_central_diff_f32", "euler_step_f32", "midpoint_step_f32",
+    "newton_step_f32", "bisection_midpoint_f32", "MeanVariance4f",
+    "mean4_f32", "variance_population4_f32", "variance_sample4_f32",
+    "covariance4_f32", "correlation4_f32", "Signal4fStats", "signal4f_stats",
+    "rms4_f32", "peak_abs4_f32", "normalize_peak4_f32"
+  ],
+  "dependencies": [
+    { "name": "core", "version": "1.0.1" }
+  ]
+}

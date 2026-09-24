@@ -437,11 +437,9 @@ fixed here either:**
   for how heavily `if`/`while` are already used unparenthesized
   throughout every example in this repo) - worked around in this
   session's own tests with `if has1 == true { ... }` instead.
-- `as` casting (`v as i64`) is not implemented for ANY type combination
-  at all - confirmed with a minimal, fully non-generic repro (`let v:
-  f64 = 3.5; (v as i64)`), "codegen does not support this expression
-  kind yet". Not a generics-specific gap, a general one, logged here
-  because this is where it was found.
+- `as` casting (`v as i64`) was not implemented at the time this was
+  written. **DONE** — see "Future features / `as` type casting" below
+  (commit `bb2b696`, 2026-09-16).
 
 Verified (`test_generic_methods.frust`, `frust_compiler.exe` direct-run):
 `Box<T>` (a generic struct) with a T-returning method AND a T-typed-
@@ -1147,3 +1145,162 @@ still always bind a single identifier, never a tuple/struct-shaped
 pattern (`let (a, b) = pair`, `let { x, y } = point`); function
 parameters and `for` loop variables are the same - always one name, one
 type, never a destructured shape.
+
+---
+
+## CRITICAL BUGS (post-2026-09-08, found in the wild)
+
+### Compiler silently returned success even when codegen had failed
+
+**Status: DONE - 2026-09-16, commit `61c0e4c`.** `compileProgram`'s own
+return value was not gating on `hadCodegenError` — a program that hit a
+real codegen error could still get the outer `ok` value back as `true`
+from the driver, so the caller silently believed the compile succeeded
+and proceeded with a broken or empty module. Fixed by changing the
+return to `ok && !hadCodegenError`. Confirmed via `plot_viewer_core`
+builds that were silently producing bad output before this fix.
+
+### Struct type metadata lost for `let` with explicit type annotation
+
+**Status: DONE - 2026-09-14, commit `4ea6cf9`.** When a `let` binding
+carried an explicit struct-type annotation (`let p: Point = make_point()`)
+but `inferStructTypeName` could not resolve the initializer expression's
+type on its own (e.g. the callee was a namespaced function, or an opaque
+call the heuristic didn't recognize), `namedValueStructType` was left
+unset for the bound name. Any subsequent field access (`p.x`) then fell
+through to a generic codegen error. Fixed by checking the `let`'s own
+`typeAnnotation` field directly in the `Let` branch of `compileExpr` —
+if it names a known struct, record that immediately, before the
+initializer is even compiled. Verified with
+`test_typed_let_struct_member.frust`.
+
+---
+
+## Future features — landed since last update
+
+### `as` type casting
+
+**Status: DONE - 2026-09-16, commit `bb2b696`.**
+
+`expr as TargetType` is now a real, working cast. Grammar: the `as`
+token was already defined (`%precedence "as"` and `expr "as" type_expr`
+production, `ExprKind::Cast`) — the grammar always had it; only the
+codegen case was missing. Codegen dispatches through `coerceToType`,
+which already covers all four combinations:
+
+- `int → float`: `CreateSIToFP`
+- `float → float` (e.g. `f32 as f64`): `CreateFPCast`
+- `int → int` (e.g. `i32 as i64`): `CreateIntCast` (signed)
+- `float → int`: `CreateFPToSI`
+- `ptr → ptr`: identity (no instruction needed — LLVM opaque pointers)
+
+Invalid cast targets produce a clear codegen error, not silent wrong
+behavior. Verified via `plot_viewer_core` which requires `f64 as f32`
+conversions in its rendering pipeline. The note in the gap-4 entry
+above ("as casting not implemented") has been updated to point here.
+
+**Named gap remaining**: no unsigned-cast path (`CreateFPToUI`,
+`CreateZExt` for zero-extending smaller-to-larger unsigned) — all int
+casts use signed interpretation. For the current use cases (numeric
+type narrowing/widening in physics/graphics code) this is a real but
+not immediately blocking limitation.
+
+### Typed `Array<T,N>` binding and indexing improvements
+
+**Status: DONE - 2026-09-14, commit `19a8b87`.**
+
+The original `Array<N>` / `Array<T,N>` work (see gap #3 / `Array<N>`
+section above) had a gap: `Array`-typed bindings created via a call
+(rather than `Array::new()` directly) did not always propagate their
+element-type and size metadata through to the index codegen path,
+causing GEP stride errors at runtime. Fixed by completing the typed-let
+path to record `namedValueArraySize`/`namedValueArrayElementType` for
+any `let` whose type annotation names `Array`, regardless of how the
+RHS expression produces the value. Verified with
+`test_array_typed_binding.frust`.
+
+### Direct `use pod_name;` import syntax in Frust source
+
+**Status: DONE - 2026-09-13, commit `8e83607`.**
+
+Previously, importing a pod's functions required the pod to be listed in
+`frate.json` AND the compiler to be invoked through `frate build` which
+injected the pod contents at link time. Now a Frust source file can
+write `import core_name, "version";` (the existing low-level form) OR
+the higher-level `use pod_name;` in source, with frate resolving and
+injecting it through the pod provider chain. `ModuleLoader` uses
+`UseDecl::isImport`/`isImportVersion` to resolve pod contents from the
+registry or local cache and merge them before codegen, so the compiler
+itself never needs to know where pods are stored.
+
+**Grammar**: the `"import" IDENT "," STRING_LITERAL ";"` production was
+already present (`use_decl` in `frust.y`); this commit wired the
+`ModuleLoader` resolution path for `isImport=true` use decls end-to-end.
+
+### Pod module namespace isolation
+
+**Status: DONE - 2026-09-14–19, commits `3454aac` + `d36f102`.**
+
+A critical correctness fix for multi-pod programs. Previously, `frate`
+merged all dependency pods' declarations into the consumer's global
+namespace, meaning two pods that each defined a function named `init`
+would silently collide, with one overwriting the other. Now:
+
+- Every pod is compiled with a `--namespace pod_name` flag passed to
+  the compiler. `ModuleLoader` prefixes all exported function symbols
+  as `pod_name::function_name` in the compiled module.
+- Internal pod calls (a pod's own function calling another function in
+  the same pod) still use the unqualified names internally — no source
+  changes needed to standard library pods.
+- Callers use qualified syntax: `core::malloc(n)`, `core::free(ptr)`,
+  `core::println_str(s)` etc.
+- `inferStructTypeName`/`inferWeakTypeName` in `Codegen.h` extended
+  to handle `ExprKind::Path` callee expressions (a qualified call like
+  `core::xoshiro256_init()`) so that the return struct type is correctly
+  resolved for field access on the result.
+- `plot_viewer_core` fully converted to namespaced imports as the
+  acceptance test. All existing pods in the registry re-published with
+  namespace-aware symbols.
+
+**Impact on existing code**: any code using pod functions must now
+qualify them with the pod name. Code using only the core stdlib functions
+changes `malloc(n)` → `core::malloc(n)` etc. The change was applied
+consistently to all pods in this repo.
+
+### Embeddable compiler API (`CompilerApi.h`)
+
+**Status: DONE - 2026-09-20, commit `694ca3f`.**
+
+The compiler is no longer only a command-line tool. A new embeddable API
+(`CompilerApi.h`/`.cpp`) exposes:
+
+```cpp
+frust::CompileResult frust::Compile(const frust::CompileRequest& req);
+```
+
+where `CompileRequest` carries source text as strings (not file paths),
+provider callbacks for `use self::x` sibling-file resolution and pod
+import resolution, and an optional namespace string. `CompileResult`
+returns structured diagnostics (file, line, column, phase, message) and
+the compiled object file as a `std::vector<uint8_t>` — no filesystem
+writes, no temp files.
+
+Consequences:
+- `Codegen`'s diagnostics now go through `Diag()` (`Diagnostics.h`),
+  captured per-thread via a thread-local sink, rather than printing to
+  `std::cerr` directly. The command-line `Main.cpp` still prints them,
+  but the embeddable path captures them as structured `CompileDiagnostic`
+  objects.
+- `ModuleLoader::ResolveSelfUsesWith` (provider-based) and
+  `MergeImportedPod` are shared by both the disk and in-memory paths.
+- The plugin host gained `frust_plugin_load_source` /
+  `frust_plugin_reload_source` to load a plugin from source text.
+- `--dump-ir` flag added to the command-line compiler to opt into the
+  `output*.ll` files that used to be emitted unconditionally on every
+  run.
+- `frust_compiler_api_smoke` smoke test verifies the full in-memory
+  path including that no file is written to the working or temp directory.
+
+This is the compiler surface the FrustIDE's agentic assistant and the
+`workspace_check_frust` tool use: source text in, diagnostics and object
+bytes out, no disk dependency.

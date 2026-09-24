@@ -1,0 +1,48 @@
+extern fn perlin_1d(x: f32) -> f32; 
+
+struct Framebuffer { pixels: raw* i32, width: i64, height: i64 }
+struct GraphConfig { bg_color: i32, grid_color: i32, line_color: i32, draw_grid: bool, x_min: f32, x_max: f32, y_min: f32, y_max: f32 }
+struct Dataset { data: raw* f32, length: i64 }
+
+extern fn plot_line(fb: Framebuffer, cfg: GraphConfig, dataset: Dataset);
+
+extern fn host_write_f32_array(arr: raw* f32, idx: i64, val: f32);
+extern fn host_alloc_f32_array(len: i64) -> raw* f32;
+
+pub fn render_graph(pixels: raw* i32, width: i64, height: i64) = {
+    let mut fb = Framebuffer {
+        pixels: pixels,
+        width: width,
+        height: height
+    };
+    
+    let mut cfg = GraphConfig {
+        bg_color: (255 * 16777216) + (20 * 65536) + (20 * 256) + 30,
+        grid_color: 0,
+        line_color: (255 * 16777216) + (0 * 65536) + (255 * 256) + 128,
+        draw_grid: false,
+        x_min: 0.0,
+        x_max: 800.0,
+        y_min: -1.0,
+        y_max: 1.0
+    };
+    
+    let data_len: i64 = 800;
+    let data_ptr: raw* f32 = host_alloc_f32_array(data_len);
+    
+    let mut i: i64 = 0;
+    let mut x_float: f32 = 0.0;
+    while (i < data_len) {
+        let noise_val: f32 = perlin_1d(x_float);
+        host_write_f32_array(data_ptr, i, noise_val);
+        x_float = x_float + 0.02;
+        i = i + 1;
+    };
+    
+    let mut dataset = Dataset {
+        data: data_ptr,
+        length: data_len
+    };
+    
+    plot_line(fb, cfg, dataset);
+}

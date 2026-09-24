@@ -1,5 +1,7 @@
 #include <JuceHeader.h>
+#include <FrustIDEAssets.h>
 #include "WorkbenchComponent.h"
+#include <DiskLoader.h>
 
 #include <cstdint>
 #include <cstdio>
@@ -23,13 +25,22 @@ class LagDaemonIDEApplication  : public juce::JUCEApplication
 public:
     LagDaemonIDEApplication() {}
 
-    const juce::String getApplicationName() override      { return "LagDaemon Language Research IDE"; }
+    const juce::String getApplicationName() override      { return "FrustIDE"; }
     const juce::String getApplicationVersion() override   { return "0.1.0"; }
     bool moreThanOneInstanceAllowed() override             { return true; }
 
     void initialise (const juce::String& commandLine) override
     {
+        auto splashImage = juce::ImageFileFormat::loadFrom(FrustIDEAssets::FrustIDE_png,
+                                                            FrustIDEAssets::FrustIDE_pngSize)
+                               .rescaled(420, 420, juce::Graphics::highResamplingQuality);
+        splashScreen = new juce::SplashScreen("FrustIDE", splashImage, true);
+
+        // The IDE works on real folders: give FRust's loader the disk.
+        frust::InstallDiskResolvers();
+
         mainWindow.reset (new MainWindow (getApplicationName()));
+        splashScreen->deleteAfterDelay(juce::RelativeTime::seconds(2.5), true);
     }
 
     void shutdown() override
@@ -77,6 +88,7 @@ public:
     };
 
 private:
+    juce::Component::SafePointer<juce::SplashScreen> splashScreen;
     std::unique_ptr<MainWindow> mainWindow;
 };
 

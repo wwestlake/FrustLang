@@ -1,0 +1,11 @@
+{
+  "name": "numerics_interpolation_smoke",
+  "version": "0.1.0",
+  "type": "bin",
+  "description": "Interpolation and remapping smoke tests for frust_numerics.",
+  "exports": [],
+  "dependencies": [
+    { "name": "core", "version": "1.0.1" },
+    { "name": "frust_numerics", "version": "0.1.0" }
+  ]
+}

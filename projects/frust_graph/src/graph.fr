@@ -1,0 +1,14 @@
+struct GraphNode {
+    id: i64,
+    weight: f32
+}
+
+struct GraphEdge {
+    from_id: i64,
+    to_id: i64,
+    cost: f32
+}
+
+pub fn graph_node_new(id: i64, weight: f32) -> GraphNode = {
+    GraphNode { id: id, weight: weight }
+}

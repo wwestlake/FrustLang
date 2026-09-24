@@ -1,0 +1,323 @@
+extern fn host_f32_to_i64(val: f32) -> i64;
+extern fn host_i64_to_f32(val: i64) -> f32;
+
+extern fn host_set_pixel(pixels: raw* i32, idx: i64, color: i32);
+extern fn host_alloc_f32_array(len: i64) -> raw* f32;
+extern fn host_write_f32_array(arr: raw* f32, idx: i64, val: f32);
+extern fn host_read_f32_array(arr: raw* f32, idx: i64) -> f32;
+extern fn host_open_stream();
+extern fn host_read_stream_chunk(buffer: raw* f32, max_len: i64) -> i64;
+extern fn host_close_stream();
+extern fn host_get_stream_state() -> i64;
+extern fn host_set_stream_state(state: i64);
+extern fn host_get_stream_buffer() -> raw* f32;
+extern fn host_write_bin(idx: i64, val: f32);
+extern fn host_read_bin(idx: i64) -> f32;
+extern fn host_get_bin_ptr() -> raw* f32;
+extern fn host_draw_number(pixels: raw* i32, w: i64, h: i64, x: i64, y: i64, val: f32, color: i32);
+extern fn host_sin(theta: f32) -> f32;
+extern fn host_cos(theta: f32) -> f32;
+extern fn host_abs_f32(v: f32) -> f32;
+extern fn host_abs_i64(v: i64) -> i64;
+
+pub fn draw_pixel(pixels: raw* i32, w: i64, h: i64, x: i64, y: i64, color: i32) = {
+    let mut ok: i64 = 1;
+    if (x < 0) { ok = 0; } else { ok = ok; };
+    if (x >= w) { ok = 0; } else { ok = ok; };
+    if (y < 0) { ok = 0; } else { ok = ok; };
+    if (y >= h) { ok = 0; } else { ok = ok; };
+    if (ok == 1) { host_set_pixel(pixels, (y * w) + x, color); } else { ok = ok; };
+}
+
+pub fn draw_rect_filled(pixels: raw* i32, w: i64, h: i64, x: i64, y: i64, rw: i64, rh: i64, color: i32) = {
+    let max_x: i64 = x + rw;
+    let max_y: i64 = y + rh;
+    let mut cy: i64 = y;
+    while (cy < max_y) {
+        let mut cx: i64 = x;
+        while (cx < max_x) {
+            draw_pixel(pixels, w, h, cx, cy, color);
+            cx = cx + 1;
+        };
+        cy = cy + 1;
+    };
+}
+
+pub fn draw_line(pixels: raw* i32, w: i64, h: i64, x0: i64, y0: i64, x1: i64, y1: i64, color: i32) = {
+    let dx: i64 = host_abs_i64(x1 - x0);
+    let mut sx: i64 = -1;
+    if (x0 < x1) { sx = 1; } else { sx = sx; };
+    let dy: i64 = 0 - host_abs_i64(y1 - y0);
+    let mut sy: i64 = -1;
+    if (y0 < y1) { sy = 1; } else { sy = sy; };
+    let mut err: i64 = dx + dy;
+    let mut cx: i64 = x0;
+    let mut cy: i64 = y0;
+    
+    let mut done: i64 = 0;
+    while (done == 0) {
+        draw_pixel(pixels, w, h, cx, cy, color);
+        if (cx == x1) {
+            if (cy == y1) {
+                done = 1;
+            } else { done = done; };
+        } else { done = done; };
+        
+        if (done == 0) {
+            let e2: i64 = 2 * err;
+            if (e2 >= dy) {
+                if (cx == x1) { done = 1; } else { done = done; };
+                err = err + dy;
+                cx = cx + sx;
+            } else { done = done; };
+            
+            if (done == 0) {
+                if (e2 <= dx) {
+                    if (cy == y1) { done = 1; } else { done = done; };
+                    err = err + dx;
+                    cy = cy + sy;
+                } else { done = done; };
+            } else { done = done; };
+        } else { done = done; };
+    };
+}
+
+pub fn draw_circle_filled(pixels: raw* i32, w: i64, h: i64, cx: i64, cy: i64, r: i64, color: i32) = {
+    let r_sq: i64 = r * r;
+    let mut y: i64 = cy - r;
+    let max_y: i64 = cy + r;
+    while (y <= max_y) {
+        let mut x: i64 = cx - r;
+        let max_x: i64 = cx + r;
+        while (x <= max_x) {
+            let dx: i64 = x - cx;
+            let dy: i64 = y - cy;
+            if ((dx * dx) + (dy * dy) <= r_sq) {
+                draw_pixel(pixels, w, h, x, y, color);
+            } else { x = x; };
+            x = x + 1;
+        };
+        y = y + 1;
+    };
+}
+
+pub fn plot_bar_chart(pixels: raw* i32, w: i64, h: i64, ox: i64, oy: i64, qw: i64, qh: i64, data: raw* f32, data_len: i64) = {
+    let bar_color: i32 = (255 * 16777216) + (100 * 65536) + (150 * 256) + 255;
+    let spacing: i64 = 2;
+    let bar_w: i64 = (qw - 60) / data_len;
+    
+    let mut max_val: f32 = 0.001;
+    let mut i: i64 = 0;
+    while (i < data_len) {
+        let mut v: f32 = host_read_f32_array(data, i);
+        if (v > max_val) { max_val = v; } else { max_val = max_val; };
+        i = i + 1;
+    };
+    
+    i = 0;
+    while (i < data_len) {
+        let mut val: f32 = host_read_f32_array(data, i);
+        let normalized: f32 = val / max_val;
+        
+        let bx: i64 = ox + 40 + (i * bar_w);
+        let bh: i64 = host_f32_to_i64(normalized * host_i64_to_f32(qh - 60));
+        let by: i64 = oy + qh - 40 - bh;
+        let bw: i64 = bar_w - spacing;
+        
+        draw_rect_filled(pixels, w, h, bx, by, bw, bh, bar_color);
+        i = i + 1;
+    };
+}
+
+pub fn find_and_highlight_peaks(pixels: raw* i32, w: i64, h: i64, ox: i64, oy: i64, qw: i64, qh: i64, data: raw* f32, data_len: i64) = {
+    let peak_color: i32 = (255 * 16777216) + (255 * 65536) + (50 * 256) + 50;
+    let text_color: i32 = (255 * 16777216) + (255 * 65536) + (255 * 256) + 255;
+    
+    let mut max_val: f32 = 0.001;
+    let mut i: i64 = 0;
+    while (i < data_len) {
+        let mut v: f32 = host_read_f32_array(data, i);
+        if (v > max_val) { max_val = v; } else { max_val = max_val; };
+        i = i + 1;
+    };
+    
+    let threshold: f32 = max_val * 0.05;
+    let bar_w: i64 = (qw - 60) / data_len;
+    
+    i = 1;
+    let max_idx: i64 = data_len - 1;
+    while (i < max_idx) {
+        let mut val: f32 = host_read_f32_array(data, i);
+        let prev: f32 = host_read_f32_array(data, i - 1);
+        let next: f32 = host_read_f32_array(data, i + 1);
+        
+        let mut is_peak: i64 = 1;
+        if (val <= prev) { is_peak = 0; } else { is_peak = is_peak; };
+        if (val <= next) { is_peak = 0; } else { is_peak = is_peak; };
+        if (val < threshold) { is_peak = 0; } else { is_peak = is_peak; };
+        
+        if (is_peak == 1) {
+            let bx: i64 = ox + 40 + (i * bar_w) + (bar_w / 2);
+            let bh: i64 = host_f32_to_i64((val / max_val) * host_i64_to_f32(qh - 60));
+            let by: i64 = oy + qh - 40 - bh;
+            
+            draw_circle_filled(pixels, w, h, bx, by - 15, 6, peak_color);
+            host_draw_number(pixels, w, h, bx - 10, by - 30, host_i64_to_f32(i * 2), text_color);
+        } else { is_peak = is_peak; };
+        
+        i = i + 1;
+    };
+}
+
+pub fn plot_pie_chart(pixels: raw* i32, w: i64, h: i64, ox: i64, oy: i64, qw: i64, qh: i64) = {
+    let cx: i64 = ox + (qw / 2);
+    let cy: i64 = oy + (qh / 2);
+    let radius: i64 = 150;
+    let r_sq: i64 = radius * radius;
+    
+    let c1: i32 = (255 * 16777216) + (255 * 65536) + (100 * 256) + 100;
+    let c2: i32 = (255 * 16777216) + (100 * 65536) + (255 * 256) + 100;
+    let c3: i32 = (255 * 16777216) + (100 * 65536) + (100 * 256) + 255;
+    
+    let mut y: i64 = cy - radius;
+    let max_y: i64 = cy + radius;
+    let max_x: i64 = cx + radius;
+    
+    while (y <= max_y) {
+        let mut x: i64 = cx - radius;
+        while (x <= max_x) {
+            let dx: i64 = x - cx;
+            let dy: i64 = y - cy;
+            if ((dx * dx) + (dy * dy) <= r_sq) {
+                let mut quad: i64 = 3;
+                if (dx > 0) { quad = 2; } else { quad = quad; };
+                let mut is_q1: i64 = 0;
+                if (dx > 0) { is_q1 = is_q1 + 1; } else { is_q1 = is_q1; };
+                if (dy > 0) { is_q1 = is_q1 + 1; } else { is_q1 = is_q1; };
+                if (is_q1 == 2) { quad = 1; } else { quad = quad; };
+                
+                if (quad == 1) { draw_pixel(pixels, w, h, x, y, c1); } else { quad = quad; };
+                if (quad == 2) { draw_pixel(pixels, w, h, x, y, c2); } else { quad = quad; };
+                if (quad == 3) { draw_pixel(pixels, w, h, x, y, c3); } else { quad = quad; };
+            } else { x = x; };
+            x = x + 1;
+        };
+        y = y + 1;
+    };
+}
+
+pub fn plot_3d_surface(pixels: raw* i32, w: i64, h: i64, ox: i64, oy: i64, qw: i64, qh: i64, frame: i64) = {
+    let line_color: i32 = (255 * 16777216) + (50 * 65536) + (255 * 256) + 200;
+    let time_f: f32 = host_i64_to_f32(frame) * 0.05;
+    let rot_sin: f32 = host_sin(time_f);
+    let rot_cos: f32 = host_cos(time_f);
+    
+    let cx: i64 = ox + (qw / 2);
+    let cy: i64 = oy + (qh / 2) + 50;
+    
+    let mut z: i64 = -10;
+    while (z <= 10) {
+        let mut x: i64 = -10;
+        let mut prev_px: i64 = -1;
+        let mut prev_py: i64 = -1;
+        
+        while (x <= 10) {
+            let xf: f32 = host_i64_to_f32(x) * 0.3;
+            let zf: f32 = host_i64_to_f32(z) * 0.3;
+            let d: f32 = (xf * xf) + (zf * zf);
+            let yf: f32 = host_sin(d - (time_f * 2.0)) * 2.0;
+            
+            let rx: f32 = (xf * rot_cos) - (zf * rot_sin);
+            let rz: f32 = (xf * rot_sin) + (zf * rot_cos);
+            
+            let px_f: f32 = (rx - rz) * 15.0;
+            let py_f: f32 = (yf * 20.0) + ((rx + rz) * 7.5);
+            
+            let px: i64 = cx + host_f32_to_i64(px_f);
+            let py: i64 = cy - host_f32_to_i64(py_f);
+            
+            if (prev_px != -1) { draw_line(pixels, w, h, prev_px, prev_py, px, py, line_color); } else { prev_px = prev_px; };
+            
+            prev_px = px;
+            prev_py = py;
+            x = x + 1;
+        };
+        z = z + 1;
+    };
+}
+
+pub fn render_muon_histogram(pixels: raw* i32, width: i64, height: i64, ox: i64, oy: i64, qw: i64, qh: i64) = {
+    let num_bins: i64 = 60;
+    
+    
+    
+    let mut stream_state: i64 = host_get_stream_state();
+    if (stream_state == 0) {
+        
+        host_open_stream();
+        host_set_stream_state(1);
+        stream_state = 1;
+    } else { stream_state = stream_state; };
+    
+    
+    
+    if (stream_state == 1) {
+        
+        let buffer: raw* f32 = host_get_stream_buffer();
+        
+        let mut read_count: i64 = host_read_stream_chunk(buffer, 5000);
+        
+        
+        if (read_count > 0) {
+            
+            let min_m: f32 = 0.0;
+            let max_m: f32 = 120.0;
+            let range: f32 = max_m - min_m;
+            
+            let mut i: i64 = 0;
+            while (i < read_count) {
+                let mut m: f32 = host_read_f32_array(buffer, i);
+                let mut ok: i64 = 1;
+                if (m < min_m) { ok = 0; } else { ok = ok; };
+                if (m > max_m) { ok = 0; } else { ok = ok; };
+                
+                if (ok == 1) {
+                    let normalized: f32 = (m - min_m) / range;
+                    let mut bin_idx: i64 = host_f32_to_i64(normalized * host_i64_to_f32(num_bins));
+                    if (bin_idx >= num_bins) { bin_idx = num_bins - 1; } else { bin_idx = bin_idx; };
+                    let cur_val: f32 = host_read_bin(bin_idx);
+                    host_write_bin(bin_idx, cur_val + 1.0);
+                } else { ok = ok; };
+                i = i + 1;
+            };
+            
+        } else {
+            
+            host_close_stream();
+            host_set_stream_state(2);
+        }
+    } else { stream_state = stream_state; };
+    
+    
+    plot_bar_chart(pixels, width, height, ox, oy, qw, qh, host_get_bin_ptr(), num_bins);
+    
+    find_and_highlight_peaks(pixels, width, height, ox, oy, qw, qh, host_get_bin_ptr(), num_bins);
+    
+}
+
+pub fn render_graph(pixels: raw* i32, width: i64, height: i64, frame_count: i64) = {
+    
+    let bg_color: i32 = (255 * 16777216) + (20 * 65536) + (20 * 256) + 30;
+    draw_rect_filled(pixels, width, height, 0, 0, width, height, bg_color);
+    
+    let qw: i64 = width / 2;
+    let qh: i64 = height / 2;
+    
+    
+    render_muon_histogram(pixels, width, height, 0, 0, qw, qh);
+    
+    plot_pie_chart(pixels, width, height, qw, 0, qw, qh);
+    
+    plot_3d_surface(pixels, width, height, qw / 2, qh, qw, qh, frame_count);
+    
+}

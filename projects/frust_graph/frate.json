@@ -1,0 +1,12 @@
+{
+  "name": "frust_graph",
+  "version": "0.1.0",
+  "type": "lib",
+  "description": "Graph theory and topology for Frust.",
+  "exports": [
+    "GraphNode", "GraphEdge", "graph_node_new"
+  ],
+  "dependencies": [
+    { "name": "core", "version": "1.0.1" }
+  ]
+}

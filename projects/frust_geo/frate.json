@@ -1,0 +1,15 @@
+{
+  "name": "frust_geo",
+  "version": "0.1.0",
+  "type": "lib",
+  "description": "Computational geometry for Frust.",
+  "exports": [
+    "AABB", "aabb_intersects",
+    "Ray", "ray_intersect_aabb",
+    "curve_bezier_quadratic"
+  ],
+  "dependencies": [
+    { "name": "core", "version": "1.0.1" },
+    { "name": "frust_linalg", "version": "0.1.0" }
+  ]
+}

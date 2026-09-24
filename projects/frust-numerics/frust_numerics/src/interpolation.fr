@@ -1,0 +1,54 @@
+pub fn numerics_abs_f32(x: f32) -> f32 = {
+    if (x < 0.0) { -x } else { x }
+}
+
+pub fn numerics_min_f32(a: f32, b: f32) -> f32 = {
+    if (a < b) { a } else { b }
+}
+
+pub fn numerics_max_f32(a: f32, b: f32) -> f32 = {
+    if (a > b) { a } else { b }
+}
+
+pub fn numerics_clamp_f32(x: f32, lo: f32, hi: f32) -> f32 = {
+    if (x < lo) { lo } else {
+        if (x > hi) { hi } else { x }
+    }
+}
+
+pub fn numerics_saturate_f32(x: f32) -> f32 = {
+    numerics_clamp_f32(x, 0.0, 1.0)
+}
+
+pub fn inverse_lerp_f32(a: f32, b: f32, value: f32) -> f32 = {
+    (value - a) / (b - a)
+}
+
+pub fn remap_f32(in_min: f32, in_max: f32, out_min: f32, out_max: f32, value: f32) -> f32 = {
+    let t: f32 = inverse_lerp_f32(in_min, in_max, value);
+    out_min + (out_max - out_min) * t
+}
+
+pub fn smoothstep_range_f32(edge0: f32, edge1: f32, value: f32) -> f32 = {
+    let t: f32 = numerics_saturate_f32(inverse_lerp_f32(edge0, edge1, value));
+    t * t * (3.0 - 2.0 * t)
+}
+
+pub fn smootherstep_range_f32(edge0: f32, edge1: f32, value: f32) -> f32 = {
+    let t: f32 = numerics_saturate_f32(inverse_lerp_f32(edge0, edge1, value));
+    t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+}
+
+pub fn cubic_hermite_f32(p0: f32, m0: f32, p1: f32, m1: f32, t: f32) -> f32 = {
+    let t2: f32 = t * t;
+    let t3: f32 = t2 * t;
+    let h00: f32 = 2.0 * t3 - 3.0 * t2 + 1.0;
+    let h10: f32 = t3 - 2.0 * t2 + t;
+    let h01: f32 = -2.0 * t3 + 3.0 * t2;
+    let h11: f32 = t3 - t2;
+    h00 * p0 + h10 * m0 + h01 * p1 + h11 * m1
+}
+
+pub fn approx_eq_f32(a: f32, b: f32, eps: f32) -> bool = {
+    numerics_abs_f32(a - b) <= eps
+}

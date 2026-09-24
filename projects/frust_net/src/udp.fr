@@ -1,0 +1,11 @@
+use self::ip;
+
+struct UdpSocket {
+    fd: i64,
+    bound: bool
+}
+
+pub fn udp_bind(address: i64, port: i64) -> UdpSocket = {
+    // Stub
+    UdpSocket { fd: -1, bound: false }
+}

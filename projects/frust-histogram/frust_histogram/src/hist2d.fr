@@ -1,0 +1,110 @@
+struct Hist2x2f {
+    x_min: f64,
+    x_max: f64,
+    y_min: f64,
+    y_max: f64,
+    bin00: f64,
+    bin01: f64,
+    bin10: f64,
+    bin11: f64,
+    underflow: f64,
+    overflow: f64
+}
+
+pub fn hist2x2_zero(x_min: f64, x_max: f64, y_min: f64, y_max: f64) -> Hist2x2f = {
+    Hist2x2f {
+        x_min: x_min,
+        x_max: x_max,
+        y_min: y_min,
+        y_max: y_max,
+        bin00: 0.0,
+        bin01: 0.0,
+        bin10: 0.0,
+        bin11: 0.0,
+        underflow: 0.0,
+        overflow: 0.0
+    }
+}
+
+pub fn hist2x2_x_index(hist: Hist2x2f, x: f64) -> i64 = {
+    let mid: f64 = (hist.x_min + hist.x_max) * 0.5;
+    if (x < hist.x_min) {
+        -1
+    } else {
+        if (x >= hist.x_max) { 2 } else {
+            if (x < mid) { 0 } else { 1 }
+        }
+    }
+}
+
+pub fn hist2x2_y_index(hist: Hist2x2f, y: f64) -> i64 = {
+    let mid: f64 = (hist.y_min + hist.y_max) * 0.5;
+    if (y < hist.y_min) {
+        -1
+    } else {
+        if (y >= hist.y_max) { 2 } else {
+            if (y < mid) { 0 } else { 1 }
+        }
+    }
+}
+
+pub fn hist2x2_fill(hist: Hist2x2f, x: f64, y: f64) -> Hist2x2f = {
+    hist2x2_fill_weight(hist, x, y, 1.0)
+}
+
+pub fn hist2x2_fill_weight(hist: Hist2x2f, x: f64, y: f64, weight: f64) -> Hist2x2f = {
+    let xi: i64 = hist2x2_x_index(hist, x);
+    let yi: i64 = hist2x2_y_index(hist, y);
+    Hist2x2f {
+        x_min: hist.x_min,
+        x_max: hist.x_max,
+        y_min: hist.y_min,
+        y_max: hist.y_max,
+        bin00: hist.bin00 + hist2x2_weight_if(xi, yi, 0, 0, weight),
+        bin01: hist.bin01 + hist2x2_weight_if(xi, yi, 0, 1, weight),
+        bin10: hist.bin10 + hist2x2_weight_if(xi, yi, 1, 0, weight),
+        bin11: hist.bin11 + hist2x2_weight_if(xi, yi, 1, 1, weight),
+        underflow: hist.underflow + hist2x2_underflow_weight(xi, yi, weight),
+        overflow: hist.overflow + hist2x2_overflow_weight(xi, yi, weight)
+    }
+}
+
+pub fn hist2x2_weight_if(xi: i64, yi: i64, target_x: i64, target_y: i64, weight: f64) -> f64 = {
+    if (xi == target_x) {
+        if (yi == target_y) { weight } else { 0.0 }
+    } else {
+        0.0
+    }
+}
+
+pub fn hist2x2_underflow_weight(xi: i64, yi: i64, weight: f64) -> f64 = {
+    if (xi < 0) { weight } else {
+        if (yi < 0) { weight } else { 0.0 }
+    }
+}
+
+pub fn hist2x2_overflow_weight(xi: i64, yi: i64, weight: f64) -> f64 = {
+    if (xi > 1) { weight } else {
+        if (yi > 1) { weight } else { 0.0 }
+    }
+}
+
+pub fn hist2x2_count(hist: Hist2x2f, x_index: i64, y_index: i64) -> f64 = {
+    if (x_index == 0) {
+        if (y_index == 0) { hist.bin00 } else {
+            if (y_index == 1) { hist.bin01 } else { 0.0 }
+        }
+    } else {
+        if (x_index == 1) {
+            if (y_index == 0) { hist.bin10 } else {
+                if (y_index == 1) { hist.bin11 } else { 0.0 }
+            }
+        } else {
+            0.0
+        }
+    }
+}
+
+pub fn hist2x2_total(hist: Hist2x2f) -> f64 = {
+    hist.bin00 + hist.bin01 + hist.bin10 + hist.bin11
+}

@@ -1,0 +1,14 @@
+{
+  "name": "frust_websocket",
+  "version": "0.1.0",
+  "type": "lib",
+  "description": "WebSocket protocol implementation.",
+  "exports": [
+    "WsFrame", "ws_frame_parse", "ws_handshake"
+  ],
+  "dependencies": [
+    { "name": "core", "version": "1.0.1" },
+    { "name": "frust_net", "version": "0.1.0" },
+    { "name": "frust_http", "version": "0.1.0" }
+  ]
+}

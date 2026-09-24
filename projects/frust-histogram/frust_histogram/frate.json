@@ -1,0 +1,33 @@
+{
+  "name": "frust_histogram",
+  "version": "0.1.0",
+  "type": "lib",
+  "description": "Histogram, binning, errors, pulls, and binned-analysis bridge helpers for Frust.",
+  "exports": [
+    "Hist4f",
+    "Hist2x2f",
+    "hist4_uniform",
+    "hist4_fill",
+    "hist4_fill_weight",
+    "hist4_bin_index",
+    "hist4_count",
+    "hist4_total",
+    "hist4_bin_width",
+    "hist4_bin_center",
+    "hist4_density",
+    "hist4_poisson_error",
+    "hist4_residual",
+    "hist4_pull",
+    "hist4_chi_square_term",
+    "hist4_signal_background_model",
+    "hist2x2_zero",
+    "hist2x2_fill",
+    "hist2x2_fill_weight",
+    "hist2x2_total",
+    "hist2x2_count"
+  ],
+  "dependencies": [
+    { "name": "core", "version": "1.0.1" },
+    { "name": "frust_hep_stats", "version": "0.1.0" }
+  ]
+}

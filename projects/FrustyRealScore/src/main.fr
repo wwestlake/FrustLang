@@ -1,0 +1,66 @@
+struct ScoreInput {
+    base_points: i64,
+    combo_multiplier: i64,
+    penalty: i64
+}
+
+fn raw_score(input: ScoreInput) -> i64 = {
+    input.base_points * input.combo_multiplier - input.penalty
+}
+
+fn clamp_score(score: i64) -> i64 = {
+    if (score < 0) { 0 } else { score }
+}
+
+fn final_score(input: ScoreInput) -> i64 = {
+    clamp_score(raw_score(input))
+}
+
+fn rank_for_score(score: i64) -> i64 = {
+    if score >= 500 {
+        3
+    } else if score >= 250 {
+        2
+    } else if score >= 100 {
+        1
+    } else {
+        0
+    }
+}
+
+fn rank_matches(actual_rank: i64, expected_rank: i64) -> i64 = {
+    if (actual_rank == expected_rank) { 0 } else { 1 }
+}
+
+fn check_case(input: ScoreInput, expected_score: i64, expected_rank: i64) -> i64 = {
+    let actual_score = final_score(input);
+    let actual_rank = rank_for_score(actual_score);
+    if (actual_score == expected_score) {
+        rank_matches(actual_rank, expected_rank)
+    } else {
+        1
+    }
+}
+
+fn check_zero_floor() -> i64 = {
+    let input = ScoreInput { base_points: 10, combo_multiplier: 2, penalty: 50 };
+    check_case(input, 0, 0)
+}
+
+fn check_mid_score() -> i64 = {
+    let input = ScoreInput { base_points: 150, combo_multiplier: 2, penalty: 40 };
+    check_case(input, 260, 2)
+}
+
+fn check_top_score() -> i64 = {
+    let input = ScoreInput { base_points: 300, combo_multiplier: 2, penalty: 25 };
+    check_case(input, 575, 3)
+}
+
+fn all_checks_pass() -> i64 = {
+    check_zero_floor() + check_mid_score() + check_top_score()
+}
+
+fn main() -> i64 = {
+    if (all_checks_pass() == 0) { 0 } else { 1 }
+}

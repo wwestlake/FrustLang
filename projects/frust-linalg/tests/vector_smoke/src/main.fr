@@ -1,0 +1,41 @@
+use core;
+use frust_linalg;
+
+fn pass_if(cond: bool) -> i64 = {
+    if cond == true { 1 } else { 0 }
+}
+
+fn main() -> i64 = {
+    let a: Vec3f = vec3f(1.0, 2.0, 3.0);
+    let b: Vec3f = vec3f(4.0, 5.0, 6.0);
+    let dot: f32 = vec3f_dot(a, b);
+
+    let c: Vec3f = vec3f_cross(a, b);
+    let add: Vec3f = vec3f_add(a, b);
+    let scaled: Vec3f = vec3f_scale(a, 2.0);
+    let lerped: Vec3f = vec3f_lerp(vec3f_zero(), vec3f(10.0, 20.0, 30.0), 0.5);
+    let clamped: Vec3f = vec3f_clamp(vec3f(-2.0, 5.0, 20.0), vec3f_zero(), vec3f(10.0, 10.0, 10.0));
+    let dist_sq: f32 = vec3f_distance_sq(a, b);
+    let reflected: Vec3f = vec3f_reflect_unit(vec3f(1.0, -2.0, 0.0), vec3f(0.0, 1.0, 0.0));
+    let projected: Vec3f = vec3f_project_onto_unit(vec3f(3.0, 4.0, 5.0), vec3f(0.0, 0.0, 1.0));
+    let hadamard: Vec3f = vec3f_hadamard(vec3f(2.0, 3.0, 4.0), vec3f(5.0, 6.0, 7.0));
+    let len2: f32 = vec2f_length(vec2f(3.0, 4.0));
+    let len3: f32 = vec3f_length(vec3f(2.0, 3.0, 6.0));
+    let dist2: f32 = vec2f_distance(vec2f(1.0, 1.0), vec2f(4.0, 5.0));
+    let norm: Vec3f = vec3f_normalize(vec3f(0.0, 3.0, 4.0));
+
+    pass_if(dot == 32.0) +
+    pass_if(c.x == -3.0) +
+    pass_if(c.y == 6.0) +
+    pass_if(c.z == -3.0) +
+    pass_if(add.x == 5.0) + pass_if(add.y == 7.0) + pass_if(add.z == 9.0) +
+    pass_if(scaled.x == 2.0) + pass_if(scaled.y == 4.0) + pass_if(scaled.z == 6.0) +
+    pass_if(lerped.x == 5.0) + pass_if(lerped.y == 10.0) + pass_if(lerped.z == 15.0) +
+    pass_if(clamped.x == 0.0) + pass_if(clamped.y == 5.0) + pass_if(clamped.z == 10.0) +
+    pass_if(dist_sq == 27.0) +
+    pass_if(reflected.x == 1.0) + pass_if(reflected.y == 2.0) +
+    pass_if(projected.x == 0.0) + pass_if(projected.y == 0.0) + pass_if(projected.z == 5.0) +
+    pass_if(hadamard.x == 10.0) + pass_if(hadamard.y == 18.0) + pass_if(hadamard.z == 28.0) +
+    pass_if(len2 == 5.0) + pass_if(len3 == 7.0) + pass_if(dist2 == 5.0) +
+    pass_if(norm.x == 0.0) + pass_if(norm.y == 0.6) + pass_if(norm.z == 0.8)
+}

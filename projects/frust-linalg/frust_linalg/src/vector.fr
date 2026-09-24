@@ -1,0 +1,242 @@
+struct Vec2f {
+    x: f32,
+    y: f32
+}
+
+struct Vec3f {
+    x: f32,
+    y: f32,
+    z: f32
+}
+
+struct Vec4f {
+    x: f32,
+    y: f32,
+    z: f32,
+    w: f32
+}
+
+pub fn vec2f(x: f32, y: f32) -> Vec2f = {
+    Vec2f { x: x, y: y }
+}
+
+pub fn vec3f(x: f32, y: f32, z: f32) -> Vec3f = {
+    Vec3f { x: x, y: y, z: z }
+}
+
+pub fn vec4f(x: f32, y: f32, z: f32, w: f32) -> Vec4f = {
+    Vec4f { x: x, y: y, z: z, w: w }
+}
+
+pub fn vec2f_zero() -> Vec2f = {
+    vec2f(0.0, 0.0)
+}
+
+pub fn vec3f_zero() -> Vec3f = {
+    vec3f(0.0, 0.0, 0.0)
+}
+
+pub fn vec4f_zero() -> Vec4f = {
+    vec4f(0.0, 0.0, 0.0, 0.0)
+}
+
+pub fn vec2f_add(a: Vec2f, b: Vec2f) -> Vec2f = {
+    vec2f(a.x + b.x, a.y + b.y)
+}
+
+pub fn vec3f_add(a: Vec3f, b: Vec3f) -> Vec3f = {
+    vec3f(a.x + b.x, a.y + b.y, a.z + b.z)
+}
+
+pub fn vec4f_add(a: Vec4f, b: Vec4f) -> Vec4f = {
+    vec4f(a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w)
+}
+
+pub fn vec2f_sub(a: Vec2f, b: Vec2f) -> Vec2f = {
+    vec2f(a.x - b.x, a.y - b.y)
+}
+
+pub fn vec3f_sub(a: Vec3f, b: Vec3f) -> Vec3f = {
+    vec3f(a.x - b.x, a.y - b.y, a.z - b.z)
+}
+
+pub fn vec4f_sub(a: Vec4f, b: Vec4f) -> Vec4f = {
+    vec4f(a.x - b.x, a.y - b.y, a.z - b.z, a.w - b.w)
+}
+
+pub fn vec2f_scale(v: Vec2f, s: f32) -> Vec2f = {
+    vec2f(v.x * s, v.y * s)
+}
+
+pub fn vec3f_scale(v: Vec3f, s: f32) -> Vec3f = {
+    vec3f(v.x * s, v.y * s, v.z * s)
+}
+
+pub fn vec4f_scale(v: Vec4f, s: f32) -> Vec4f = {
+    vec4f(v.x * s, v.y * s, v.z * s, v.w * s)
+}
+
+pub fn vec2f_dot(a: Vec2f, b: Vec2f) -> f32 = {
+    a.x * b.x + a.y * b.y
+}
+
+pub fn vec3f_dot(a: Vec3f, b: Vec3f) -> f32 = {
+    a.x * b.x + a.y * b.y + a.z * b.z
+}
+
+pub fn vec4f_dot(a: Vec4f, b: Vec4f) -> f32 = {
+    a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w
+}
+
+pub fn vec3f_cross(a: Vec3f, b: Vec3f) -> Vec3f = {
+    vec3f(
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x
+    )
+}
+
+pub fn vec2f_length_sq(v: Vec2f) -> f32 = {
+    vec2f_dot(v, v)
+}
+
+pub fn vec3f_length_sq(v: Vec3f) -> f32 = {
+    vec3f_dot(v, v)
+}
+
+pub fn vec4f_length_sq(v: Vec4f) -> f32 = {
+    vec4f_dot(v, v)
+}
+
+pub fn vec2f_length(v: Vec2f) -> f32 = {
+    sqrt(vec2f_length_sq(v))
+}
+
+pub fn vec3f_length(v: Vec3f) -> f32 = {
+    sqrt(vec3f_length_sq(v))
+}
+
+pub fn vec4f_length(v: Vec4f) -> f32 = {
+    sqrt(vec4f_length_sq(v))
+}
+
+pub fn vec3f_distance_sq(a: Vec3f, b: Vec3f) -> f32 = {
+    vec3f_length_sq(vec3f_sub(a, b))
+}
+
+pub fn vec2f_distance_sq(a: Vec2f, b: Vec2f) -> f32 = {
+    vec2f_length_sq(vec2f_sub(a, b))
+}
+
+pub fn vec4f_distance_sq(a: Vec4f, b: Vec4f) -> f32 = {
+    vec4f_length_sq(vec4f_sub(a, b))
+}
+
+pub fn vec2f_distance(a: Vec2f, b: Vec2f) -> f32 = {
+    vec2f_length(vec2f_sub(a, b))
+}
+
+pub fn vec3f_distance(a: Vec3f, b: Vec3f) -> f32 = {
+    vec3f_length(vec3f_sub(a, b))
+}
+
+pub fn vec4f_distance(a: Vec4f, b: Vec4f) -> f32 = {
+    vec4f_length(vec4f_sub(a, b))
+}
+
+pub fn vec2f_normalize(v: Vec2f) -> Vec2f = {
+    let len: f32 = vec2f_length(v);
+    if (near_zero_f32(len, 0.000001)) { vec2f_zero() } else { vec2f_scale(v, 1.0 / len) }
+}
+
+pub fn vec3f_normalize(v: Vec3f) -> Vec3f = {
+    let len: f32 = vec3f_length(v);
+    if (near_zero_f32(len, 0.000001)) { vec3f_zero() } else { vec3f_scale(v, 1.0 / len) }
+}
+
+pub fn vec4f_normalize(v: Vec4f) -> Vec4f = {
+    let len: f32 = vec4f_length(v);
+    if (near_zero_f32(len, 0.000001)) { vec4f_zero() } else { vec4f_scale(v, 1.0 / len) }
+}
+
+pub fn vec3f_lerp(a: Vec3f, b: Vec3f, t: f32) -> Vec3f = {
+    vec3f(
+        lerp_f32(a.x, b.x, t),
+        lerp_f32(a.y, b.y, t),
+        lerp_f32(a.z, b.z, t)
+    )
+}
+
+pub fn vec3f_clamp(v: Vec3f, lo: Vec3f, hi: Vec3f) -> Vec3f = {
+    vec3f(
+        clamp_f32(v.x, lo.x, hi.x),
+        clamp_f32(v.y, lo.y, hi.y),
+        clamp_f32(v.z, lo.z, hi.z)
+    )
+}
+
+pub fn vec2f_lerp(a: Vec2f, b: Vec2f, t: f32) -> Vec2f = {
+    vec2f(lerp_f32(a.x, b.x, t), lerp_f32(a.y, b.y, t))
+}
+
+pub fn vec4f_lerp(a: Vec4f, b: Vec4f, t: f32) -> Vec4f = {
+    vec4f(
+        lerp_f32(a.x, b.x, t),
+        lerp_f32(a.y, b.y, t),
+        lerp_f32(a.z, b.z, t),
+        lerp_f32(a.w, b.w, t)
+    )
+}
+
+pub fn vec2f_min(a: Vec2f, b: Vec2f) -> Vec2f = {
+    vec2f(min_f32(a.x, b.x), min_f32(a.y, b.y))
+}
+
+pub fn vec3f_min(a: Vec3f, b: Vec3f) -> Vec3f = {
+    vec3f(min_f32(a.x, b.x), min_f32(a.y, b.y), min_f32(a.z, b.z))
+}
+
+pub fn vec4f_min(a: Vec4f, b: Vec4f) -> Vec4f = {
+    vec4f(min_f32(a.x, b.x), min_f32(a.y, b.y), min_f32(a.z, b.z), min_f32(a.w, b.w))
+}
+
+pub fn vec2f_max(a: Vec2f, b: Vec2f) -> Vec2f = {
+    vec2f(max_f32(a.x, b.x), max_f32(a.y, b.y))
+}
+
+pub fn vec3f_max(a: Vec3f, b: Vec3f) -> Vec3f = {
+    vec3f(max_f32(a.x, b.x), max_f32(a.y, b.y), max_f32(a.z, b.z))
+}
+
+pub fn vec4f_max(a: Vec4f, b: Vec4f) -> Vec4f = {
+    vec4f(max_f32(a.x, b.x), max_f32(a.y, b.y), max_f32(a.z, b.z), max_f32(a.w, b.w))
+}
+
+pub fn vec2f_clamp(v: Vec2f, lo: Vec2f, hi: Vec2f) -> Vec2f = {
+    vec2f(clamp_f32(v.x, lo.x, hi.x), clamp_f32(v.y, lo.y, hi.y))
+}
+
+pub fn vec4f_clamp(v: Vec4f, lo: Vec4f, hi: Vec4f) -> Vec4f = {
+    vec4f(
+        clamp_f32(v.x, lo.x, hi.x),
+        clamp_f32(v.y, lo.y, hi.y),
+        clamp_f32(v.z, lo.z, hi.z),
+        clamp_f32(v.w, lo.w, hi.w)
+    )
+}
+
+pub fn vec3f_hadamard(a: Vec3f, b: Vec3f) -> Vec3f = {
+    vec3f(a.x * b.x, a.y * b.y, a.z * b.z)
+}
+
+pub fn vec3f_project_onto_unit(v: Vec3f, unit_axis: Vec3f) -> Vec3f = {
+    vec3f_scale(unit_axis, vec3f_dot(v, unit_axis))
+}
+
+pub fn vec3f_reflect_unit(v: Vec3f, unit_normal: Vec3f) -> Vec3f = {
+    vec3f_sub(v, vec3f_scale(unit_normal, 2.0 * vec3f_dot(v, unit_normal)))
+}
+
+pub fn vec3f_abs(v: Vec3f) -> Vec3f = {
+    vec3f(abs_f32(v.x), abs_f32(v.y), abs_f32(v.z))
+}

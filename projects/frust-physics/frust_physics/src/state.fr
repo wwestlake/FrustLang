@@ -1,0 +1,37 @@
+struct State1f {
+    value: f32
+}
+
+struct Phase1f {
+    position: f32,
+    velocity: f32
+}
+
+struct Phase3f {
+    position: Vec3f,
+    velocity: Vec3f
+}
+
+pub fn state1f(value: f32) -> State1f = {
+    State1f { value: value }
+}
+
+pub fn phase1f(position: f32, velocity: f32) -> Phase1f = {
+    Phase1f { position: position, velocity: velocity }
+}
+
+pub fn phase3f(position: Vec3f, velocity: Vec3f) -> Phase3f = {
+    Phase3f { position: position, velocity: velocity }
+}
+
+pub fn state1f_add(a: State1f, b: State1f) -> State1f = {
+    state1f(a.value + b.value)
+}
+
+pub fn state1f_scale(a: State1f, s: f32) -> State1f = {
+    state1f(a.value * s)
+}
+
+pub fn phase1f_energy_unit_mass(p: Phase1f, spring_k: f32) -> f32 = {
+    0.5 * p.velocity * p.velocity + 0.5 * spring_k * p.position * p.position
+}

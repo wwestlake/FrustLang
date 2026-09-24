@@ -64,8 +64,18 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE "${REPO_ROOT_DIR}/bin/Release")
 # Add JUCE GUI Application Target
 # ------------------------------------------------------------------------------
 juce_add_gui_app(LagDaemonResearchIDE
-    PRODUCT_NAME "LagDaemon Language Research IDE"
+    PRODUCT_NAME "FrustIDE"
     VERSION 0.1.0
+    ICON_BIG "Resources/FrustIDE.png"
+    ICON_SMALL "Resources/FrustIDE.png"
+)
+
+juce_add_binary_data(FrustIDEAssets
+    HEADER_NAME FrustIDEAssets.h
+    NAMESPACE FrustIDEAssets
+    SOURCES
+        Resources/FrustIDE.png
+        Resources/Frusty/FrustySpriteAtlas.png
 )
 
 # juce_add_gui_app names the output binary after PRODUCT_NAME by default
@@ -76,6 +86,9 @@ juce_add_gui_app(LagDaemonResearchIDE
 set_target_properties(LagDaemonResearchIDE PROPERTIES OUTPUT_NAME "frust_ide")
 
 target_sources(LagDaemonResearchIDE PRIVATE
+    Source/sqlite/sqlite3.c
+    Source/RAGQuery.h
+    Source/RAGQuery.cpp
     Source/Main.cpp
     Source/WorkbenchComponent.h
     Source/WorkbenchComponent.cpp
@@ -87,10 +100,13 @@ target_sources(LagDaemonResearchIDE PRIVATE
     Source/EditorTabComponent.cpp
     Source/FrustTokeniser.h
     Source/FrustTokeniser.cpp
+    Source/ZoomableEditors.h
     Source/MetadataPanel.h
     Source/MetadataPanel.cpp
     Source/ConsolePanel.h
     Source/ConsolePanel.cpp
+    Source/ErrorListPanel.h
+    Source/ErrorListPanel.cpp
     Source/TerminalPanel.h
     Source/TerminalPanel.cpp
     Source/TerminalInstance.h
@@ -101,8 +117,30 @@ target_sources(LagDaemonResearchIDE PRIVATE
     Source/ShellTokeniser.cpp
     Source/ContextPanel.h
     Source/ContextPanel.cpp
+    Source/ConversationStore.h
+    Source/ConversationStore.cpp
     Source/AiChatPanel.h
     Source/AiChatPanel.cpp
+    Source/FrustyComponent.h
+    Source/FrustyComponent.cpp
+    Source/PluginUiPanel.h
+    Source/PluginUiPanel.cpp
+    Source/ActionCard.h
+    Source/ActionCard.cpp
+    Source/EngineerTools.h
+    Source/EngineerTools.cpp
+    Source/CommandTool.h
+    Source/CommandTool.cpp
+    Source/AgentTask.h
+    Source/AgentTask.cpp
+    Source/AgentModeRouter.h
+    Source/AgentModeRouter.cpp
+    Source/AiConversationView.h
+    Source/AiConversationView.cpp
+    Source/PlanReviewPanel.h
+    Source/PlanReviewPanel.cpp
+    Source/LocalAgentApi.h
+    Source/LocalAgentApi.cpp
     Source/FratePanel.h
     Source/FratePanel.cpp
     Source/PluginsPanel.h
@@ -119,9 +157,11 @@ target_compile_definitions(LagDaemonResearchIDE PRIVATE
     # (bin/Debug/, nowhere near the source tree) - a compile-time
     # string constant pointing at this CMakeLists.txt's own directory.
     FRUST_IDE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    FRUST_REPO_ROOT_DIR="${REPO_ROOT_DIR}"
 )
 
 target_link_libraries(LagDaemonResearchIDE PRIVATE
+    FrustIDEAssets
     CreationDock
     frust_lang
     frust_runtime
@@ -129,6 +169,7 @@ target_link_libraries(LagDaemonResearchIDE PRIVATE
     ai_provider
     frate_lib
     juce::juce_core
+    juce::juce_cryptography
     juce::juce_data_structures
     juce::juce_events
     juce::juce_graphics
@@ -146,3 +187,103 @@ if(UNIX AND NOT APPLE)
 endif()
 
 juce_generate_juce_header(LagDaemonResearchIDE)
+
+juce_add_console_app(ConversationStoreTests
+    PRODUCT_NAME "Conversation Store Tests"
+)
+
+target_sources(ConversationStoreTests PRIVATE
+    Source/ConversationStore.h
+    Source/ConversationStore.cpp
+    Source/ConversationStoreTests.cpp
+)
+
+target_link_libraries(ConversationStoreTests PRIVATE
+    juce::juce_core
+    juce::juce_data_structures
+    juce::juce_cryptography
+)
+
+juce_generate_juce_header(ConversationStoreTests)
+
+juce_add_console_app(EngineerToolsTests
+    PRODUCT_NAME "Engineer Tools Tests"
+)
+
+target_sources(EngineerToolsTests PRIVATE
+    Source/EngineerTools.h
+    Source/EngineerTools.cpp
+    Source/CommandTool.h
+    Source/CommandTool.cpp
+    Source/EngineerToolsTests.cpp
+)
+
+target_compile_definitions(EngineerToolsTests PRIVATE
+    FRUST_REPO_ROOT_DIR="${REPO_ROOT_DIR}"
+)
+
+target_link_libraries(EngineerToolsTests PRIVATE
+    ai_provider
+    frate_lib
+    frust_lang
+    frust_runtime
+    juce::juce_core
+    juce::juce_cryptography
+)
+
+juce_generate_juce_header(EngineerToolsTests)
+
+juce_add_console_app(AgentTaskTests
+    PRODUCT_NAME "Agent Task Tests"
+)
+
+target_sources(AgentTaskTests PRIVATE
+    Source/AgentTask.h
+    Source/AgentTask.cpp
+    Source/AgentTaskTests.cpp
+)
+
+target_link_libraries(AgentTaskTests PRIVATE
+    ai_provider
+    juce::juce_core
+)
+
+juce_generate_juce_header(AgentTaskTests)
+
+juce_add_console_app(AgentModeRouterTests
+    PRODUCT_NAME "Agent Mode Router Tests"
+)
+
+target_sources(AgentModeRouterTests PRIVATE
+    Source/AgentModeRouter.h
+    Source/AgentModeRouter.cpp
+    Source/AgentModeRouterTests.cpp
+)
+
+target_link_libraries(AgentModeRouterTests PRIVATE
+    ai_provider
+    juce::juce_core
+)
+
+juce_generate_juce_header(AgentModeRouterTests)
+
+juce_add_console_app(LocalAgentApiTests
+    PRODUCT_NAME "Local Agent API Tests"
+)
+
+target_sources(LocalAgentApiTests PRIVATE
+    Source/LocalAgentApi.h
+    Source/LocalAgentApi.cpp
+    Source/LocalAgentApiTests.cpp
+)
+
+target_compile_definitions(LocalAgentApiTests PRIVATE
+    JUCE_MODAL_LOOPS_PERMITTED=1
+)
+
+target_link_libraries(LocalAgentApiTests PRIVATE
+    juce::juce_core
+    juce::juce_events
+)
+
+juce_generate_juce_header(LocalAgentApiTests)

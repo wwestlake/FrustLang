@@ -1,0 +1,12 @@
+{
+  "name": "hep_unfolding_smoke",
+  "version": "0.1.0",
+  "type": "bin",
+  "description": "Smoke tests for frust_hep_stats two-bin response and unfolding helpers.",
+  "exports": [],
+  "dependencies": [
+    { "name": "core", "version": "1.0.1" },
+    { "name": "frust_numerics", "version": "0.1.0" },
+    { "name": "frust_hep_stats", "version": "0.1.0" }
+  ]
+}

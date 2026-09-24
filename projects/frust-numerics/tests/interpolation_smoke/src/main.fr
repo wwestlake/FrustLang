@@ -1,0 +1,24 @@
+use core;
+use frust_numerics;
+
+fn pass_if(cond: bool) -> i64 = {
+    if cond == true { 1 } else { 0 }
+}
+
+fn main() -> i64 = {
+    let inv: f32 = inverse_lerp_f32(10.0, 20.0, 15.0);
+    let mapped: f32 = remap_f32(0.0, 10.0, 100.0, 200.0, 2.5);
+    let smooth_mid: f32 = smoothstep_range_f32(0.0, 10.0, 5.0);
+    let smooth_lo: f32 = smoothstep_range_f32(0.0, 10.0, -1.0);
+    let smooth_hi: f32 = smoothstep_range_f32(0.0, 10.0, 12.0);
+    let smoother_mid: f32 = smootherstep_range_f32(0.0, 10.0, 5.0);
+    let hermite: f32 = cubic_hermite_f32(0.0, 0.0, 10.0, 0.0, 0.5);
+
+    pass_if(inv == 0.5) +
+    pass_if(mapped == 125.0) +
+    pass_if(smooth_mid == 0.5) +
+    pass_if(smooth_lo == 0.0) +
+    pass_if(smooth_hi == 1.0) +
+    pass_if(smoother_mid == 0.5) +
+    pass_if(hermite == 5.0)
+}

@@ -1,0 +1,56 @@
+struct Response2x2 {
+    r00: f64,
+    r01: f64,
+    r10: f64,
+    r11: f64
+}
+
+struct Unfold2Result {
+    true0: f64,
+    true1: f64,
+    determinant: f64
+}
+
+pub fn response2x2(r00: f64, r01: f64, r10: f64, r11: f64) -> Response2x2 = {
+    Response2x2 { r00: r00, r01: r01, r10: r10, r11: r11 }
+}
+
+pub fn response2x2_apply0(response: Response2x2, true0: f64, true1: f64) -> f64 = {
+    response.r00 * true0 + response.r01 * true1
+}
+
+pub fn response2x2_apply1(response: Response2x2, true0: f64, true1: f64) -> f64 = {
+    response.r10 * true0 + response.r11 * true1
+}
+
+pub fn unfold2_direct(response: Response2x2, observed0: f64, observed1: f64) -> Unfold2Result = {
+    let det: f64 = response.r00 * response.r11 - response.r01 * response.r10;
+    if (hep_abs_f64(det) < 0.000000001) {
+        Unfold2Result { true0: 0.0, true1: 0.0, determinant: det }
+    } else {
+        Unfold2Result {
+            true0: (response.r11 * observed0 - response.r01 * observed1) / det,
+            true1: (-response.r10 * observed0 + response.r00 * observed1) / det,
+            determinant: det
+        }
+    }
+}
+
+pub fn unfold2_tikhonov(response: Response2x2, observed0: f64, observed1: f64, tau: f64) -> Unfold2Result = {
+    let a00: f64 = response.r00 * response.r00 + response.r10 * response.r10 + tau;
+    let a01: f64 = response.r00 * response.r01 + response.r10 * response.r11 - tau;
+    let a10: f64 = a01;
+    let a11: f64 = response.r01 * response.r01 + response.r11 * response.r11 + tau;
+    let y0: f64 = response.r00 * observed0 + response.r10 * observed1;
+    let y1: f64 = response.r01 * observed0 + response.r11 * observed1;
+    let det: f64 = a00 * a11 - a01 * a10;
+    if (hep_abs_f64(det) < 0.000000001) {
+        Unfold2Result { true0: 0.0, true1: 0.0, determinant: det }
+    } else {
+        Unfold2Result {
+            true0: (a11 * y0 - a01 * y1) / det,
+            true1: (-a10 * y0 + a00 * y1) / det,
+            determinant: det
+        }
+    }
+}

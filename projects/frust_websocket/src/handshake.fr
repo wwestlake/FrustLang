@@ -1,0 +1,3 @@
+pub fn ws_handshake() -> bool = {
+    false // stub
+}
