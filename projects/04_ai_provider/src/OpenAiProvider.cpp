@@ -1,62 +1,421 @@
 #include "ai_provider/OpenAiProvider.h"
+#include "ai_provider/Json.h"
 
 #include <juce_core/juce_core.h>
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <functional>
+#include <map>
+#include <mutex>
 
 namespace ai_provider {
+
+namespace {
+
+struct RateWindow
+{
+    double limit = -1.0;
+    double remaining = -1.0;
+    double resetAtMs = 0.0;
+};
+
+struct RateState
+{
+    RateWindow requests;
+    RateWindow tokens;
+};
+
+std::mutex rateMutex;
+std::map<juce::String, RateState> rateStates;
+
+juce::String headerValueIgnoreCase(const juce::StringPairArray& headers,
+                                   const juce::String& requestedName)
+{
+    const auto& keys = headers.getAllKeys();
+    const auto& values = headers.getAllValues();
+    for (int index = 0; index < keys.size(); ++index)
+        if (keys[index].equalsIgnoreCase(requestedName))
+            return values[index];
+    return {};
+}
+
+double durationMs(const juce::String& value)
+{
+    const auto text = value.trim().toLowerCase();
+    double total = 0.0;
+    int position = 0;
+    while (position < text.length())
+    {
+        const auto numberStart = position;
+        while (position < text.length()
+               && (juce::CharacterFunctions::isDigit(text[position]) || text[position] == '.'))
+            ++position;
+        if (position == numberStart) return 0.0;
+        const auto amount = text.substring(numberStart, position).getDoubleValue();
+        if (text.substring(position).startsWith("ms"))
+        {
+            total += amount;
+            position += 2;
+        }
+        else if (position < text.length() && text[position] == 's')
+        {
+            total += amount * 1000.0;
+            ++position;
+        }
+        else if (position < text.length() && text[position] == 'm')
+        {
+            total += amount * 60000.0;
+            ++position;
+        }
+        else if (position < text.length() && text[position] == 'h')
+        {
+            total += amount * 3600000.0;
+            ++position;
+        }
+        else
+        {
+            return 0.0;
+        }
+    }
+    return total;
+}
+
+juce::String rateKey(const std::string& apiKey, const std::string& model)
+{
+    const auto hash = std::hash<std::string> {}(apiKey + "\n" + model);
+    return juce::String::toHexString(static_cast<juce::int64>(hash));
+}
+
+void refreshWindow(RateWindow& window, double nowMs)
+{
+    if (window.limit >= 0.0 && window.resetAtMs > 0.0 && nowMs >= window.resetAtMs)
+    {
+        window.remaining = window.limit;
+        window.resetAtMs = 0.0;
+    }
+}
+
+void waitForRateCapacity(const juce::String& key, int estimatedTokens)
+{
+    for (;;)
+    {
+        double waitMs = 0.0;
+        {
+            std::lock_guard lock(rateMutex);
+            const auto now = juce::Time::getMillisecondCounterHiRes();
+            auto& state = rateStates[key];
+            refreshWindow(state.requests, now);
+            refreshWindow(state.tokens, now);
+
+            if (state.requests.remaining >= 0.0 && state.requests.remaining < 1.0
+                && state.requests.resetAtMs > now)
+                waitMs = juce::jmax(waitMs, state.requests.resetAtMs - now);
+            if (state.tokens.remaining >= 0.0
+                && (state.tokens.limit < 0.0 || estimatedTokens <= state.tokens.limit)
+                && state.tokens.remaining < static_cast<double>(estimatedTokens)
+                && state.tokens.resetAtMs > now)
+                waitMs = juce::jmax(waitMs, state.tokens.resetAtMs - now);
+
+            if (waitMs <= 0.0)
+            {
+                if (state.requests.remaining >= 0.0) state.requests.remaining -= 1.0;
+                if (state.tokens.remaining >= 0.0) state.tokens.remaining -= estimatedTokens;
+                return;
+            }
+        }
+        juce::Thread::sleep(juce::jlimit(100, 120000, static_cast<int>(std::ceil(waitMs)) + 100));
+    }
+}
+
+void updateRateWindow(RateWindow& window, const juce::StringPairArray& headers,
+                      const juce::String& limitName, const juce::String& remainingName,
+                      const juce::String& resetName, double nowMs)
+{
+    const auto limit = headerValueIgnoreCase(headers, limitName);
+    const auto remaining = headerValueIgnoreCase(headers, remainingName);
+    const auto reset = headerValueIgnoreCase(headers, resetName);
+    if (limit.isNotEmpty()) window.limit = limit.getDoubleValue();
+    if (remaining.isNotEmpty()) window.remaining = remaining.getDoubleValue();
+    if (reset.isNotEmpty()) window.resetAtMs = nowMs + durationMs(reset);
+}
+
+void updateRateState(const juce::String& key, const juce::StringPairArray& headers)
+{
+    std::lock_guard lock(rateMutex);
+    const auto now = juce::Time::getMillisecondCounterHiRes();
+    auto& state = rateStates[key];
+    updateRateWindow(state.requests, headers,
+                     "x-ratelimit-limit-requests", "x-ratelimit-remaining-requests",
+                     "x-ratelimit-reset-requests", now);
+    updateRateWindow(state.tokens, headers,
+                     "x-ratelimit-limit-tokens", "x-ratelimit-remaining-tokens",
+                     "x-ratelimit-reset-tokens", now);
+}
+
+bool shouldEnableWebSearch(const std::vector<ChatMessage>& messages)
+{
+    for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
+        if (it->role != "user") continue;
+        const auto text = juce::String(it->content).toLowerCase();
+        return text.contains("web") || text.contains("internet") || text.contains("search")
+            || text.contains("research") || text.contains("look up") || text.contains("latest")
+            || text.contains("current information") || text.contains("online");
+    }
+    return false;
+}
+
+int retryDelayMs(const juce::StringPairArray& headers, const juce::String& message, int attempt)
+{
+    auto retryAfter = headerValueIgnoreCase(headers, "retry-after").getDoubleValue();
+    if (retryAfter <= 0.0) {
+        const auto marker = message.indexOfIgnoreCase("try again in ");
+        if (marker >= 0)
+            retryAfter = message.substring(marker + 13).upToFirstOccurrenceOf("s", false, false)
+                .getDoubleValue();
+    }
+    auto delayMs = retryAfter * 1000.0;
+    if (delayMs <= 0.0)
+        delayMs = durationMs(headerValueIgnoreCase(headers, "x-ratelimit-reset-tokens"));
+    if (delayMs <= 0.0) delayMs = 1500.0 * static_cast<double>(attempt + 1);
+    return juce::jlimit(500, 120000, static_cast<int>(delayMs) + 250);
+}
+
+void appendMessageItem(juce::Array<juce::var>& input, const ChatMessage& message)
+{
+    auto* item = new juce::DynamicObject();
+    item->setProperty("role", juce::String(message.role));
+    item->setProperty("content", juce::String(message.content));
+    input.add(juce::var(item));
+}
+
+} // namespace
 
 OpenAiProvider::OpenAiProvider(std::string apiKeyIn, std::string modelIn)
     : apiKey(std::move(apiKeyIn)), model(std::move(modelIn)) {}
 
-ChatResponse OpenAiProvider::sendChat(const std::vector<ChatMessage>& messages) {
+ChatResponse OpenAiProvider::sendChat(const std::vector<ChatMessage>& messages,
+                                      const std::vector<ToolDefinition>& tools,
+                                      ToolChoice toolChoice) {
     if (apiKey.empty() || apiKey == "PASTE_YOUR_OPENAI_API_KEY_HERE") {
-        return { false, {}, "No OpenAI API key set for this profile (edit ai_config.json)." };
+        return { false, {}, "No OpenAI API key set for this profile (open AI Settings)." };
     }
 
-    juce::Array<juce::var> messagesArray;
-    for (auto& m : messages) {
-        auto* obj = new juce::DynamicObject();
-        obj->setProperty("role", juce::String(m.role));
-        obj->setProperty("content", juce::String(m.content));
-        messagesArray.add(juce::var(obj));
+    juce::Array<juce::var> input;
+    for (const auto& message : messages) {
+        if (!message.providerItemsJson.empty()) {
+            const auto savedItems = json::repaired(juce::JSON::parse(juce::String::fromUTF8(message.providerItemsJson.c_str(),
+                                                                                      (int) message.providerItemsJson.size())));
+            if (auto* items = savedItems.getArray())
+                for (const auto& item : *items) input.add(item);
+            continue;
+        }
+        if (message.role == "tool") {
+            auto* output = new juce::DynamicObject();
+            output->setProperty("type", "function_call_output");
+            output->setProperty("call_id", juce::String(message.toolCallId));
+            output->setProperty("output", juce::String(message.content));
+            input.add(juce::var(output));
+            continue;
+        }
+        if (!message.content.empty()) appendMessageItem(input, message);
+        for (const auto& call : message.toolCalls) {
+            auto* item = new juce::DynamicObject();
+            item->setProperty("type", "function_call");
+            item->setProperty("call_id", juce::String(call.id));
+            item->setProperty("name", juce::String(call.name));
+            item->setProperty("arguments", juce::String(call.argumentsJson));
+            input.add(juce::var(item));
+        }
     }
 
     auto* bodyObj = new juce::DynamicObject();
-    bodyObj->setProperty("model", juce::String(model.empty() ? "gpt-4o-mini" : model));
-    bodyObj->setProperty("messages", messagesArray);
+    const auto selectedModel = model.empty() ? std::string("gpt-4o-mini") : model;
+    bodyObj->setProperty("model", juce::String(selectedModel));
+    bodyObj->setProperty("input", input);
+    bodyObj->setProperty("max_output_tokens", 8192);
 
-    auto bodyText = juce::JSON::toString(juce::var(bodyObj), true);
-    juce::MemoryBlock postData(bodyText.toRawUTF8(), bodyText.getNumBytesAsUTF8());
+    juce::Array<juce::var> toolArray;
+    const bool webSearchEnabled = shouldEnableWebSearch(messages);
+    if (webSearchEnabled) {
+        auto* webSearch = new juce::DynamicObject();
+        webSearch->setProperty("type", "web_search");
+        toolArray.add(juce::var(webSearch));
+    }
+    for (const auto& tool : tools) {
+        auto parameters = juce::JSON::parse(juce::String(tool.parametersJson));
+        if (!parameters.isObject())
+            return { false, {}, "Tool schema is not a JSON object: " + tool.name };
+        auto* function = new juce::DynamicObject();
+        function->setProperty("type", "function");
+        function->setProperty("name", juce::String(tool.name));
+        function->setProperty("description", juce::String(tool.description));
+        function->setProperty("parameters", parameters);
+        toolArray.add(juce::var(function));
+    }
+    if (!toolArray.isEmpty()) {
+        bodyObj->setProperty("tools", toolArray);
+    }
+    if (webSearchEnabled) {
+        bodyObj->setProperty("include", juce::Array<juce::var> { "web_search_call.action.sources" });
+    }
+    if (!tools.empty()) {
+        bodyObj->setProperty("tool_choice",
+            toolChoice == ToolChoice::required ? "required" : "auto");
+    }
 
-    juce::URL url("https://api.openai.com/v1/chat/completions");
-    url = url.withPOSTData(postData);
+    const juce::var body(bodyObj);
+    const auto bodyText = json::toJson(body);
+    juce::MemoryBlock postData(bodyText.data(), bodyText.size());
+    const auto estimatedInputTokens = static_cast<int>(std::ceil((double) bodyText.size() / 4.0));
+    const auto estimatedRequestTokens = estimatedInputTokens + 8192;
+    const auto limiterKey = rateKey(apiKey, selectedModel);
 
     juce::String headers = "Content-Type: application/json\r\nAuthorization: Bearer " + juce::String(apiKey);
     int statusCode = 0;
+    juce::String responseText;
+    juce::var parsed;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        waitForRateCapacity(limiterKey, estimatedRequestTokens);
+        juce::StringPairArray responseHeaders;
+        auto url = juce::URL("https://api.openai.com/v1/responses").withPOSTData(postData);
+        auto stream = url.createInputStream(
+            juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inPostData)
+                .withExtraHeaders(headers)
+                .withConnectionTimeoutMs(60000)
+                .withHttpRequestCmd("POST")
+                .withStatusCode(&statusCode)
+                .withResponseHeaders(&responseHeaders));
+        if (stream == nullptr)
+            return { false, {}, "Could not reach api.openai.com (network/DNS failure)." };
+        responseText = stream->readEntireStreamAsString();
+        updateRateState(limiterKey, responseHeaders);
+        parsed = json::repaired(juce::JSON::parse(responseText));
+        if (statusCode == 200) break;
 
-    auto stream = url.createInputStream(
-        juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inPostData)
-            .withExtraHeaders(headers)
-            .withConnectionTimeoutMs(30000)
-            .withHttpRequestCmd("POST")
-            .withStatusCode(&statusCode));
-
-    if (stream == nullptr) return { false, {}, "Could not reach api.openai.com (network/DNS failure)." };
-
-    auto responseText = stream->readEntireStreamAsString();
-    auto parsed = juce::JSON::parse(responseText);
-
-    if (statusCode != 200) {
-        auto errObj = parsed.getProperty("error", {});
-        auto message = errObj.isObject() ? errObj.getProperty("message", {}).toString() : responseText;
-        return { false, {}, "OpenAI request failed (HTTP " + std::to_string(statusCode) + "): " + message.toStdString() };
+        const auto error = parsed.getProperty("error", {});
+        const auto message = error.isObject() ? error.getProperty("message", {}).toString()
+                                               : responseText;
+        if ((statusCode == 429 || statusCode >= 500) && attempt < 2) {
+            juce::Thread::sleep(retryDelayMs(responseHeaders, message, attempt));
+            continue;
+        }
+        if (statusCode == 429)
+            return { false, {}, "The selected model is temporarily rate-limited. FrustIDE retried "
+                "automatically, but the account still needs a moment. Please send again shortly." };
+        // Keep a rejected request, so the cause can be read instead of guessed (the key is in a header, not in this file).
+        juce::String savedNote;
+        if (statusCode == 400)
+        {
+            const auto saved = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+                                   .getChildFile("LagDaemonResearchIDE").getChildFile("last-rejected-request.json");
+            saved.getParentDirectory().createDirectory();
+            if (saved.replaceWithText("// OpenAI answered HTTP 400: " + message + "\n" + juce::String::fromUTF8(bodyText.data(), (int) bodyText.size())))
+                savedNote = " (the request was saved to " + saved.getFullPathName() + ")";
+        }
+        return { false, {}, "OpenAI request failed (HTTP " + std::to_string(statusCode)
+            + "): " + message.toStdString() + savedNote.toStdString() };
     }
 
-    auto* choices = parsed.getProperty("choices", {}).getArray();
-    if (choices == nullptr || choices->isEmpty())
-        return { false, {}, "OpenAI response had no choices: " + responseText.toStdString() };
+    auto* output = parsed.getProperty("output", {}).getArray();
+    if (output == nullptr)
+        return { false, {}, "OpenAI response did not contain an output array." };
 
-    auto content = choices->getReference(0).getProperty("message", {}).getProperty("content", {}).toString();
-    return { true, content.toStdString(), {} };
+    juce::String content;
+    juce::StringArray sourceUrls;
+    juce::StringArray sourceTitles;
+    std::vector<ToolCall> toolCalls;
+    bool hostedToolUsed = false;
+    for (const auto& item : *output) {
+        const auto type = item.getProperty("type", {}).toString();
+        if (type == "web_search_call") {
+            hostedToolUsed = true;
+        } else if (type == "function_call") {
+            ToolCall call;
+            call.id = item.getProperty("call_id", {}).toString().toStdString();
+            call.name = item.getProperty("name", {}).toString().toStdString();
+            call.argumentsJson = item.getProperty("arguments", {}).toString().toStdString();
+            if (!call.id.empty() && !call.name.empty())
+                toolCalls.push_back(std::move(call));
+        } else if (type == "message") {
+            if (auto* parts = item.getProperty("content", {}).getArray())
+                for (const auto& part : *parts)
+                    if (part.getProperty("type", {}).toString() == "output_text")
+                    {
+                        content << part.getProperty("text", {}).toString();
+                        if (auto* annotations = part.getProperty("annotations", {}).getArray())
+                        {
+                            for (const auto& annotation : *annotations)
+                            {
+                                if (annotation.getProperty("type", {}).toString() != "url_citation")
+                                    continue;
+                                const auto url = annotation.getProperty("url", {}).toString();
+                                if (url.isEmpty() || sourceUrls.contains(url)) continue;
+                                sourceUrls.add(url);
+                                auto title = annotation.getProperty("title", {}).toString().trim();
+                                sourceTitles.add(title.isEmpty() ? url : title);
+                            }
+                        }
+                    }
+        }
+    }
+    if (!sourceUrls.isEmpty())
+    {
+        content << "\n\n**Sources**\n";
+        for (int index = 0; index < sourceUrls.size(); ++index)
+            content << "- [" << sourceTitles[index] << "](" << sourceUrls[index] << ")\n";
+    }
+    const auto usage = parsed.getProperty("usage", {});
+    const auto inputTokens = static_cast<int>(usage.getProperty("input_tokens", 0));
+    const auto outputTokens = static_cast<int>(usage.getProperty("output_tokens", 0));
+    const auto totalTokens = static_cast<int>(usage.getProperty("total_tokens", inputTokens + outputTokens));
+    return { true, content.toStdString(), {}, std::move(toolCalls),
+             json::toJson(parsed.getProperty("output", {})),
+             hostedToolUsed, inputTokens, outputTokens, totalTokens };
+}
+
+ModelListResponse OpenAiProvider::listModels() {
+    if (apiKey.empty() || apiKey == "PASTE_YOUR_OPENAI_API_KEY_HERE")
+        return { false, {}, "Enter an OpenAI API key before refreshing models." };
+
+    juce::URL url("https://api.openai.com/v1/models");
+    const auto headers = "Authorization: Bearer " + juce::String(apiKey);
+    int statusCode = 0;
+    auto stream = url.createInputStream(
+        juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
+            .withExtraHeaders(headers)
+            .withConnectionTimeoutMs(30000)
+            .withHttpRequestCmd("GET")
+            .withStatusCode(&statusCode));
+
+    if (stream == nullptr)
+        return { false, {}, "Could not reach api.openai.com (network/DNS failure)." };
+
+    const auto responseText = stream->readEntireStreamAsString();
+    const auto parsed = juce::JSON::parse(responseText);
+    if (statusCode != 200) {
+        const auto error = parsed.getProperty("error", {});
+        const auto message = error.isObject()
+            ? error.getProperty("message", {}).toString()
+            : responseText;
+        return { false, {}, "OpenAI model request failed (HTTP "
+            + std::to_string(statusCode) + "): " + message.toStdString() };
+    }
+
+    auto* data = parsed.getProperty("data", {}).getArray();
+    if (data == nullptr)
+        return { false, {}, "OpenAI model response did not contain a data array." };
+
+    std::vector<std::string> models;
+    models.reserve(static_cast<size_t>(data->size()));
+    for (const auto& item : *data) {
+        const auto id = item.getProperty("id", {}).toString().trim();
+        if (id.isNotEmpty()) models.push_back(id.toStdString());
+    }
+
+    std::sort(models.begin(), models.end());
+    models.erase(std::unique(models.begin(), models.end()), models.end());
+    return { true, std::move(models), {} };
 }
 
 } // namespace ai_provider

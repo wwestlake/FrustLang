@@ -1,8 +1,10 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "PluginUiPanel.h"
 #include <frust_plugin_host/FrustPluginHost.h>
 #include <frust_plugin_host/FrustPluginManifest.h>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -30,12 +32,17 @@ public:
 
     void paint(juce::Graphics& g) override;
     void resized() override;
+    void appendPluginLog(const juce::String& msg);
+
+    std::function<void(const juce::String& id,
+                       const juce::String& title,
+                       std::unique_ptr<juce::Component> component)> onPluginUiPanel;
 
 private:
     struct LoadedPlugin {
         juce::String displayName;
         juce::File sourceFile;
-        FrustPluginHandle handle = nullptr;
+        std::shared_ptr<PluginRuntimeState> runtime;
     };
 
     // One entry discovered by scanning the built-in plugins/ folder -
@@ -78,6 +85,7 @@ private:
     // `loaded` - shared by the manual "Load Selected" button and
     // startup auto-load, same real load path either way.
     void loadDiscovered(const DiscoveredPlugin& d);
+    void maybeOpenPluginUi(const DiscoveredPlugin& d, const std::shared_ptr<PluginRuntimeState>& runtime);
     int selectedDiscoveredIndex() const;
 
     void reloadSelectedClicked();

@@ -1,0 +1,5 @@
+use core;
+
+fn main() -> i64 = {
+    0
+}

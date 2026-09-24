@@ -1,0 +1,80 @@
+// Frusty Architect behavior plugin prototype.
+//
+// This is the first step toward moving Frusty's behavior framework out
+// of C++ and into Frust-authored IDE plugins. The current IDE plugin
+// panel can already discover and load Frust plugins. The next host
+// bridge should call these entry points and ingest the returned cards
+// and templates into the assistant context/LiteSemRAG pipeline.
+
+manifest "{\"name\":\"frusty_architect\",\"version\":\"0.1.0\",\"description\":\"Frusty Architect behavior pack: abstract architecture posture, artifact literacy, requirements-question discipline, and business/domain-first guidance.\",\"entryPoints\":[\"on_init\",\"frusty_plugin_kind\",\"frusty_cards_jsonl\",\"frusty_artifact_templates_json\",\"frusty_capabilities_json\",\"frusty_ui_manifest_json\",\"frusty_ui_handle_event_json\"]}";
+
+extern fn frust_lookup_service(name: String) -> String;
+extern fn malloc(size: i64) -> String;
+extern fn strcpy(dest: String, src: String) -> String;
+extern fn strcat(dest: String, src: String) -> String;
+
+pub fn on_init() -> i64 = {
+    let log_fn: String = frust_lookup_service("ide.log");
+    if (log_fn != null) {
+        call_i64(log_fn, "Frusty Architect behavior pack present.", 0);
+    };
+    111
+}
+
+pub fn frusty_plugin_kind() -> String = {
+    "frusty_extension"
+}
+
+pub fn frusty_cards_jsonl() -> String = {
+    let buf: String = malloc(12000);
+    strcpy(buf, "{\"id\":\"frusty.architect.abstract-zone\",\"kind\":\"architect_policy\",\"title\":\"Architect mode stays in the abstract zone\",\"tokens\":[\"architect\",\"architecture\",\"requirements\",\"business\",\"purpose\",\"abstract\",\"design\",\"workflow\"],\"text\":\"Architect mode is a sustained abstract conversation space, not an implementation mode and not an artifact factory. Stay at the level of business requirements, end-user purpose, product intent, workflows, constraints, risks, vocabulary, boundaries, responsibilities, data shape, trust, and system evolution. Do not jump to code, file edits, concrete task plans, or tool execution unless the user explicitly moves the work into Plan or Execute mode.\"}\n");
+    strcat(buf, "{\"id\":\"frusty.architect.artifact-literacy\",\"kind\":\"architect_policy\",\"title\":\"Understand artifacts without forcing them\",\"tokens\":[\"architect\",\"artifact\",\"use case\",\"requirement\",\"architecture note\",\"decision record\",\"business rule\",\"risk\",\"interface\",\"domain model\"],\"text\":\"Architect mode should be literate in common architecture artifacts: use cases, requirements, business rules, architecture notes, decision records, risks, interface contracts, domain model notes, open questions, and constraints. These are constructs within the conversation, not separate mode selections. Recognize them, discuss them naturally, and produce one only when the user asks to document, capture, write up, or formalize the current thinking.\"}\n");
+    strcat(buf, "{\"id\":\"frusty.architect.open-requirements-questions\",\"kind\":\"architect_policy\",\"title\":\"Ask real requirements questions\",\"tokens\":[\"architect\",\"requirements\",\"question\",\"clarify\",\"open ended\",\"stakeholder\",\"purpose\",\"workflow\"],\"text\":\"In Architect mode, when requirements, purpose, stakeholders, boundaries, or workflow are unclear, ask open-ended questions that require an actual human answer. Do not reduce requirements discovery to a multiple-choice grid unless the user is choosing among known alternatives. Good architecture questions invite explanation: what outcome matters, who is affected, what must never happen, what tradeoff is acceptable, and what would make the design successful.\"}\n");
+    strcat(buf, "{\"id\":\"frusty.architect.use-cases-are-constructs\",\"kind\":\"architect_policy\",\"title\":\"Use cases are architecture constructs, not a mode\",\"tokens\":[\"use case\",\"architect\",\"workflow\",\"actor\",\"goal\",\"document this\",\"requirements\"],\"text\":\"A use case is an architectural construct that may emerge during Architect mode; it is not a separate assistant mode. When the user describes a workflow or says to document a use case, help develop it conversationally: identify actor, goal, purpose, preconditions, main flow, alternates, failure flows, data touched, and acceptance examples. Discuss gaps before finalizing. When asked to document it, write a durable use-case artifact instead of leaving it buried in chat.\"}\n");
+    strcat(buf, "{\"id\":\"frusty.architect.capture-discipline\",\"kind\":\"architect_policy\",\"title\":\"Capture architecture work durably when asked\",\"tokens\":[\"architect\",\"capture\",\"document\",\"save\",\"durable\",\"markdown\",\"litesemrag\",\"artifact\"],\"text\":\"Architectural conversations often create valuable work that can be lost in chat history. When the user says document this, capture that, make an architecture note, write the use case, or similar, produce the appropriate markdown artifact and save it durably in the agreed project or research location when tools are available. After capture, make it available to LiteSemRAG or the approved context flow so future Architect, Plan, and Execute work can retrieve it.\"}\n");
+    strcat(buf, "{\"id\":\"frusty.architect.business-domain-first\",\"kind\":\"architect_policy\",\"title\":\"Include business objects and domain ideas\",\"tokens\":[\"architect\",\"business object\",\"domain\",\"concept\",\"entity\",\"workflow\",\"software architecture\",\"business architecture\"],\"text\":\"Architect mode is not limited to software architecture. Give equal attention to business objects, domain ideas, user concepts, responsibilities, workflows, vocabulary, policies, invariants, and the real-world meaning of the system. Before naming classes, services, tables, or tools, understand the business and domain objects and how humans think about them. Software structure should follow from the domain model and purpose, not replace it.\"}\n");
+    strcat(buf, "{\"id\":\"frusty.architect.plugin-routing\",\"kind\":\"plugin_routing_policy\",\"title\":\"Route architecture capture to the Architect behavior plugin\",\"tokens\":[\"architect\",\"use case\",\"architecture note\",\"decision record\",\"requirement\",\"document this\",\"capture\"],\"text\":\"When the user is discussing business goals, use cases, architectural intent, domain vocabulary, requirements, risks, or design decisions, prefer the Architect behavior plugin's templates and policies over ad hoc chat output. The app remains the broker: use these capabilities only when the current assistant mode and approval policy allow capture or artifact creation.\"}\n");
+    buf
+}
+
+pub fn frusty_artifact_templates_json() -> String = {
+    let buf: String = malloc(9000);
+    strcpy(buf, "{\"templates\":[");
+    strcat(buf, "{\"id\":\"use-case\",\"title\":\"Use Case\",\"sections\":[\"High Purpose\",\"Actor\",\"Goal\",\"Preconditions\",\"Main Flow\",\"Alternate Flows\",\"Failure Flows\",\"Data Touched\",\"Acceptance Examples\",\"Open Questions\"]},");
+    strcat(buf, "{\"id\":\"architecture-note\",\"title\":\"Architecture Note\",\"sections\":[\"Context\",\"Observation\",\"Implication\",\"Options\",\"Recommendation\",\"Open Questions\"]},");
+    strcat(buf, "{\"id\":\"decision-record\",\"title\":\"Decision Record\",\"sections\":[\"Status\",\"Context\",\"Decision\",\"Alternatives Considered\",\"Consequences\",\"Revisit Trigger\"]},");
+    strcat(buf, "{\"id\":\"requirement\",\"title\":\"Requirement\",\"sections\":[\"Stakeholder Need\",\"Rationale\",\"Priority\",\"Acceptance Criteria\",\"Open Questions\"]},");
+    strcat(buf, "{\"id\":\"business-rule\",\"title\":\"Business Rule\",\"sections\":[\"Rule Statement\",\"Scope\",\"Examples\",\"Exceptions\",\"Enforcement Point\"]},");
+    strcat(buf, "{\"id\":\"risk\",\"title\":\"Risk\",\"sections\":[\"Risk\",\"Likelihood\",\"Impact\",\"Mitigation\",\"Owner\",\"Trigger\"]},");
+    strcat(buf, "{\"id\":\"interface-contract\",\"title\":\"Interface Contract\",\"sections\":[\"Participants\",\"Inputs\",\"Outputs\",\"Schema\",\"Errors\",\"Versioning\"]},");
+    strcat(buf, "{\"id\":\"domain-model-note\",\"title\":\"Domain Model Note\",\"sections\":[\"Concepts\",\"Relationships\",\"Invariants\",\"Vocabulary\",\"Open Questions\"]}");
+    strcat(buf, "]}");
+    buf
+}
+
+pub fn frusty_capabilities_json() -> String = {
+    let buf: String = malloc(6000);
+    strcpy(buf, "{\"capabilities\":[");
+    strcat(buf, "{\"id\":\"architect.discuss\",\"title\":\"Architecture discussion\",\"kind\":\"conversation_policy\",\"routeWhen\":[\"The user wants to reason about purpose, requirements, workflows, domain ideas, risks, boundaries, or architecture without immediately editing code.\"],\"mode\":\"architect\",\"requiresApproval\":false},");
+    strcat(buf, "{\"id\":\"architect.capture.use_case\",\"title\":\"Capture use case\",\"kind\":\"artifact_template\",\"template\":\"use-case\",\"routeWhen\":[\"The user describes a workflow and asks to document, capture, formalize, or write up a use case.\"],\"mode\":\"architect\",\"requiresApproval\":false},");
+    strcat(buf, "{\"id\":\"architect.capture.architecture_note\",\"title\":\"Capture architecture note\",\"kind\":\"artifact_template\",\"template\":\"architecture-note\",\"routeWhen\":[\"The user wants an architecture note, design note, observation, recommendation, or durable record of design thinking.\"],\"mode\":\"architect\",\"requiresApproval\":false},");
+    strcat(buf, "{\"id\":\"architect.capture.decision_record\",\"title\":\"Capture decision record\",\"kind\":\"artifact_template\",\"template\":\"decision-record\",\"routeWhen\":[\"The user has chosen or is comparing significant design options and wants the decision recorded.\"],\"mode\":\"architect\",\"requiresApproval\":false}");
+    strcat(buf, "]}");
+    buf
+}
+
+pub fn frusty_ui_manifest_json() -> String = {
+    let buf: String = malloc(4000);
+    strcpy(buf, "{\"panels\":[{\"id\":\"architect\",\"title\":\"Architect\",\"controls\":[");
+    strcat(buf, "{\"type\":\"label\",\"text\":\"Architect behavior pack is loaded.\"},");
+    strcat(buf, "{\"type\":\"textarea\",\"id\":\"note\",\"label\":\"Architecture note\",\"placeholder\":\"Capture a domain idea, requirement, risk, or use case thought...\"},");
+    strcat(buf, "{\"type\":\"button\",\"id\":\"echo_note\",\"label\":\"Send UI Event\"}");
+    strcat(buf, "]}]}");
+    buf
+}
+
+pub fn frusty_ui_handle_event_json(event: String) -> String = {
+    let buf: String = malloc(512);
+    strcpy(buf, "Architect plugin received the UI event. Native plugin UI plumbing is active.");
+    buf
+}

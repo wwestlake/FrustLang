@@ -3,6 +3,7 @@ import sqlite3
 import re
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 DB_PATH = Path(__file__).parent / "frust_knowledge.db"
@@ -11,6 +12,9 @@ WIKI_DIR = REPO_ROOT / "wiki" / "reference"
 PROJECTS_DIR = REPO_ROOT / "projects"
 AGENT_CONTEXT = REPO_ROOT / "projects" / "frust-ide-agent" / "FRUST_AI_CONTEXT.md"
 SPEC_FILE = REPO_ROOT / "projects" / "01_language_paradigms" / "02_functional" / "FRUST_LANG_SPEC.md"
+ENGINEER_TOOL_CARDS = REPO_ROOT / "projects" / "frust-ide-agent" / "ENGINEER_TOOL_CARDS.jsonl"
+ENGINEER_PROCESS_CARDS = REPO_ROOT / "projects" / "frust-ide-agent" / "ENGINEER_PROCESS_CARDS.jsonl"
+MEMORY_GLOBAL_CARDS = REPO_ROOT / "projects" / "frust-ide-agent" / "MEMORY_GLOBAL_CARDS.jsonl"
 GRAMMAR_FILES = [
     REPO_ROOT / "projects" / "01_language_paradigms" / "02_functional" / "grammar" / "frust.y",
     REPO_ROOT / "projects" / "01_language_paradigms" / "02_functional" / "grammar" / "frust.l",
@@ -93,6 +97,30 @@ def parse_authoritative_docs(cursor):
         else:
             print(f"Warning: grammar file not found at {path}")
 
+def parse_card_file(cursor, path, node_type, label):
+    if not path.exists():
+        print(f"Warning: {label} cards not found at {path}")
+        return
+
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        card = json.loads(line)
+        upsert_node(
+            cursor,
+            card["id"],
+            node_type,
+            card["title"],
+            card["text"],
+            card["source"],
+        )
+        print(f"Ingested {label}: {card['title']}")
+
+def parse_engineer_cards(cursor):
+    parse_card_file(cursor, ENGINEER_TOOL_CARDS, "TOOL", "Tool")
+    parse_card_file(cursor, ENGINEER_PROCESS_CARDS, "PROCESS", "Process")
+    parse_card_file(cursor, MEMORY_GLOBAL_CARDS, "MEMORY_GLOBAL", "Global Memory")
+
 def parse_pods(cursor):
     if not PROJECTS_DIR.exists():
         return
@@ -106,6 +134,22 @@ def parse_pods(cursor):
                 text=True,
             ).splitlines()
             tracked_paths = {REPO_ROOT / path for path in tracked}
+            submodule_paths = subprocess.check_output(
+                ["git", "submodule", "foreach", "--recursive", "--quiet", "echo $sm_path"],
+                cwd=REPO_ROOT,
+                text=True,
+            ).splitlines()
+            for submodule_path in submodule_paths:
+                submodule_path = submodule_path.strip()
+                if not submodule_path:
+                    continue
+                submodule_root = REPO_ROOT / submodule_path
+                manifests = subprocess.check_output(
+                    ["git", "ls-files", "--", "**/frate.json", "frate.json"],
+                    cwd=submodule_root,
+                    text=True,
+                ).splitlines()
+                tracked_paths.update(submodule_root / path for path in manifests if path.strip())
             frate_files = [path for path in frate_files if path in tracked_paths]
         except Exception as e:
             print(f"Warning: could not filter pods to tracked files only: {e}")
@@ -138,14 +182,14 @@ def parse_frust_file(cursor, fr_file, pod_id):
     for match in struct_pattern.finditer(content):
         name = match.group(1)
         body = match.group(0)
-        node_id = f"struct:{name}"
+        node_id = f"{pod_id}:struct:{name}"
         upsert_node(cursor, node_id, "STRUCT", name, body, rel_path)
         upsert_edge(cursor, node_id, pod_id, "DEFINED_IN")
 
     for match in fn_pattern.finditer(content):
         name = match.group(1)
         body = match.group(0) # Just the signature for now
-        node_id = f"fn:{name}"
+        node_id = f"{pod_id}:fn:{name}"
         upsert_node(cursor, node_id, "FUNCTION", name, body, rel_path)
         upsert_edge(cursor, node_id, pod_id, "DEFINED_IN")
 
@@ -155,9 +199,16 @@ def main():
     
     print("Initializing LiteSemRAG Database...")
     init_db(cursor)
+    if "--cards-only" in sys.argv:
+        parse_engineer_cards(cursor)
+        conn.commit()
+        conn.close()
+        print(f"Engineer cards updated successfully at {DB_PATH}")
+        return
     clear_db(cursor)
     
     parse_authoritative_docs(cursor)
+    parse_engineer_cards(cursor)
     parse_wiki(cursor)
     parse_pods(cursor)
     

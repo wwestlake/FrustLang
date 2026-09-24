@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include "FrustTokeniser.h"
+#include "ZoomableEditors.h"
 
 class CodeEditorTab : public juce::Component,
                       private juce::CodeDocument::Listener,
@@ -19,6 +20,10 @@ public:
     juce::String displayName() const;
     void saveFile();
     void saveAs(const juce::File& newFile);
+    void goToLocation(int line, int column);
+    // The file was renamed or moved on disk: follow it, keeping what is in the editor.
+    void retarget(const juce::File& newFile);
+    bool hasUnsavedChanges() const { return isDirty; }
 
 private:
     // juce::CodeDocument::Listener
@@ -36,13 +41,23 @@ private:
     juce::File targetFile;
     juce::CodeDocument document;
     FrustTokeniser tokeniser;
-    juce::CodeEditorComponent editor { document, &tokeniser };
+    ZoomableCodeEditor editor { document, &tokeniser };
     juce::Label statusBar;
+    float editorFontSize = 14.0f;
     juce::Time lastKnownModTime;
     bool isDirty = false;
     bool suppressDirtyTracking = false; // true only while WE are the ones changing document content (load/reload), not the user typing
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(CodeEditorTab)
+};
+
+class ClosableEditorTabs : public juce::TabbedComponent
+{
+public:
+    ClosableEditorTabs() : juce::TabbedComponent(juce::TabbedButtonBar::TabsAtTop) {}
+    std::function<void(int)> onCloseRequested;
+
+    void popupMenuClickOnTab(int tabIndex, const juce::String&) override;
 };
 
 class EditorTabComponent : public juce::Component
@@ -55,10 +70,16 @@ public:
     void resized() override;
 
     void openFile(const juce::File& file);
+    void openFileAt(const juce::File& file, int line, int column);
     void newUntitledTab();
     void saveActiveFile();
     void saveActiveFileAs(const juce::File& newFile);
     void closeActiveTab();
+
+    // From the Project Explorer. A tab whose file (or a folder above it) was renamed or moved follows it; a tab whose file was
+    // deleted closes, unless it has unsaved changes, which are kept (saving writes the file again).
+    void fileMoved(const juce::File& from, const juce::File& to);
+    void fileDeleted(const juce::File& file);
 
     // Empty juce::String/File if there's no active tab.
     juce::String getActiveFileContent() const;
@@ -67,7 +88,10 @@ public:
     std::function<void(const juce::File&)> onActiveFileChanged;
 
 private:
-    juce::TabbedComponent tabs { juce::TabbedButtonBar::TabsAtTop };
+    void addCloseButton(int tabIndex);
+    void closeTab(int tabIndex);
+
+    ClosableEditorTabs tabs;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(EditorTabComponent)
 };

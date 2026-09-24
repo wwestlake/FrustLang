@@ -1,0 +1,16 @@
+// Qualified AOT ABI wrappers. Frate imports manifest exports as namespace::name.
+pub fn frust_json::json_parse(data:String)->JsonParseResult={json_parse(data)}
+pub fn frust_json::json_emit(doc:JsonDocument)->String={json_emit(doc)}
+pub fn frust_json::json_root(doc:JsonDocument)->i64={json_root(doc)}
+pub fn frust_json::json_kind(doc:JsonDocument,idx:i64)->i64={json_kind(doc,idx)}
+pub fn frust_json::json_child_count(doc:JsonDocument,idx:i64)->i64={json_child_count(doc,idx)}
+pub fn frust_json::json_first_child(doc:JsonDocument,idx:i64)->i64={json_first_child(doc,idx)}
+pub fn frust_json::json_next_sibling(doc:JsonDocument,idx:i64)->i64={json_next_sibling(doc,idx)}
+pub fn frust_json::json_array_get(doc:JsonDocument,array:i64,index:i64)->i64={json_array_get(doc,array,index)}
+pub fn frust_json::json_object_get(doc:JsonDocument,object:i64,key:String)->i64={json_object_get(doc,object,key)}
+pub fn frust_json::json_key(doc:JsonDocument,idx:i64)->String={json_key(doc,idx)}
+pub fn frust_json::json_string(doc:JsonDocument,idx:i64)->String={json_string(doc,idx)}
+pub fn frust_json::json_number_text(doc:JsonDocument,idx:i64)->String={json_number_text(doc,idx)}
+pub fn frust_json::json_number(doc:JsonDocument,idx:i64)->f64={json_number(doc,idx)}
+pub fn frust_json::json_bool(doc:JsonDocument,idx:i64)->bool={json_bool(doc,idx)}
+pub fn frust_json::json_is_null(doc:JsonDocument,idx:i64)->bool={json_is_null(doc,idx)}

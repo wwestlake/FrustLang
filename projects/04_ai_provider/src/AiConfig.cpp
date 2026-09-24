@@ -26,7 +26,8 @@ void writeDefaultConfig(const juce::File& file) {
 
 } // namespace
 
-AiConfig::AiConfig(const std::string& configFilePath) {
+AiConfig::AiConfig(const std::string& configFilePath)
+    : configFilePath_(configFilePath) {
     juce::File file(configFilePath);
     if (!file.existsAsFile()) writeDefaultConfig(file);
 
@@ -43,6 +44,54 @@ AiConfig::AiConfig(const std::string& configFilePath) {
         profile.model = p.getProperty("model", {}).toString().toStdString();
         if (!profile.name.empty()) profiles_.push_back(std::move(profile));
     }
+}
+
+bool AiConfig::updateProfileCredentials(const std::string& profileName,
+                                        const std::string& apiKey,
+                                        const std::string& model,
+                                        std::string& errorMessage) {
+    for (auto& profile : profiles_) {
+        if (profile.name != profileName) continue;
+
+        const auto previousApiKey = profile.apiKey;
+        const auto previousModel = profile.model;
+        profile.apiKey = apiKey;
+        profile.model = model;
+
+        if (save(errorMessage)) return true;
+
+        profile.apiKey = previousApiKey;
+        profile.model = previousModel;
+        return false;
+    }
+
+    errorMessage = "AI profile not found: " + profileName;
+    return false;
+}
+
+bool AiConfig::save(std::string& errorMessage) const {
+    juce::Array<juce::var> profileArray;
+    for (const auto& profile : profiles_) {
+        auto* value = new juce::DynamicObject();
+        value->setProperty("name", juce::String(profile.name));
+        value->setProperty("provider", juce::String(profile.provider));
+        value->setProperty("apiKey", juce::String(profile.apiKey));
+        value->setProperty("model", juce::String(profile.model));
+        profileArray.add(juce::var(value));
+    }
+
+    auto* root = new juce::DynamicObject();
+    root->setProperty("profiles", profileArray);
+
+    juce::File file(configFilePath_);
+    if (!file.getParentDirectory().createDirectory()
+        || !file.replaceWithText(juce::JSON::toString(juce::var(root), true))) {
+        errorMessage = "Could not write AI configuration: "
+            + file.getFullPathName().toStdString();
+        return false;
+    }
+
+    return true;
 }
 
 std::unique_ptr<AiProvider> AiConfig::createProvider(const std::string& profileName) const {

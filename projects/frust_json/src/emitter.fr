@@ -1,6 +1,27 @@
 use self::ast;
 
-pub fn json_emit(ast_node: JsonType) -> i64 = {
-    // stub returning a length or status
-    0
+fn emit_byte(buf: String, pos: i64, value: i64) = {
+    let slot:i64=pos/8; let shift:i64=(pos%8)*8; let old:i64=frust_buf_get_i64(buf,slot); let mask:i64=255<<shift;
+    frust_buf_set_i64(buf,slot,(old & (0-mask-1)) | ((value&255)<<shift))
 }
+fn emit_read(buf:String,pos:i64)->i64={ (frust_buf_get_i64(buf,pos/8)>>((pos%8)*8))&255 }
+fn emit_raw(dest:String,at:i64,text:String)->i64={ let n:i64=strlen(text); let mut i:i64=0; while(i<n){emit_byte(dest,at+i,emit_read(text,i));i=i+1;};at+n }
+fn emit_hex(dest:String,at:i64,v:i64)= { let d:i64=v&15; if(d<10){emit_byte(dest,at,48+d)}else{emit_byte(dest,at,87+d)} }
+
+fn emit_string(dest:String,at:i64,text:String)->i64={
+    let mut w:i64=at; emit_byte(dest,w,34);w=w+1; let n:i64=strlen(text);let mut i:i64=0;
+    while(i<n){let c:i64=emit_read(text,i);if(c==34){emit_byte(dest,w,92);emit_byte(dest,w+1,34);w=w+2;}else if(c==92){emit_byte(dest,w,92);emit_byte(dest,w+1,92);w=w+2;}else if(c==8){emit_byte(dest,w,92);emit_byte(dest,w+1,98);w=w+2;}else if(c==12){emit_byte(dest,w,92);emit_byte(dest,w+1,102);w=w+2;}else if(c==10){emit_byte(dest,w,92);emit_byte(dest,w+1,110);w=w+2;}else if(c==13){emit_byte(dest,w,92);emit_byte(dest,w+1,114);w=w+2;}else if(c==9){emit_byte(dest,w,92);emit_byte(dest,w+1,116);w=w+2;}else if(c<32){emit_byte(dest,w,92);emit_byte(dest,w+1,117);emit_byte(dest,w+2,48);emit_byte(dest,w+3,48);emit_hex(dest,w+4,c>>4);emit_hex(dest,w+5,c);w=w+6;}else{emit_byte(dest,w,c);w=w+1;};i=i+1;};emit_byte(dest,w,34);w+1
+}
+
+fn emit_value(doc:JsonDocument,idx:i64,dest:String,at:i64)->i64={
+    let k:i64=frust_buf_get_i64(doc.kinds,idx);
+    if(k==3){emit_string(dest,at,frust_buf_get_ptr(doc.values,idx))}
+    else if(k==4){emit_raw(dest,at,frust_buf_get_ptr(doc.values,idx))}
+    else if(k==5){if(frust_buf_get_i64(doc.values,idx)==1){emit_raw(dest,at,"true")}else{emit_raw(dest,at,"false")}}
+    else if(k==6){emit_raw(dest,at,"null")}
+    else if(k==2){let mut w:i64=at;emit_byte(dest,w,91);w=w+1;let mut child:i64=frust_buf_get_i64(doc.first_children,idx);let count:i64=frust_buf_get_i64(doc.child_counts,idx);let mut i:i64=0;while(i<count){if(i>0){emit_byte(dest,w,44);w=w+1;};w=emit_value(doc,child,dest,w);child=frust_buf_get_i64(doc.next_siblings,child);i=i+1;};emit_byte(dest,w,93);w+1}
+    else {let mut w:i64=at;emit_byte(dest,w,123);w=w+1;let mut child:i64=frust_buf_get_i64(doc.first_children,idx);let count:i64=frust_buf_get_i64(doc.child_counts,idx);let mut i:i64=0;while(i<count){if(i>0){emit_byte(dest,w,44);w=w+1;};w=emit_string(dest,w,frust_buf_get_ptr(doc.keys,child));emit_byte(dest,w,58);w=w+1;w=emit_value(doc,child,dest,w);child=frust_buf_get_i64(doc.next_siblings,child);i=i+1;};emit_byte(dest,w,125);w+1}
+}
+
+// Caller owns the returned allocation and may release it with free.
+pub fn json_emit(doc:JsonDocument)->String={let capacity:i64=strlen(doc.source)*6+32;let dest:String=malloc(capacity);memset(dest,0,capacity);emit_value(doc,doc.root,dest,0);dest}

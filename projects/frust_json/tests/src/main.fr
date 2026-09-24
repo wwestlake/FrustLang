@@ -1,0 +1,47 @@
+use frust_json;
+extern fn strcmp(a:String,b:String)->i32;
+fn test_eq(a:String,b:String)->bool={strcmp(a,b)==0}
+
+fn good_nested() -> i64 = {
+    let r = frust_json::json_parse("{\"name\":\"Ada\",\"items\":[true,null,-12.5e2],\"escaped\":\"line\\n\\t\\\"ok\\\"\",\"music\":\"\\uD834\\uDD1E\"}");
+    if (!r.ok) { 10 }
+    else {
+        let root: i64 = frust_json::json_root(r.document);
+        let name: i64 = frust_json::json_object_get(r.document, root, "name");
+        let items: i64 = frust_json::json_object_get(r.document, root, "items");
+        if (!test_eq(frust_json::json_string(r.document, name), "Ada")) { 11 }
+        else if (frust_json::json_child_count(r.document, items) != 3) { 12 }
+        else if (!frust_json::json_bool(r.document, frust_json::json_array_get(r.document, items, 0))) { 13 }
+        else if (!frust_json::json_is_null(r.document, frust_json::json_array_get(r.document, items, 1))) { 14 }
+        else if (frust_json::json_number(r.document, frust_json::json_array_get(r.document, items, 2)) != -1250.0) { 15 }
+        else {
+            let emitted: String = frust_json::json_emit(r.document);
+            let again = frust_json::json_parse(emitted);
+            if (!again.ok) { 16 }
+            else if (!test_eq(frust_json::json_emit(again.document), emitted)) { 17 }
+            else { 0 }
+        }
+    }
+}
+
+fn malformed() -> i64 = {
+    let a = frust_json::json_parse("{\"a\":1,}");
+    let b = frust_json::json_parse("01");
+    let c = frust_json::json_parse("\"\\uD800x\"");
+    if (a.ok) { 20 } else if (b.ok) { 21 } else if (c.ok) { 22 }
+    else if (a.error.offset <= 0) { 23 } else if (a.error.line != 1) { 24 } else { 0 }
+}
+
+fn scalars() -> i64 = {
+    let a = frust_json::json_parse("false");
+    let b = frust_json::json_parse("3.25E+2");
+    let c = frust_json::json_parse("[]");
+    if (!a.ok) { 30 } else if (frust_json::json_bool(a.document, a.document.root)) { 31 }
+    else if (frust_json::json_number(b.document, b.document.root) != 325.0) { 32 }
+    else if (frust_json::json_child_count(c.document, c.document.root) != 0) { 33 } else { 0 }
+}
+
+entry fn main() -> i64 = {
+    let a: i64 = good_nested();
+    if (a != 0) { a } else { let b: i64 = malformed(); if (b != 0) { b } else { scalars() } }
+}

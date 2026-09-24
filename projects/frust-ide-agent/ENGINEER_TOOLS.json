@@ -1,0 +1,298 @@
+{
+  "schemaVersion": 1,
+  "tools": [
+    {
+      "name": "workspace_list",
+      "description": "List files and directories in a folder open in the FrustIDE workspace, including read-only reference folders.",
+      "usage": "Use before assuming the project layout or choosing a file to inspect. An absolute path outside the open workspace asks the user to allow one read or open it as a read-only reference.",
+      "access": "observe",
+      "tokens": ["files", "folders", "tree", "project", "list"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string", "description": "Path relative to the writable project, or an absolute path to an open/read-approved reference.", "default": "." },
+          "recursive": { "type": "boolean", "default": false },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 200 }
+        }
+      }
+    },
+    {
+      "name": "workspace_read",
+      "description": "Read a UTF-8 file from the writable project or an open read-only reference, with line numbers and optional line bounds.",
+      "usage": "Read specifications and surrounding source before proposing or making an edit. An absolute external path asks the user before it is read unless Full Access is selected.",
+      "access": "observe",
+      "tokens": ["read", "source", "specification", "documentation", "lines"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string", "description": "Path relative to the writable project, or an absolute path to an open/read-approved reference." },
+          "start_line": { "type": "integer", "minimum": 1, "default": 1 },
+          "end_line": { "type": "integer", "minimum": 1 }
+        },
+        "required": ["path"]
+      }
+    },
+    {
+      "name": "workspace_search",
+      "description": "Search UTF-8 text files in the writable project or an open read-only reference and return matching paths, lines, and excerpts.",
+      "usage": "Use to find definitions, references, requirements, and relevant documentation before editing. An absolute external path asks the user before it is searched unless Full Access is selected.",
+      "access": "observe",
+      "tokens": ["search", "find", "references", "definitions", "specifications"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "query": { "type": "string", "minLength": 1 },
+          "path": { "type": "string", "description": "Path relative to the writable project, or an absolute path to an open/read-approved reference.", "default": "." },
+          "file_pattern": { "type": "string", "default": "*" },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "registry_search",
+      "description": "List or search the public Frate pod registry and return published pod metadata and exports.",
+      "usage": "Use before inventing a dependency or asking the user which pods exist. An empty query lists all published pods; a query filters pod names by substring.",
+      "access": "observe",
+      "tokens": ["registry", "pod", "package", "dependency", "exports", "available", "search"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "query": { "type": "string", "description": "Optional case-insensitive pod-name substring. Empty lists all pods.", "default": "" },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 }
+        }
+      }
+    },
+    {
+      "name": "workspace_create_directory",
+      "description": "Create a directory inside the project currently open in FrustIDE, including missing parents.",
+      "usage": "Use to establish a requested project or module layout. It succeeds when the directory already exists.",
+      "access": "workspace",
+      "tokens": ["create", "directory", "folder", "project", "module"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string", "description": "Path relative to the open project." }
+        },
+        "required": ["path"]
+      }
+    },
+    {
+      "name": "workspace_create_file",
+      "description": "Create a new UTF-8 source, specification, or documentation file without overwriting an existing file.",
+      "usage": "Use for new files. If the file exists, read it and make a focused edit instead.",
+      "access": "workspace",
+      "tokens": ["create", "file", "write", "code", "documentation"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string", "description": "Path relative to the open project." },
+          "content": { "type": "string" }
+        },
+        "required": ["path", "content"]
+      }
+    },
+    {
+      "name": "workspace_write_file",
+      "description": "Rewrite the complete contents of an existing UTF-8 project file using an optimistic revision check.",
+      "usage": "Use after reading the file when a full-file repair is safer than a sequence of exact replacements. Pass the SHA-256 value returned by workspace_read; the write is rejected if the file changed afterward.",
+      "access": "workspace",
+      "tokens": ["write", "rewrite", "repair", "overwrite", "code", "documentation"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string", "description": "Path relative to the open project." },
+          "content": { "type": "string" },
+          "expected_sha256": { "type": "string", "description": "SHA-256 revision returned by the most recent workspace_read of this file.", "pattern": "^[0-9a-fA-F]{64}$" }
+        },
+        "required": ["path", "content", "expected_sha256"]
+      }
+    },
+    {
+      "name": "workspace_replace_text",
+      "description": "Replace exact text in an existing UTF-8 project file.",
+      "usage": "Use for focused edits after reading the file. By default the old text must occur exactly once.",
+      "access": "workspace",
+      "tokens": ["edit", "replace", "patch", "code", "documentation"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string", "description": "Path relative to the open project." },
+          "old_text": { "type": "string", "minLength": 1 },
+          "new_text": { "type": "string" },
+          "replace_all": { "type": "boolean", "default": false }
+        },
+        "required": ["path", "old_text", "new_text"]
+      }
+    },
+    {
+      "name": "workspace_check_frust",
+      "description": "Compile-check a Frust source file directly from project content and return structured compiler diagnostics without creating temporary files.",
+      "usage": "Use after editing Frust code. Fix reported errors and repeat until the check passes before completing the task.",
+      "access": "observe",
+      "tokens": ["compile", "check", "verify", "diagnostics", "errors", "warnings"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string", "description": "Frust source path relative to the open project." }
+        },
+        "required": ["path"]
+      }
+    },
+    {
+      "name": "run_command",
+      "description": "Run a command in PowerShell inside the open project: compile, build and test any language (C++ with CMake or MSBuild, C# and F# with dotnet, Rust with cargo, Frust with frate), run a script, or look at the project with git. The host judges every command first: some run at once, some are shown to the user to approve, some are refused with the reason. Shell-based source rewriting is refused; use the workspace editing tools. It returns the exit code and the output (the start and the end of long output, with the full log kept).",
+      "usage": "Use it to build and test after changing code in any language other than Frust, and repair what the compiler reports until the build and tests pass. On this machine builds are single-core and name their target: use 'cmake --build <dir> --config Debug --target <name>', 'msbuild <project> /t:<target> /p:Configuration=Debug' (never /m), and 'dotnet build' or 'dotnet test' (the host adds -m:1). Never build or install LLVM and never run vcpkg install. A program that waits for input or keeps running (a REPL, a server, a game) never finishes here, because this shell has no keyboard or screen: open it with launch_program instead. Say in 'reason' what the command is for, so the user can decide quickly. If the user does not allow a command, do not try to get around it; ask with agent_request_user.",
+      "access": "workspace",
+      "tokens": ["run", "command", "shell", "powershell", "terminal", "build", "compile", "test", "cmake", "msbuild", "dotnet", "cargo", "git", "c++", "csharp", "fsharp", "rust"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "command": { "type": "string", "description": "The PowerShell command to run." },
+          "cwd": { "type": "string", "description": "The folder to run it in, relative to the open project. Default: the project root." },
+          "reason": { "type": "string", "description": "What the command is for, in a sentence the user can read." },
+          "timeout_seconds": { "type": "integer", "minimum": 5, "maximum": 1800, "description": "Stop it after this long. Default 120, or 900 for a build or test." }
+        },
+        "required": ["command", "reason"]
+      }
+    },
+    {
+      "name": "launch_program",
+      "description": "Open a program in its own visible window on the user's screen, the way the user would start it, and return at once: a console program (a REPL, a text game, a menu) gets its own console the user can type into; a windowed app shows its window. Use this, not run_command, for anything that waits for input or keeps running. The user is asked first.",
+      "usage": "Use when the user wants to try the program, or when it is interactive or long-running (a REPL, a server, a game). Give the command that starts it, for example 'dotnet run' or '.\\bin\\Debug\\net9.0\\App.exe', and the folder. You cannot see the window: ask the user what it shows (agent_request_user), or check behaviour with builds and tests. Close it with stop_program when it is no longer needed.",
+      "access": "workspace",
+      "tokens": ["launch", "open", "start", "run", "program", "app", "window", "repl", "interactive", "console", "try"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "command": { "type": "string", "description": "The PowerShell command that starts the program." },
+          "cwd": { "type": "string", "description": "The folder to start it in, relative to the open project. Default: the project root." },
+          "reason": { "type": "string", "description": "Why the user should see it, in a sentence." }
+        },
+        "required": ["command", "reason"]
+      }
+    },
+    {
+      "name": "stop_program",
+      "description": "Close a program opened with launch_program (and everything it started), or with no process_id, list the ones still running.",
+      "usage": "Use when a program you opened is no longer needed, or before rebuilding it (a running program can lock its own files).",
+      "access": "workspace",
+      "tokens": ["stop", "close", "kill", "end", "program", "window"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "process_id": { "type": "integer", "description": "The process id launch_program reported. Leave out to list what is running." }
+        }
+      }
+    },
+    {
+      "name": "user_test",
+      "description": "Open a program in its own window for the user to try, tell them what to check, and wait for their verdict: a card in the assistant panel with Pass, Fail and a comment box. Their answer comes back to you. A Pass is verification of the task; a Fail, with their comment, is a bug report.",
+      "usage": "Use when the result can only be judged by a person using the program: a REPL, a game, a window, anything interactive. Give the command that starts it, and in 'instructions' exactly what to try and what they should see, for example 'Type help and check it lists the commands; type exit and check it quits.' After a Fail, fix what they describe, build, and test again.",
+      "access": "workspace",
+      "tokens": ["test", "try", "user", "verify", "check", "pass", "fail", "feedback", "manual", "repl", "interactive"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "command": { "type": "string", "description": "The PowerShell command that starts the program." },
+          "cwd": { "type": "string", "description": "The folder to start it in, relative to the open project. Default: the project root." },
+          "instructions": { "type": "string", "description": "What the user should try, and what they should see if it works." },
+          "reason": { "type": "string", "description": "Why it needs a person to test it, in a sentence." }
+        },
+        "required": ["command", "instructions", "reason"]
+      }
+    },
+    {
+      "name": "plugin_prepare_release_packet",
+      "description": "Create the review packet for a FrustIDE plugin before community publication: release checklist, registry metadata, permission summary, capability summary, and forum announcement draft.",
+      "usage": "Use after a plugin has been implemented or substantially designed and the user is considering sharing it. This does not publish. It prepares the artifacts the user must review before final approval: PLUGIN_RELEASE_PACKET.md, REGISTRY_METADATA.json, and FORUM_ANNOUNCEMENT_DRAFT.md.",
+      "access": "workspace",
+      "tokens": ["plugin", "release", "publish", "registry", "forum", "announcement", "community", "metadata", "permissions", "capabilities"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "plugin_name": { "type": "string", "minLength": 1, "description": "Short package/plugin name." },
+          "title": { "type": "string", "description": "Human-facing plugin title. Defaults to plugin_name." },
+          "version": { "type": "string", "default": "0.1.0" },
+          "summary": { "type": "string", "minLength": 1, "description": "What the plugin does and why users would want it." },
+          "plugin_directory": { "type": "string", "description": "Where to write the packet, relative to the open project. Defaults to plugins/<plugin_name>." },
+          "registry_name": { "type": "string", "description": "Registry package name. Defaults to a safe form of plugin_name." },
+          "forum_category": { "type": "string", "default": "Frust Plugins" },
+          "permissions": { "type": "array", "items": { "type": "string" } },
+          "capabilities": { "type": "array", "items": { "type": "string" } },
+          "files": { "type": "array", "items": { "type": "string" }, "description": "Source, manifest, cards, tests, and docs that belong to the release." },
+          "tests": { "type": "array", "items": { "type": "string" }, "description": "Verification evidence already passed or still required." },
+          "approval_notes": { "type": "string", "description": "Any final user-approval notes or constraints." }
+        },
+        "required": ["plugin_name", "summary"]
+      }
+    },
+    {
+      "name": "memory_list_cards",
+      "description": "List durable LiteSemRAG memory cards that steer the Virtual Engineer across project or global scope.",
+      "usage": "Use before changing memory, or when the user asks what you remember. Project memory applies only to the open workspace. Global memory applies across sessions and projects.",
+      "access": "observe",
+      "tokens": ["memory", "remember", "cards", "rules", "preferences", "global", "project"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "scope": { "type": "string", "enum": ["project", "global", "both"], "default": "project" },
+          "include_inactive": { "type": "boolean", "default": false }
+        }
+      }
+    },
+    {
+      "name": "memory_upsert_card",
+      "description": "Create or update a durable LiteSemRAG memory card from an explicit user rule, preference, workflow, or project convention.",
+      "usage": "Use only for durable memory the user asked you to remember or clearly approved. Prefer project scope for project-specific rules. Use global scope only for cross-session user preferences or identity/personality rules. The card is loaded after ordinary process cards.",
+      "access": "workspace",
+      "tokens": ["memory", "remember", "card", "create", "update", "preference", "rule", "personality"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "scope": { "type": "string", "enum": ["project", "global"], "default": "project" },
+          "id": { "type": "string", "description": "Stable card id. If omitted the host derives one from the title." },
+          "kind": { "type": "string", "default": "user_rule" },
+          "title": { "type": "string", "minLength": 1 },
+          "tokens": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+          "priority": { "type": "integer", "minimum": 0, "maximum": 100, "default": 75 },
+          "status": { "type": "string", "enum": ["active", "inactive"], "default": "active" },
+          "text": { "type": "string", "minLength": 1 }
+        },
+        "required": ["title", "text"]
+      }
+    },
+    {
+      "name": "memory_delete_card",
+      "description": "Delete a durable LiteSemRAG memory card by id.",
+      "usage": "Use when the user explicitly says a remembered rule or preference is wrong, obsolete, or should be forgotten. Prefer listing cards first if the id is not known.",
+      "access": "workspace",
+      "tokens": ["memory", "forget", "delete", "card", "remove", "obsolete"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "scope": { "type": "string", "enum": ["project", "global"], "default": "project" },
+          "id": { "type": "string", "minLength": 1 }
+        },
+        "required": ["id"]
+      }
+    }
+  ]
+}
