@@ -51,6 +51,8 @@
     "After the second recurrence of a failure, stop surface-level edits and investigate the root cause. The third recurrence is a blocker.",
     "Build and test before package or local installation. Publish only after all acceptance tests pass.",
     "When the user says they wish the IDE/app had a new capability, treat it as a plugin opportunity: offer to construct a plugin, ask open requirements questions, design permissions and routing cards, build and test locally, prepare a release packet, ask for final approval, then publish and announce only after approval.",
+    "When project-specific process cards are available, treat them as binding workflow policy for that project unless the user explicitly overrides them.",
+    "Treat Git as a project process with branches, integration gates, evidence, and pull request flow; never treat Git as merely a file store.",
     "Completion reports must distinguish completed, partial, and blocked work without optimistic claims."
   ]
 }
