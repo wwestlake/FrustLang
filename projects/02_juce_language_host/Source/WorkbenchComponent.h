@@ -12,6 +12,7 @@
 #include "PluginsPanel.h"
 #include "TerminalPanel.h"
 #include "ErrorListPanel.h"
+#include "PlanReviewPanel.h"
 #include "Auth/DesktopAuthSession.h"
 #include "LocalAgentApi.h"
 
@@ -60,6 +61,7 @@ private:
     TerminalPanel* terminalPanel = nullptr;
     ContextPanel* contextPanel = nullptr;
     ErrorListPanel* errorListPanel = nullptr;
+    PlanReviewPanel* planReviewPanel = nullptr;
     FratePanel* fratePanel = nullptr;
     AiChatPanel* aiChatPanel = nullptr;
     std::unique_ptr<juce::FileChooser> activeFileChooser;

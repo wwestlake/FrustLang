@@ -1,5 +1,4 @@
 #include "EngineerTools.h"
-
 #include <CompilerApi.h>
 #include <frate/FrateCache.h>
 #include <frate/FrateConfig.h>
@@ -55,6 +54,54 @@ juce::String contentHash(const juce::String& text)
 EngineerTools::Result failure(const juce::String& message)
 {
     return { false, false, "Error: " + message };
+}
+
+juce::String safeIdPart(juce::String value)
+{
+    value = value.toLowerCase().retainCharacters("abcdefghijklmnopqrstuvwxyz0123456789_ -");
+    value = value.replaceCharacter(' ', '-').replace("--", "-").trimCharactersAtStart("-").trimCharactersAtEnd("-");
+    return value.isNotEmpty() ? value : juce::Uuid().toString().substring(0, 8);
+}
+
+juce::StringArray stringArrayProperty(const juce::var& object, const juce::Identifier& name)
+{
+    juce::StringArray values;
+    if (auto* array = object.getProperty(name, {}).getArray())
+        for (const auto& value : *array)
+            if (value.toString().trim().isNotEmpty())
+                values.add(value.toString().trim());
+    return values;
+}
+
+juce::Array<juce::var> stringArrayJson(const juce::StringArray& values)
+{
+    juce::Array<juce::var> result;
+    for (const auto& value : values)
+        result.add(value);
+    return result;
+}
+
+juce::String markdownList(const juce::StringArray& values, const juce::String& fallback)
+{
+    if (values.isEmpty())
+        return "- " + fallback + "\n";
+    juce::String out;
+    for (const auto& value : values)
+        out << "- " << value << "\n";
+    return out;
+}
+
+juce::File globalMemoryCardsFile()
+{
+    return juce::File(FRUST_REPO_ROOT_DIR)
+        .getChildFile("projects")
+        .getChildFile("frust-ide-agent")
+        .getChildFile("MEMORY_GLOBAL_CARDS.jsonl");
+}
+
+juce::File projectMemoryCardsFile(const juce::File& projectRoot)
+{
+    return projectRoot.getChildFile(".frusty").getChildFile("MEMORY_PROJECT_CARDS.jsonl");
 }
 }
 
@@ -237,6 +284,10 @@ EngineerTools::Result EngineerTools::execute(const ai_provider::ToolCall& call) 
     if (name == "launch_program") return launchProgram(arguments);
     if (name == "stop_program") return stopProgram(arguments);
     if (name == "user_test") return userTest(arguments);
+    if (name == "plugin_prepare_release_packet") return preparePluginReleasePacket(arguments);
+    if (name == "memory_list_cards") return listMemoryCards(arguments);
+    if (name == "memory_upsert_card") return upsertMemoryCard(arguments);
+    if (name == "memory_delete_card") return deleteMemoryCard(arguments);
     return failure("Unknown tool: " + name);
 }
 
@@ -711,4 +762,250 @@ EngineerTools::Result EngineerTools::userTest(const juce::var& arguments) const
         default:
             return failure("The user did not give a verdict (the run was stopped).");
     }
+}
+
+EngineerTools::Result EngineerTools::preparePluginReleasePacket(const juce::var& arguments) const
+{
+    const auto pluginName = stringProperty(arguments, "plugin_name").trim();
+    const auto summary = stringProperty(arguments, "summary").trim();
+    if (pluginName.isEmpty()) return failure("plugin_name is required.");
+    if (summary.isEmpty()) return failure("summary is required.");
+
+    const auto safeName = safeIdPart(pluginName).replaceCharacter('-', '_');
+    auto pluginDirectory = stringProperty(arguments, "plugin_directory").trim();
+    if (pluginDirectory.isEmpty())
+        pluginDirectory = "plugins/" + safeName;
+
+    juce::String error;
+    const auto directory = resolveProjectPath(pluginDirectory, PathPurpose::write, error);
+    if (error.isNotEmpty()) return failure(error);
+    const auto createResult = directory.createDirectory();
+    if (createResult.failed()) return failure(createResult.getErrorMessage());
+
+    const auto title = stringProperty(arguments, "title", pluginName).trim();
+    const auto version = stringProperty(arguments, "version", "0.1.0").trim();
+    const auto registryName = stringProperty(arguments, "registry_name", safeName).trim();
+    const auto forumCategory = stringProperty(arguments, "forum_category", "Frust Plugins").trim();
+    const auto permissions = stringArrayProperty(arguments, "permissions");
+    const auto capabilities = stringArrayProperty(arguments, "capabilities");
+    const auto filesChanged = stringArrayProperty(arguments, "files");
+    const auto tests = stringArrayProperty(arguments, "tests");
+    const auto approvalNotes = stringProperty(arguments, "approval_notes",
+        "User must approve final publication after reviewing this packet.").trim();
+
+    auto* metadata = new juce::DynamicObject();
+    metadata->setProperty("name", registryName);
+    metadata->setProperty("title", title);
+    metadata->setProperty("version", version);
+    metadata->setProperty("summary", summary);
+    metadata->setProperty("permissions", stringArrayJson(permissions));
+    metadata->setProperty("capabilities", stringArrayJson(capabilities));
+    metadata->setProperty("releasePacketGeneratedAt", juce::Time::getCurrentTime().toISO8601(true));
+    metadata->setProperty("requiresFinalUserApproval", true);
+
+    juce::String checklist;
+    checklist << "# " << title << " Plugin Release Packet\n\n"
+              << "## Summary\n\n" << summary << "\n\n"
+              << "## Registry Metadata\n\n"
+              << "- Package: `" << registryName << "`\n"
+              << "- Version: `" << version << "`\n"
+              << "- Category: `" << forumCategory << "`\n\n"
+              << "## Capabilities\n\n" << markdownList(capabilities, "No capabilities recorded yet.") << "\n"
+              << "## Permissions\n\n" << markdownList(permissions, "No special permissions declared.") << "\n"
+              << "## Files\n\n" << markdownList(filesChanged, "Add source, manifest, cards, tests, and docs before publication.") << "\n"
+              << "## Verification\n\n" << markdownList(tests, "Build, load, smoke test, and user acceptance still need to be recorded.") << "\n"
+              << "## Publication Gate\n\n"
+              << "- [ ] Source and manifest are complete.\n"
+              << "- [ ] LiteSemRAG capability/usage cards are included.\n"
+              << "- [ ] Permissions are declared and no secrets or local-only paths are present.\n"
+              << "- [ ] Build/load/smoke tests passed.\n"
+              << "- [ ] Registry metadata reviewed.\n"
+              << "- [ ] Forum announcement reviewed.\n"
+              << "- [ ] User gave final approval to publish.\n\n"
+              << "## Approval Notes\n\n" << approvalNotes << "\n\n"
+              << "## Publish Commands\n\n"
+              << "Run only after final user approval and successful verification:\n\n"
+              << "```powershell\n"
+              << "frate package\n"
+              << "frate publish\n"
+              << "```\n";
+
+    juce::String forum;
+    forum << "# New Frust Plugin: " << title << "\n\n"
+          << "A new FrustIDE plugin is available in the registry: `" << registryName << "`.\n\n"
+          << "## What It Does\n\n" << summary << "\n\n"
+          << "## Capabilities\n\n" << markdownList(capabilities, "Capability details will be filled in before posting.") << "\n"
+          << "## Permissions\n\n" << markdownList(permissions, "No special permissions declared.") << "\n"
+          << "## Install\n\n"
+          << "Use the FrustIDE plugin browser or Frate registry tooling to install `" << registryName << "`.\n\n"
+          << "## Notes\n\n"
+          << "This post should be reviewed by the user before it is published to the community forum.\n";
+
+    const auto packetFile = directory.getChildFile("PLUGIN_RELEASE_PACKET.md");
+    const auto metadataFile = directory.getChildFile("REGISTRY_METADATA.json");
+    const auto forumFile = directory.getChildFile("FORUM_ANNOUNCEMENT_DRAFT.md");
+
+    if (!packetFile.replaceWithText(checklist))
+        return failure("Could not write " + packetFile.getFullPathName());
+    if (!metadataFile.replaceWithText(juce::JSON::toString(juce::var(metadata), true)))
+        return failure("Could not write " + metadataFile.getFullPathName());
+    if (!forumFile.replaceWithText(forum))
+        return failure("Could not write " + forumFile.getFullPathName());
+
+    juce::String out;
+    out << "Prepared plugin release packet in " << displayPath(directory) << "\n"
+        << "- " << displayPath(packetFile) << "\n"
+        << "- " << displayPath(metadataFile) << "\n"
+        << "- " << displayPath(forumFile) << "\n"
+        << "Show these to the user and get final approval before running any publish command or posting the forum announcement.";
+    return { true, true, out };
+}
+
+EngineerTools::Result EngineerTools::listMemoryCards(const juce::var& arguments) const
+{
+    const auto scope = stringProperty(arguments, "scope", "project").toLowerCase();
+    const auto includeInactive = boolProperty(arguments, "include_inactive", false);
+    juce::Array<juce::File> files;
+    if (scope == "project" || scope == "both")
+        files.add(projectMemoryCardsFile(root));
+    if (scope == "global" || scope == "both")
+        files.add(globalMemoryCardsFile());
+    if (files.isEmpty())
+        return failure("scope must be project, global, or both.");
+
+    auto* out = new juce::DynamicObject();
+    out->setProperty("scope", scope);
+    juce::Array<juce::var> cards;
+    for (const auto& file : files)
+    {
+        juce::StringArray lines;
+        if (file.existsAsFile())
+            lines.addLines(file.loadFileAsString());
+        for (const auto& line : lines)
+        {
+            const auto parsed = juce::JSON::parse(line.trim());
+            if (!parsed.isObject())
+                continue;
+            const auto status = parsed.getProperty("status", "active").toString();
+            if (!includeInactive && status.isNotEmpty() && !status.equalsIgnoreCase("active"))
+                continue;
+            auto* card = new juce::DynamicObject();
+            card->setProperty("id", parsed.getProperty("id", {}));
+            card->setProperty("scope", parsed.getProperty("scope", file == globalMemoryCardsFile() ? "global" : "project"));
+            card->setProperty("kind", parsed.getProperty("kind", {}));
+            card->setProperty("title", parsed.getProperty("title", {}));
+            card->setProperty("priority", parsed.getProperty("priority", 50));
+            card->setProperty("status", status);
+            card->setProperty("source", file.getFullPathName());
+            cards.add(juce::var(card));
+        }
+    }
+    out->setProperty("cards", cards);
+    out->setProperty("count", cards.size());
+    return { true, false, juce::JSON::toString(juce::var(out), true) };
+}
+
+EngineerTools::Result EngineerTools::upsertMemoryCard(const juce::var& arguments) const
+{
+    const auto scope = stringProperty(arguments, "scope", "project").toLowerCase();
+    if (scope != "project" && scope != "global")
+        return failure("scope must be project or global.");
+    if (scope == "global" && access != AccessLevel::full)
+        return failure("Global memory changes require Full Access.");
+    if (scope == "project" && (access == AccessLevel::observe || !allowWrites))
+        return failure("Project memory changes require Workspace or Full Access.");
+
+    const auto title = stringProperty(arguments, "title").trim();
+    const auto text = stringProperty(arguments, "text").trim();
+    if (title.isEmpty() || text.isEmpty())
+        return failure("title and text are required.");
+
+    const auto kind = stringProperty(arguments, "kind", "user_rule").trim();
+    const auto id = stringProperty(arguments, "id").trim().isNotEmpty()
+        ? stringProperty(arguments, "id").trim()
+        : "memory." + scope + "." + safeIdPart(title);
+    const auto file = scope == "global" ? globalMemoryCardsFile()
+                                        : projectMemoryCardsFile(root);
+    if (!file.getParentDirectory().createDirectory())
+        return failure("Could not create memory folder: " + file.getParentDirectory().getFullPathName());
+
+    juce::StringArray existing;
+    if (file.existsAsFile())
+        existing.addLines(file.loadFileAsString());
+
+    auto* card = new juce::DynamicObject();
+    card->setProperty("id", id);
+    card->setProperty("scope", scope);
+    card->setProperty("kind", kind);
+    card->setProperty("title", title);
+    card->setProperty("tokens", stringArrayJson(stringArrayProperty(arguments, "tokens")));
+    card->setProperty("priority", juce::jlimit(0, 100, intProperty(arguments, "priority", 75)));
+    card->setProperty("status", stringProperty(arguments, "status", "active"));
+    card->setProperty("source", "user-approved-memory");
+    card->setProperty("updated_at", juce::Time::getCurrentTime().toISO8601(true));
+    card->setProperty("text", text);
+
+    bool replaced = false;
+    juce::String output;
+    for (const auto& line : existing)
+    {
+        const auto parsed = juce::JSON::parse(line.trim());
+        if (parsed.isObject() && parsed.getProperty("id", {}).toString() == id)
+        {
+            output << juce::JSON::toString(juce::var(card), true) << "\n";
+            replaced = true;
+        }
+        else if (line.trim().isNotEmpty())
+        {
+            output << line.trim() << "\n";
+        }
+    }
+    if (!replaced)
+        output << juce::JSON::toString(juce::var(card), true) << "\n";
+
+    if (!file.replaceWithText(output))
+        return failure("Could not write memory file: " + file.getFullPathName());
+
+    return { true, true, juce::String(replaced ? "Updated " : "Created ")
+        + scope + " memory card " + id + " in " + file.getFullPathName() };
+}
+
+EngineerTools::Result EngineerTools::deleteMemoryCard(const juce::var& arguments) const
+{
+    const auto scope = stringProperty(arguments, "scope", "project").toLowerCase();
+    const auto id = stringProperty(arguments, "id").trim();
+    if (scope != "project" && scope != "global")
+        return failure("scope must be project or global.");
+    if (id.isEmpty())
+        return failure("id is required.");
+    if (scope == "global" && access != AccessLevel::full)
+        return failure("Global memory changes require Full Access.");
+    if (scope == "project" && (access == AccessLevel::observe || !allowWrites))
+        return failure("Project memory changes require Workspace or Full Access.");
+
+    const auto file = scope == "global" ? globalMemoryCardsFile()
+                                        : projectMemoryCardsFile(root);
+    if (!file.existsAsFile())
+        return failure("Memory file does not exist: " + file.getFullPathName());
+
+    juce::StringArray lines;
+    lines.addLines(file.loadFileAsString());
+    juce::String output;
+    bool removed = false;
+    for (const auto& line : lines)
+    {
+        const auto parsed = juce::JSON::parse(line.trim());
+        if (parsed.isObject() && parsed.getProperty("id", {}).toString() == id)
+        {
+            removed = true;
+            continue;
+        }
+        if (line.trim().isNotEmpty())
+            output << line.trim() << "\n";
+    }
+    if (!removed)
+        return failure("No memory card found with id: " + id);
+    if (!file.replaceWithText(output))
+        return failure("Could not write memory file: " + file.getFullPathName());
+    return { true, true, "Deleted " + scope + " memory card " + id + " from " + file.getFullPathName() };
 }

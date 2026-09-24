@@ -14,6 +14,8 @@ juce::String AgentModeRouter::modeName(AgentMode mode)
     if (mode == AgentMode::execute) return "execute";
     if (mode == AgentMode::review) return "review";
     if (mode == AgentMode::answer) return "answer";
+    if (mode == AgentMode::conversation) return "conversation";
+    if (mode == AgentMode::architect) return "architect";
     return "auto";
 }
 
@@ -51,16 +53,19 @@ std::vector<ai_provider::ChatMessage> AgentModeRouter::messagesFor(
     const juce::String system =
         "You route one user request for a coding assistant. Do not answer the request and do not use tools. "
         "Choose exactly one mode:\n"
-        "- answer: conversation, explanation, a question about prior behavior, or a request needing no project inspection.\n"
+        "- conversation: casual chat, praise, personality, requirements discussion, brainstorming, or exploratory back-and-forth where no project inspection is needed yet.\n"
+        "- architect: abstract product, business, domain, workflow, requirements, use-case, constraint, risk, trust, or system-shape discussion that should stay above implementation.\n"
+        "- answer: a direct factual explanation, a question about prior behavior, or a request needing no project inspection.\n"
         "- review: inspect, research, read, diagnose, compare, or report without changing project files.\n"
         "- plan: produce or revise a concrete implementation plan without changing project files.\n"
         "- execute: create, edit, delete, build, run, test, launch, or otherwise act on the project.\n"
         "Choose execute when inspection or planning is requested as preparation for an implementation in the same request; "
         "the requested final outcome controls the mode. "
         "A question such as 'why did you do that?' is answer, not execute. A request to read a file is review. "
+        "A request to reason about business objects, user purposes, requirements, architecture, or use cases is architect, not plan. "
         "Use continuation=true only when the request clearly asks to carry out the saved plan, such as 'execute the plan' "
         "or 'go ahead'. Return only one JSON object with this exact shape and no Markdown: "
-        "{\"mode\":\"answer|review|plan|execute\",\"continuation\":false,\"confidence\":0.0,\"reason\":\"short reason\"}.";
+        "{\"mode\":\"conversation|architect|answer|review|plan|execute\",\"continuation\":false,\"confidence\":0.0,\"reason\":\"short reason\"}.";
 
     juce::String user = "ORIGINAL USER REQUEST:\n" + userPrompt;
     if (previousTaskSummary.isNotEmpty())
@@ -97,7 +102,9 @@ AgentModeDecision AgentModeRouter::parse(const juce::String& response)
     }
 
     const auto mode = property(value, "mode").toLowerCase();
-    if (mode == "answer") decision.mode = AgentMode::answer;
+    if (mode == "conversation") decision.mode = AgentMode::conversation;
+    else if (mode == "architect") decision.mode = AgentMode::architect;
+    else if (mode == "answer") decision.mode = AgentMode::answer;
     else if (mode == "review") decision.mode = AgentMode::review;
     else if (mode == "plan") decision.mode = AgentMode::plan;
     else if (mode == "execute") decision.mode = AgentMode::execute;

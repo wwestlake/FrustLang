@@ -4,6 +4,31 @@
 
 int main()
 {
+    if (auto* externalFolder = std::getenv("FRUST_CONVERSATION_TEST_FOLDER"))
+    {
+        const auto activeFolder = juce::File(juce::String(externalFolder));
+        ConversationStore externalStore(nullptr, activeFolder, {});
+        juce::Array<juce::File> files;
+        activeFolder.findChildFiles(files, juce::File::findFiles, false, "*.json");
+
+        for (const auto& file : files)
+        {
+            StoredConversation loaded;
+            juce::String error;
+            if (!externalStore.load(file.getFileNameWithoutExtension(), loaded, error))
+            {
+                std::cerr << "External conversation failed: "
+                          << file.getFullPathName() << "\n"
+                          << error << std::endl;
+                return 1;
+            }
+        }
+
+        std::cout << "ConversationStore: validated " << files.size()
+                  << " external conversation file(s).\n";
+        return 0;
+    }
+
     const auto testRoot = juce::File::getSpecialLocation(juce::File::tempDirectory)
         .getChildFile("frust-conversation-store-" + juce::Uuid().toString());
     const auto activeFolder = testRoot.getChildFile("active");

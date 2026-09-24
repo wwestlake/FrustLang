@@ -35,11 +35,17 @@ public:
     bool configureExternalSession(const juce::var& options, juce::String& error);
     juce::var externalSessionSnapshot() const;
     bool requestStop(const juce::String& reason = "Stopped by the user.");
+    juce::var pendingPlanSnapshot() const;
+    bool approveCurrentPlan(const juce::String& conversationId, const juce::String& markdown);
+    bool approveCurrentPlan(const juce::String& markdown);
+    bool denyCurrentPlan(const juce::String& conversationId, const juce::String& reason);
+    bool denyCurrentPlan(const juce::String& reason);
 
     std::function<juce::File()> getProjectRoot;
     std::function<std::vector<juce::File>()> getReadOnlyRoots;
     std::function<void(const juce::File&)> openReadOnlyRoot;
     std::function<void()> onFileSystemChanged;
+    std::function<void(const juce::String& conversationId, const juce::String& markdown)> onPlanReady;
 
 private:
     void sendMessage();

@@ -40,11 +40,29 @@ bool containsAny(const juce::String& text, std::initializer_list<const char*> ne
     return false;
 }
 
+bool isReadOnlyEngineerTool(const std::string& name)
+{
+    return name == "workspace_list" || name == "workspace_read"
+        || name == "workspace_search" || name == "registry_search";
+}
+
 bool publicationRequested(const juce::String& text)
 {
     if (!containsAny(text, { "publish", "deploy to the registry", "deploy to server" })) return false;
     return !containsAny(text, { "do not publish", "don't publish", "must not publish",
                                 "without publishing", "not publish" });
+}
+
+bool testEvidenceRequested(const juce::String& text)
+{
+    if (!text.contains("test")) return false;
+    if (containsAny(text, { "frate test", "run tests", "run the tests", "automated test",
+                            "automated tests", "unit test", "unit tests", "test suite",
+                            "test suites", "tests pass", "testing" }))
+        return true;
+    if (containsAny(text, { "smoke test", "smoke-test" }))
+        return false;
+    return text.contains("tests");
 }
 
 juce::String withoutComments(const juce::String& source)
@@ -152,7 +170,7 @@ AgentTask AgentTask::begin(const juce::String& conversation,
     task.plan = initialPlan;
     task.capabilitiesAssessed = !initialPlan.isEmpty();
     task.requiresBuildEvidence = containsAny(task.goal.toLowerCase(), { "build", "compile", "package" });
-    task.requiresTestEvidence = task.goal.toLowerCase().contains("test");
+    task.requiresTestEvidence = testEvidenceRequested(task.goal.toLowerCase());
     task.requiresPublishEvidence = publicationRequested(task.goal.toLowerCase());
     return task;
 }
@@ -186,7 +204,7 @@ bool AgentTask::resume()
 
 bool AgentTask::continuePlanAsExecution(bool verificationRequired)
 {
-    if (!isCompleted() || mode != "plan" || plan.isEmpty() || !capabilitiesAssessed) return false;
+    if (!planApproved || mode != "plan" || plan.isEmpty() || !capabilitiesAssessed) return false;
     taskId = juce::Uuid().toString();
     mode = "execute";
     status = "running";
@@ -196,7 +214,7 @@ bool AgentTask::continuePlanAsExecution(bool verificationRequired)
     requiresVerification = verificationRequired;
     const auto lowerGoal = goal.toLowerCase();
     requiresBuildEvidence = containsAny(lowerGoal, { "build", "compile", "package" });
-    requiresTestEvidence = lowerGoal.contains("test");
+    requiresTestEvidence = testEvidenceRequested(lowerGoal);
     requiresPublishEvidence = publicationRequested(lowerGoal);
     changed = false;
     acted = false;
@@ -221,8 +239,9 @@ std::vector<ai_provider::ToolDefinition> AgentTask::controlDefinitions() const
             R"({"type":"object","additionalProperties":false,"properties":{"required":{"type":"array","items":{"type":"string","minLength":1}},"available":{"type":"array","items":{"type":"string","minLength":1}},"missing":{"type":"array","items":{"type":"string","minLength":1}},"evidence":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}},"options":{"type":"array","items":{"type":"string","minLength":1}}},"required":["required","available","missing","evidence","options"]})"),
         definition("agent_set_plan",
             "Set the concrete execution plan for the current assigned task after inspecting the project. "
-            "This records the plan in host-owned run state; it does not edit project files.",
-            R"({"type":"object","additionalProperties":false,"properties":{"goal":{"type":"string","minLength":1},"steps":{"type":"array","minItems":2,"items":{"type":"string","minLength":1}},"constraints":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}},"acceptance_tests":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}}},"required":["goal","steps","constraints","acceptance_tests"]})"),
+            "A professional plan explains the purpose, rationale, approach, risks, ordered work, constraints, "
+            "and acceptance tests. This records the plan in host-owned run state; it does not edit project files.",
+            R"({"type":"object","additionalProperties":false,"properties":{"goal":{"type":"string","minLength":1},"purpose":{"type":"string","minLength":1},"rationale":{"type":"string","minLength":1},"approach":{"type":"string","minLength":1},"steps":{"type":"array","minItems":2,"items":{"type":"string","minLength":1}},"constraints":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}},"risks":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}},"acceptance_tests":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}}},"required":["goal","purpose","rationale","approach","steps","constraints","risks","acceptance_tests"]})"),
         definition("agent_complete_task",
             "Request completion of the assigned task. The host rejects this until required inspection, "
             "changes, and verification have actually succeeded.",
@@ -332,17 +351,33 @@ AgentTask::ControlResult AgentTask::executeControl(const ai_provider::ToolCall& 
             return { true, false, false, "Error: Call agent_assess_capabilities before setting the plan." };
         auto proposed = stringArrayProperty(arguments, "steps");
         auto proposedConstraints = stringArrayProperty(arguments, "constraints");
+        auto proposedRisks = stringArrayProperty(arguments, "risks");
         auto proposedTests = stringArrayProperty(arguments, "acceptance_tests");
+        auto proposedPurpose = property(arguments, "purpose").trim();
+        auto proposedRationale = property(arguments, "rationale").trim();
+        auto proposedApproach = property(arguments, "approach").trim();
         if (proposed.size() < 2)
             return { true, false, false, "Error: A professional task plan needs at least two concrete steps." };
-        if (proposedConstraints.isEmpty() || proposedTests.isEmpty())
-            return { true, false, false, "Error: The plan must record constraints and executable acceptance tests." };
+        if (proposedPurpose.isEmpty() || proposedRationale.isEmpty() || proposedApproach.isEmpty()
+            || proposedConstraints.isEmpty() || proposedRisks.isEmpty() || proposedTests.isEmpty())
+            return { true, false, false,
+                "Error: The plan must record purpose, rationale, approach, constraints, risks, and executable acceptance tests." };
         const auto proposedGoal = property(arguments, "goal").trim();
         if (proposedGoal.isNotEmpty()) goal = proposedGoal;
+        planPurpose = std::move(proposedPurpose);
+        planRationale = std::move(proposedRationale);
+        planApproach = std::move(proposedApproach);
         plan = std::move(proposed);
         constraints = std::move(proposedConstraints);
+        planRisks = std::move(proposedRisks);
         acceptanceTests = std::move(proposedTests);
-        return { true, true, false, "Plan recorded with " + juce::String(plan.size()) + " steps." };
+        approvedPlanMarkdown.clear();
+        planApproved = false;
+        postPlanReadOnlyActions = 0;
+        status = "waiting-for-plan-approval";
+        pendingQuestion = "Review the proposed plan, amend it if needed, then approve or deny it in the Plan Review panel.";
+        return { true, true, true, "Plan recorded with " + juce::String(plan.size())
+            + " steps and is waiting for user approval." };
     }
 
     if (call.name == "agent_complete_task")
@@ -369,9 +404,22 @@ AgentTask::ControlResult AgentTask::executeControl(const ai_provider::ToolCall& 
     return { true, true, true, "Task paused for user input." };
 }
 
+juce::String AgentTask::engineerToolPreflight(const ai_provider::ToolCall& call) const
+{
+    if (phase() == "implement" && isReadOnlyEngineerTool(call.name)
+        && postPlanReadOnlyActions >= 4)
+    {
+        return "Error: The post-plan investigation allowance is exhausted. Use the evidence already gathered "
+               "and take an implementation action now: create or edit a file, run the requested check/build/test, "
+               "ask a specific blocking question, or request completion if no implementation is required.";
+    }
+    return {};
+}
+
 void AgentTask::recordEngineerResult(const std::string& name, const EngineerTools::Result& result)
 {
     ++toolCalls;
+    const auto phaseBeforeResult = phase();
     if (result.ok && name == "workspace_list")
     {
         const bool goalNamesExternalEvidence = goal.contains(":\\") || goal.contains(":/");
@@ -393,7 +441,8 @@ void AgentTask::recordEngineerResult(const std::string& name, const EngineerTool
     const bool releaseCommand = name == "run_command"
         && containsAny(commandLine, { "frate package", "frate install-local", "frate publish",
                                       "frate.exe package", "frate.exe install-local", "frate.exe publish" });
-    if (result.ok && result.workspaceChanged && !releaseCommand)
+    const bool sourceOrProjectEdit = result.workspaceChanged && name != "run_command";
+    if (result.ok && sourceOrProjectEdit && !releaseCommand)
     {
         changed = true;
         verified = false;
@@ -447,6 +496,15 @@ void AgentTask::recordEngineerResult(const std::string& name, const EngineerTool
             + latestVerification;
         observations.add("Verification loop stopped after "
             + juce::String(verificationFailureCount) + " failed checks.");
+    }
+    if (result.ok)
+    {
+        if (phaseBeforeResult == "implement" && isReadOnlyEngineerTool(name)
+            && !result.workspaceChanged && !result.verificationPerformed)
+            ++postPlanReadOnlyActions;
+        else if (result.workspaceChanged || result.verificationPerformed || name == "run_command"
+                 || name == "launch_program" || name == "user_test")
+            postPlanReadOnlyActions = 0;
     }
     observations.add(juce::String(name) + ": "
         + result.message.upToFirstOccurrenceOf("\n", false, false));
@@ -531,6 +589,30 @@ void AgentTask::fail(const juce::String& reason)
     summary = reason;
 }
 
+bool AgentTask::approvePlanMarkdown(const juce::String& markdown)
+{
+    if (plan.isEmpty() || !capabilitiesAssessed) return false;
+    const auto trimmed = markdown.trim();
+    if (trimmed.isEmpty()) return false;
+    approvedPlanMarkdown = trimmed;
+    planApproved = true;
+    if (status == "waiting-for-plan-approval")
+        status = mode == "plan" ? "completed" : "running";
+    pendingQuestion.clear();
+    summary = "Plan approved.";
+    return true;
+}
+
+void AgentTask::denyPlan(const juce::String& reason)
+{
+    status = "waiting-for-user";
+    pendingQuestion = reason.isNotEmpty()
+        ? "Plan denied: " + reason
+        : "Plan denied. Provide revised direction before implementation continues.";
+    planApproved = false;
+    approvedPlanMarkdown.clear();
+}
+
 juce::String AgentTask::phase() const
 {
     if (status != "running") return status;
@@ -550,6 +632,7 @@ juce::String AgentTask::completionBlocker() const
     if (!inspected) return "No project inspection has succeeded.";
     if (requiresPlan && !capabilitiesAssessed) return "No prerequisite capability assessment has been recorded.";
     if (requiresPlan && plan.isEmpty()) return "No execution plan has been recorded.";
+    if (requiresPlan && !planApproved) return "The execution plan has not been approved by the user.";
     if (requiresWrite && !acted)
         return "Nothing has been done yet: no change, build, test, command or program launch has succeeded.";
     if (requiresVerification && !verified)
@@ -568,18 +651,26 @@ juce::String AgentTask::contextMessage() const
         + "\nMode: " + mode + "\nCurrent phase: " + phase() + "\n";
     if (!plan.isEmpty())
     {
+        if (planPurpose.isNotEmpty()) text << "Plan purpose: " << planPurpose << "\n";
+        if (planRationale.isNotEmpty()) text << "Plan rationale: " << planRationale << "\n";
+        if (planApproach.isNotEmpty()) text << "Plan approach: " << planApproach << "\n";
         text << "Plan:\n";
         for (int i = 0; i < plan.size(); ++i)
             text << juce::String(i + 1) << ". " << plan[i] << "\n";
     }
     if (!constraints.isEmpty()) text << "Constraints: " << constraints.joinIntoString("; ") << "\n";
+    if (!planRisks.isEmpty()) text << "Risks: " << planRisks.joinIntoString("; ") << "\n";
     if (!acceptanceTests.isEmpty()) text << "Acceptance tests: " << acceptanceTests.joinIntoString("; ") << "\n";
+    if (approvedPlanMarkdown.isNotEmpty())
+        text << "Approved plan markdown (authoritative; user may have amended it):\n"
+             << approvedPlanMarkdown << "\n";
     if (!requiredCapabilities.isEmpty()) text << "Required prerequisites: " << requiredCapabilities.joinIntoString("; ") << "\n";
     if (!availableCapabilities.isEmpty()) text << "Available prerequisites: " << availableCapabilities.joinIntoString("; ") << "\n";
     if (!missingCapabilities.isEmpty()) text << "Previously identified missing prerequisites: " << missingCapabilities.joinIntoString("; ") << "\n";
     if (!capabilityEvidence.isEmpty()) text << "Capability evidence: " << capabilityEvidence.joinIntoString("; ") << "\n";
     text << "Observed project: " << (inspected ? "yes" : "no")
          << "\nCapabilities assessed: " << (capabilitiesAssessed ? "yes" : "no")
+         << "\nPlan approved by user: " << (planApproved ? "yes" : "no")
          << "\nWorkspace changed: " << (changed ? "yes" : "no")
          << "\nAction taken (change, build, test, command or launch): " << (acted ? "yes" : "no")
          << "\nVerification passed after latest change: " << (verified ? "yes" : "no") << "\n"
@@ -592,7 +683,9 @@ juce::String AgentTask::contextMessage() const
             "evidence and stop for a decision when a prerequisite is missing. Host implementation tools are deliberately "
             "hidden during assess and plan; they become available in implement, so never report a workspace tool or file "
             "operation as a missing prerequisite. In plan phase call agent_set_plan with "
-            "constraints and executable acceptance tests. In implement phase make focused edits with workspace tools; "
+            "purpose, rationale, approach, constraints, risks, and executable acceptance tests, then stop: the host "
+            "will display the plan for user review. In implement phase follow the approved plan markdown exactly, "
+            "including any user amendments, and make focused edits with workspace tools; "
             "A host message requiring inspection, capability assessment, or a plan is a sequencing instruction, not "
             "evidence that workspace access is missing. Follow the requested sequence and retry. "
             "PowerShell is for inspection, builds, and tests, never for rewriting source files. Preserve the requested "
@@ -601,6 +694,11 @@ juce::String AgentTask::contextMessage() const
             "repair failures. When the user should try a program, open it with user_test and say what to check: their "
             "Pass is verification, their Fail is a bug report to fix. In review mode inspect and report findings "
             "without editing. Never claim completion in ordinary text.";
+    if (phase() == "implement")
+        text << "\nImplementation liveness: after the plan, read-only investigation is limited. "
+             << "Read-only actions used since the plan or last implementation action: "
+             << juce::String(postPlanReadOnlyActions) << "/4. When this reaches 4, the next tool action must "
+             << "implement, verify/build/test, ask a specific blocker question, or request completion.";
     return text;
 }
 
@@ -618,16 +716,21 @@ juce::String AgentTask::finalMessage() const
     if (status == "completed")
     {
         juce::String text = "**Task completed**\n\n" + summary;
+        if (mode == "plan" && approvedPlanMarkdown.isNotEmpty())
+            text << "\n\n:::details Approved plan\n" << approvedPlanMarkdown << "\n:::";
         if (latestVerification.isNotEmpty()) text << "\n\n**Verification:** " << latestVerification;
         return text;
     }
     if (status == "waiting-for-user") return pendingQuestion;
+    if (status == "waiting-for-plan-approval")
+        return "**Plan ready for review**\n\nReview the proposed plan in the Plan Review panel. You can edit the markdown there; the approved text becomes the execution plan.";
     return "**Task stopped**\n\n" + summary;
 }
 
 bool AgentTask::isTerminal() const
 {
-    return status == "completed" || status == "waiting-for-user" || status == "failed";
+    return status == "completed" || status == "waiting-for-user"
+        || status == "waiting-for-plan-approval" || status == "failed";
 }
 
 bool AgentTask::isCompleted() const
@@ -637,13 +740,69 @@ bool AgentTask::isCompleted() const
 
 bool AgentTask::isResumable() const
 {
-    return status == "waiting-for-user" || status == "failed";
+    return status == "waiting-for-user" || status == "waiting-for-plan-approval"
+        || status == "failed";
 }
 
 bool AgentTask::canWrite() const
 {
     return requiresWrite && status == "running" && inspected && capabilitiesAssessed
-        && (!requiresPlan || !plan.isEmpty());
+        && (!requiresPlan || (!plan.isEmpty() && planApproved));
+}
+
+bool AgentTask::isWaitingForPlanApproval() const
+{
+    return status == "waiting-for-plan-approval";
+}
+
+juce::String AgentTask::planMarkdown() const
+{
+    if (approvedPlanMarkdown.isNotEmpty())
+        return approvedPlanMarkdown;
+
+    juce::String markdown = "# Plan\n\n";
+    markdown << "## Goal\n\n" << goal << "\n\n";
+    if (planPurpose.isNotEmpty())
+        markdown << "## Purpose\n\n" << planPurpose << "\n\n";
+    if (planRationale.isNotEmpty())
+        markdown << "## Rationale\n\n" << planRationale << "\n\n";
+    if (planApproach.isNotEmpty())
+        markdown << "## Approach\n\n" << planApproach << "\n\n";
+    if (!plan.isEmpty())
+    {
+        markdown << "## Steps\n\n";
+        for (int i = 0; i < plan.size(); ++i)
+            markdown << juce::String(i + 1) << ". " << plan[i] << "\n";
+        markdown << "\n";
+    }
+    if (!constraints.isEmpty())
+    {
+        markdown << "## Constraints\n\n";
+        for (const auto& item : constraints)
+            markdown << "- " << item << "\n";
+        markdown << "\n";
+    }
+    if (!planRisks.isEmpty())
+    {
+        markdown << "## Risks\n\n";
+        for (const auto& item : planRisks)
+            markdown << "- " << item << "\n";
+        markdown << "\n";
+    }
+    if (!acceptanceTests.isEmpty())
+    {
+        markdown << "## Acceptance Tests\n\n";
+        for (const auto& item : acceptanceTests)
+            markdown << "- " << item << "\n";
+        markdown << "\n";
+    }
+    if (!capabilityEvidence.isEmpty())
+    {
+        markdown << "## Evidence\n\n";
+        for (const auto& item : capabilityEvidence)
+            markdown << "- " << item << "\n";
+    }
+    return markdown.trim();
 }
 
 const juce::StringArray& AgentTask::planSteps() const { return plan; }
@@ -674,6 +833,7 @@ juce::var AgentTask::evaluationSnapshot() const
     object->setProperty("published", published);
     object->setProperty("repeatedFailureCount", repeatedFailureCount);
     object->setProperty("verificationFailureCount", verificationFailureCount);
+    object->setProperty("postPlanReadOnlyActions", postPlanReadOnlyActions);
     object->setProperty("planStepCount", plan.size());
     object->setProperty("observationCount", observations.size());
     return juce::var(object);
@@ -693,14 +853,20 @@ juce::var AgentTask::toJson() const
     object->setProperty("pendingQuestion", pendingQuestion);
     object->setProperty("latestVerification", latestVerification);
     object->setProperty("repeatedFailure", repeatedFailure);
+    object->setProperty("planPurpose", planPurpose);
+    object->setProperty("planRationale", planRationale);
+    object->setProperty("planApproach", planApproach);
     object->setProperty("plan", stringArrayJson(plan));
     object->setProperty("constraints", stringArrayJson(constraints));
     object->setProperty("acceptanceTests", stringArrayJson(acceptanceTests));
+    object->setProperty("planRisks", stringArrayJson(planRisks));
     object->setProperty("requiredCapabilities", stringArrayJson(requiredCapabilities));
     object->setProperty("availableCapabilities", stringArrayJson(availableCapabilities));
     object->setProperty("missingCapabilities", stringArrayJson(missingCapabilities));
     object->setProperty("capabilityEvidence", stringArrayJson(capabilityEvidence));
     object->setProperty("observations", stringArrayJson(observations));
+    object->setProperty("approvedPlanMarkdown", approvedPlanMarkdown);
+    object->setProperty("planApproved", planApproved);
     object->setProperty("requiresWrite", requiresWrite);
     object->setProperty("requiresPlan", requiresPlan);
     object->setProperty("requiresVerification", requiresVerification);
@@ -717,6 +883,7 @@ juce::var AgentTask::toJson() const
     object->setProperty("published", published);
     object->setProperty("repeatedFailureCount", repeatedFailureCount);
     object->setProperty("verificationFailureCount", verificationFailureCount);
+    object->setProperty("postPlanReadOnlyActions", postPlanReadOnlyActions);
     object->setProperty("toolCalls", toolCalls);
     object->setProperty("providerCalls", providerCalls);
     object->setProperty("inputTokens", inputTokens);
@@ -739,14 +906,20 @@ bool AgentTask::fromJson(const juce::var& value, AgentTask& task)
     task.pendingQuestion = property(value, "pendingQuestion");
     task.latestVerification = property(value, "latestVerification");
     task.repeatedFailure = property(value, "repeatedFailure");
+    task.planPurpose = property(value, "planPurpose");
+    task.planRationale = property(value, "planRationale");
+    task.planApproach = property(value, "planApproach");
     task.plan = stringArrayProperty(value, "plan");
     task.constraints = stringArrayProperty(value, "constraints");
     task.acceptanceTests = stringArrayProperty(value, "acceptanceTests");
+    task.planRisks = stringArrayProperty(value, "planRisks");
     task.requiredCapabilities = stringArrayProperty(value, "requiredCapabilities");
     task.availableCapabilities = stringArrayProperty(value, "availableCapabilities");
     task.missingCapabilities = stringArrayProperty(value, "missingCapabilities");
     task.capabilityEvidence = stringArrayProperty(value, "capabilityEvidence");
     task.observations = stringArrayProperty(value, "observations");
+    task.approvedPlanMarkdown = property(value, "approvedPlanMarkdown");
+    task.planApproved = boolProperty(value, "planApproved");
     task.requiresWrite = boolProperty(value, "requiresWrite");
     task.requiresPlan = value.hasProperty("requiresPlan")
         ? boolProperty(value, "requiresPlan") : true;
@@ -765,6 +938,7 @@ bool AgentTask::fromJson(const juce::var& value, AgentTask& task)
     task.published = boolProperty(value, "published");
     task.repeatedFailureCount = static_cast<int>(value.getProperty("repeatedFailureCount", 0));
     task.verificationFailureCount = static_cast<int>(value.getProperty("verificationFailureCount", 0));
+    task.postPlanReadOnlyActions = static_cast<int>(value.getProperty("postPlanReadOnlyActions", 0));
     task.toolCalls = static_cast<int>(value.getProperty("toolCalls", 0));
     task.providerCalls = static_cast<int>(value.getProperty("providerCalls", 0));
     task.inputTokens = static_cast<int>(value.getProperty("inputTokens", 0));

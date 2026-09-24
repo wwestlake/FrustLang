@@ -28,7 +28,12 @@ AgentTask::ControlResult plan(AgentTask& task, const char* goal = "Update main.f
 {
     return task.executeControl(call("agent_set_plan",
         std::string("{\"goal\":\"") + goal
-        + R"(","steps":["Inspect existing code","Make focused edits","Run acceptance tests"],"constraints":["Keep the requested implementation technology"],"acceptance_tests":["The project check passes"]})"));
+        + R"(","purpose":"Preserve the user's intent while making the project measurably better.","rationale":"The plan ties the requested change to a visible outcome, identifies the technical path, and keeps verification explicit.","approach":"Inspect the current project, make the smallest coherent change, then verify the result with the most relevant check.","steps":["Inspect existing code","Make focused edits","Run acceptance tests"],"constraints":["Keep the requested implementation technology"],"risks":["The existing project may expose syntax or dependency issues unrelated to the requested change"],"acceptance_tests":["The project check passes"]})"));
+}
+
+bool approvePlan(AgentTask& task)
+{
+    return task.approvePlanMarkdown(task.planMarkdown());
 }
 }
 
@@ -63,6 +68,8 @@ int main()
     expect(!plan(task).ok, "Plan is rejected before capability assessment");
     expect(assess(task).ok, "Capability assessment is accepted after inspection");
     expect(plan(task).ok, "Plan is accepted after inspection and capability assessment");
+    expect(!task.canWrite(), "A recorded plan does not allow writes until the user approves it");
+    expect(approvePlan(task) && task.canWrite(), "Approving the markdown plan unlocks implementation");
 
     task.recordEngineerResult("workspace_replace_text", { true, true, "Updated src/main.fr" });
     auto unverified = task.executeControl(call("agent_complete_task", R"({"summary":"done"})"));
@@ -96,17 +103,46 @@ int main()
     expect(assess(planOnly).ok, "Plan mode assesses prerequisites");
     expect(plan(planOnly, "Design a parser").ok,
         "Plan mode records a plan");
-    expect(planOnly.executeControl(call("agent_complete_task",
-        R"({"summary":"The implementation plan is ready."})")).ok,
-        "Plan mode completes without writing");
+    expect(planOnly.isWaitingForPlanApproval(), "Plan mode waits for user review");
+    expect(approvePlan(planOnly) && planOnly.isCompleted(),
+        "Plan mode completes when the user approves the plan");
     expect(planOnly.continuePlanAsExecution(true) && planOnly.canWrite(),
            "A completed plan becomes an execution task without losing its assessed plan");
+
+    auto liveness = AgentTask::begin("liveness", "Create a working analyzer", "execute", true, true, true);
+    liveness.recordEngineerResult("workspace_list", { true, false, "Listed project" });
+    assess(liveness);
+    plan(liveness, "Create a working analyzer");
+    approvePlan(liveness);
+    expect(liveness.engineerToolPreflight(call("workspace_read", R"({"path":"src/main.fr"})")).isEmpty(),
+           "Post-plan implementation allows a small amount of targeted reading");
+    liveness.recordEngineerResult("workspace_read", { true, false, "Read src/main.fr" });
+    liveness.recordEngineerResult("workspace_search", { true, false, "Found parser examples" });
+    liveness.recordEngineerResult("registry_search", { true, false, "Found json pod" });
+    liveness.recordEngineerResult("workspace_read", { true, false, "Read frate.json" });
+    expect(liveness.engineerToolPreflight(call("workspace_search", R"({"query":"String"})")).contains("allowance is exhausted"),
+           "Post-plan read-only investigation is bounded before the first implementation action");
+    expect(liveness.engineerToolPreflight(call("workspace_create_file", R"({"path":"src/main.fr","content":"fn main() { return 0; }"})")).isEmpty(),
+           "The liveness gate still allows implementation actions");
+    const auto livenessFolder = juce::File::getSpecialLocation(juce::File::tempDirectory)
+        .getNonexistentChildFile("frust-agent-liveness", {}, true);
+    expect(livenessFolder.createDirectory().wasOk(), "Temporary liveness folder is created");
+    expect(liveness.save(livenessFolder), "Liveness state is saved");
+    AgentTask loadedLiveness;
+    expect(AgentTask::load(livenessFolder, "liveness", loadedLiveness)
+           && loadedLiveness.engineerToolPreflight(call("workspace_search", R"({"query":"String"})")).contains("allowance is exhausted"),
+           "Post-plan read-only count survives save and reload");
+    loadedLiveness.recordEngineerResult("workspace_create_file", { true, true, "Created src/main.fr" });
+    expect(loadedLiveness.engineerToolPreflight(call("workspace_read", R"({"path":"src/main.fr"})")).isEmpty(),
+           "A real implementation action resets the post-plan read-only count");
+    livenessFolder.deleteRecursively();
 
     // A task that builds and opens a program changes no file, and must still be able to finish.
     AgentTask buildAndRun = AgentTask::begin("conversation", "rebuild the REPL and start it", "execute", true, true, false);
     buildAndRun.recordEngineerResult("workspace_list", { true, false, "Listed project" });
     assess(buildAndRun);
     expect(plan(buildAndRun, "rebuild and start").ok, "the build-and-run plan is accepted");
+    approvePlan(buildAndRun);
     expect(!buildAndRun.executeControl(call("agent_complete_task", R"({"summary":"done"})")).ok,
            "it cannot finish before doing anything");
     buildAndRun.recordEngineerResult("run_command", { true, false, "Ran in PowerShell in .: cmake --build build --config Debug --target repl\nExit code 0", true });
@@ -118,6 +154,7 @@ int main()
     readOnlyCommand.recordEngineerResult("workspace_list", { true, false, "Listed project" });
     assess(readOnlyCommand);
     plan(readOnlyCommand, "make it work");
+    approvePlan(readOnlyCommand);
     readOnlyCommand.recordEngineerResult("run_command", { true, false, "git status", false });
     expect(!readOnlyCommand.executeControl(call("agent_complete_task", R"({"summary":"x"})")).ok,
            "a command that only looked does not count as doing the task");
@@ -194,6 +231,7 @@ int main()
     converging.recordEngineerResult("workspace_list", { true, false, "Listed project" });
     assess(converging);
     plan(converging, "Fix linker issue");
+    approvePlan(converging);
     converging.recordEngineerResult("workspace_check_frust", { false, false, "Error: duplicate symbol print_f64", true });
     converging.recordEngineerResult("workspace_read", { true, false, "Read src/lib.fr" });
     converging.recordEngineerResult("workspace_check_frust", { false, false, "Error: duplicate symbol print_f64", true });
@@ -205,6 +243,7 @@ int main()
     variedFailures.recordEngineerResult("workspace_list", { true, false, "Listed project" });
     assess(variedFailures);
     plan(variedFailures, "Repair changing syntax errors");
+    approvePlan(variedFailures);
     variedFailures.recordEngineerResult("workspace_check_frust", { false, false, "Error: expected semicolon", true });
     variedFailures.recordEngineerResult("workspace_replace_text", { true, true, "Updated src/main.fr" });
     variedFailures.recordEngineerResult("workspace_check_frust", { false, false, "Error: unknown function println_str", true });
@@ -239,6 +278,7 @@ int main()
     release.recordEngineerResult("workspace_list", { true, false, "Listed project" });
     assess(release);
     plan(release, "Build, test, and publish the JSON pod");
+    approvePlan(release);
     release.recordEngineerResult("workspace_replace_text", { true, true, "Updated src/parser.fr" });
     release.recordEngineerResult("workspace_check_frust", { true, false, "Frust check passed", true });
     expect(!release.executeControl(call("agent_complete_task", R"({"summary":"done"})")).ok,
@@ -258,12 +298,27 @@ int main()
     noPublish.recordEngineerResult("workspace_list", { true, false, "Listed project" });
     assess(noPublish);
     plan(noPublish, "Build and test without publishing");
+    approvePlan(noPublish);
     noPublish.recordEngineerResult("workspace_replace_text", { true, true, "Updated src/lib.fr" });
     noPublish.recordEngineerResult("workspace_check_frust", { true, false, "Frust check passed", true });
     noPublish.recordEngineerResult("run_command", { true, false, "Ran in PowerShell in .: frate build\nExit code 0", true });
     noPublish.recordEngineerResult("run_command", { true, false, "Ran in PowerShell in .: frate test\nExit code 0", true });
     expect(noPublish.executeControl(call("agent_complete_task", R"({"summary":"ready for review"})")).ok,
            "A negated publication request does not create a publication completion gate");
+
+    auto smoke = AgentTask::begin("smoke", "Create and verify a minimal standalone Frate executable smoke-test project",
+                                  "execute", true, true, false);
+    smoke.recordEngineerResult("workspace_list", { true, false, "Listed project" });
+    assess(smoke);
+    plan(smoke, "Create and verify a minimal standalone Frate executable smoke-test project");
+    approvePlan(smoke);
+    smoke.recordEngineerResult("workspace_create_file", { true, true, "Created src/main.fr" });
+    smoke.recordEngineerResult("workspace_check_frust", { true, false, "Frust check passed", true });
+    smoke.recordEngineerResult("run_command", { true, false, "Ran in Windows PowerShell 5.1 in .: frate build\nExit code 0", true });
+    smoke.recordEngineerResult("run_command", { true, true, "Ran in Windows PowerShell 5.1 in .: .\\build\\frusty-smoke-test.exe\nExit code 0", false });
+    expect(smoke.executeControl(call("agent_complete_task", R"({"summary":"smoke project builds and runs"})")).ok,
+           "A smoke-test project does not require a separate automated test gate, and running the built exe does not erase build evidence");
+
     folder.deleteRecursively();
 
     if (failures == 0) std::cout << "AgentTaskTests: all checks passed\n";

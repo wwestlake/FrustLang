@@ -1,12 +1,14 @@
 {
   "name": "frust_json",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "type": "lib",
-  "description": "JSON serialization for Frust.",
+  "namespace": "frust_json",
+  "description": "Strict in-memory JSON parser, traversal API, structured diagnostics, and deterministic emitter for Frust.",
   "exports": [
-    "JsonType", "json_parse", "json_emit"
+    "JsonDocument", "JsonError", "JsonParseResult",
+    "json_parse", "json_emit", "json_root", "json_kind", "json_child_count",
+    "json_first_child", "json_next_sibling", "json_array_get", "json_object_get",
+    "json_key", "json_string", "json_number_text", "json_number", "json_bool", "json_is_null"
   ],
-  "dependencies": [
-    { "name": "core", "version": "1.0.1" }
-  ]
+  "dependencies": []
 }

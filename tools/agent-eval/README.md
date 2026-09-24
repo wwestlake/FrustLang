@@ -11,6 +11,13 @@ It records:
 - elapsed time;
 - provider-reported input, output, and total tokens.
 
+Useful assertion types include file checks (`file_exists`, `file_contains`,
+`file_contains_any`), task-state checks (`task_field`, `max_tool_calls`,
+`max_provider_calls`, `max_total_tokens`), response checks, `command_exit`,
+which runs a command inside the resulting workspace and verifies its exit code,
+and `built_executable_exit`, which runs the first `.exe` produced under
+`build`.
+
 ## Validate
 
 Validation is offline and does not spend API tokens:

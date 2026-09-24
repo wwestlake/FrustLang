@@ -11,7 +11,9 @@ enum class AgentMode
     plan = 2,
     execute = 3,
     review = 4,
-    answer = 5
+    answer = 5,
+    conversation = 6,
+    architect = 7
 };
 
 struct AgentModeDecision

@@ -35,6 +35,7 @@ public:
     bool save(const juce::File& conversationFolder) const;
     std::vector<ai_provider::ToolDefinition> controlDefinitions() const;
     ControlResult executeControl(const ai_provider::ToolCall& call);
+    juce::String engineerToolPreflight(const ai_provider::ToolCall& call) const;
     void recordEngineerResult(const std::string& toolName, const EngineerTools::Result& result);
     void recordProviderUsage(const ai_provider::ChatResponse& response);
     juce::String budgetExceeded(int maxProviderCalls, int maxToolCalls,
@@ -43,6 +44,8 @@ public:
                                           int maxTotalTokens) const;
     void fail(const juce::String& reason);
     bool continuePlanAsExecution(bool verificationRequired);
+    bool approvePlanMarkdown(const juce::String& markdown);
+    void denyPlan(const juce::String& reason);
 
     juce::String contextMessage() const;
     juce::String statusLine() const;
@@ -51,6 +54,8 @@ public:
     bool isCompleted() const;
     bool isResumable() const;
     bool canWrite() const;
+    bool isWaitingForPlanApproval() const;
+    juce::String planMarkdown() const;
     const juce::StringArray& planSteps() const;
     const juce::String& taskGoal() const;
     const juce::String& taskMode() const;
@@ -75,14 +80,20 @@ private:
     juce::String pendingQuestion;
     juce::String latestVerification;
     juce::String repeatedFailure;
+    juce::String planPurpose;
+    juce::String planRationale;
+    juce::String planApproach;
     juce::StringArray plan;
     juce::StringArray constraints;
     juce::StringArray acceptanceTests;
+    juce::StringArray planRisks;
     juce::StringArray requiredCapabilities;
     juce::StringArray availableCapabilities;
     juce::StringArray missingCapabilities;
     juce::StringArray capabilityEvidence;
     juce::StringArray observations;
+    juce::String approvedPlanMarkdown;
+    bool planApproved = false;
     bool requiresWrite = false;
     bool requiresPlan = true;
     bool requiresVerification = false;
@@ -101,6 +112,7 @@ private:
     bool published = false;
     int repeatedFailureCount = 0;
     int verificationFailureCount = 0;
+    int postPlanReadOnlyActions = 0;
     int toolCalls = 0;
     int providerCalls = 0;
     int inputTokens = 0;

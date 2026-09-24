@@ -33,10 +33,10 @@ int main()
     EngineerTools observe(base, EngineerTools::AccessLevel::observe);
     EngineerTools workspace(base, EngineerTools::AccessLevel::workspace);
     const auto observeDefinitions = observe.definitions();
-    expect(observeDefinitions.size() == 5, "Observe exposes read-only, registry, and verification tools");
-    expect(workspace.definitions().size() == 13, "Workspace exposes all thirteen engineering tools: run_command, launch_program, stop_program and user_test included");
+    expect(observeDefinitions.size() == 6, "Observe exposes read-only, registry, verification, and memory-list tools");
+    expect(workspace.definitions().size() == 17, "Workspace exposes all seventeen engineering tools: plugin release packet included");
     EngineerTools full(base, EngineerTools::AccessLevel::full);
-    expect(full.definitions().size() == 13, "Full Access exposes all engineering tools");
+    expect(full.definitions().size() == 17, "Full Access exposes all engineering tools");
     expect(!workspace.execute(call("user_test", R"({"command":"x","instructions":"try it","reason":"r"})")).ok, "with no one to give a verdict, user_test opens nothing and fails");
     expect(std::none_of(observeDefinitions.begin(), observeDefinitions.end(), [](const auto& tool) {
         return tool.name == "run_command";
@@ -154,6 +154,30 @@ fn main() -> i64 = {
         "{\"path\":\"" + base.getSiblingFile(base.getFileName() + "-full-access.txt").getFullPathName()
             .replaceCharacter('\\', '/').toStdString() + "\",\"content\":\"allowed\"}"));
     expect(fullWrite.ok, "Full Access may write outside the project without a path approval");
+
+    auto memoryCreated = workspace.execute(call("memory_upsert_card",
+        R"({"scope":"project","id":"memory.project.test-rule","title":"Test Rule","tokens":["test","memory"],"priority":80,"text":"Remember this test rule."})"));
+    expect(memoryCreated.ok && base.getChildFile(".frusty/MEMORY_PROJECT_CARDS.jsonl").existsAsFile(),
+           "Workspace can create a project memory card");
+    auto memoryListed = observe.execute(call("memory_list_cards", R"({"scope":"project"})"));
+    expect(memoryListed.ok && memoryListed.message.contains("memory.project.test-rule"),
+           "Observe can list project memory cards");
+    auto globalDenied = workspace.execute(call("memory_upsert_card",
+        R"({"scope":"global","id":"memory.global.nope","title":"Nope","text":"Global writes require Full Access."})"));
+    expect(!globalDenied.ok && globalDenied.message.contains("Full Access"),
+           "Global memory writes require Full Access");
+    auto memoryDeleted = workspace.execute(call("memory_delete_card",
+        R"({"scope":"project","id":"memory.project.test-rule"})"));
+    expect(memoryDeleted.ok, "Workspace can delete a project memory card");
+
+    auto releasePacket = workspace.execute(call("plugin_prepare_release_packet",
+        R"({"plugin_name":"Frusty Helper","summary":"Adds a small helper panel to FrustIDE.","capabilities":["Shows contextual helper actions"],"permissions":["Reads the open project"],"files":["plugins/frusty_helper.frust"],"tests":["Load plugin in FrustIDE"]})"));
+    expect(releasePacket.ok && releasePacket.workspaceChanged,
+           "Workspace can prepare a plugin release packet");
+    expect(base.getChildFile("plugins/frusty_helper/PLUGIN_RELEASE_PACKET.md").existsAsFile()
+           && base.getChildFile("plugins/frusty_helper/REGISTRY_METADATA.json").existsAsFile()
+           && base.getChildFile("plugins/frusty_helper/FORUM_ANNOUNCEMENT_DRAFT.md").existsAsFile(),
+           "Plugin release packet contains checklist, registry metadata, and forum draft");
 
     // ---- run_command: the rules (nothing is run here) ----
     {

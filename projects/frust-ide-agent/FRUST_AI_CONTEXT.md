@@ -172,6 +172,26 @@ let mut name: Type = expr
 return expr
 ```
 
+### Struct Literals In Call Arguments
+
+Struct literals are valid expressions, but the current parser can misparse a struct
+literal used directly as an argument before additional comma-separated arguments:
+
+```frust
+// Avoid in standalone code today: may produce
+// "unexpected INT_LITERAL, expecting }" at the next argument.
+check_case(ScoreInput { base_points: 10, combo_multiplier: 2, penalty: 50 }, 0, 0)
+```
+
+Bind the struct literal to a local first, then pass the local:
+
+```frust
+let input = ScoreInput { base_points: 10, combo_multiplier: 2, penalty: 50 };
+check_case(input, 0, 0)
+```
+
+This pattern matches known-good Frust examples and avoids the call-argument ambiguity.
+
 ### Control Flow
 
 ```frust
@@ -240,6 +260,27 @@ frate update
 frate cache-dir
 ```
 
+### Frate Build Smoke Tests
+
+For `frate build` executable smoke tests, prefer a deterministic numeric entry point:
+
+```frust
+use core;
+
+fn main() -> i64 = {
+    0
+}
+```
+
+Do not use `println_str`, `println_i64`, `println_f64`, `println_bool`, `core::println_str`,
+or `core::println_*` as proof that a standalone `frate build` executable works unless you
+have first verified that console I/O is linkable in that build path. The current `core`
+`console_io` helpers are documented as JIT-only host exports. They can appear in examples
+and source context, but they may fail standalone Frate builds with `unknown function` or
+link/runtime diagnostics. If the user explicitly asks for printed output from a standalone
+build and console I/O is unavailable, report that as a capability/runtime gap instead of
+looping on syntax changes.
+
 ---
 
 ## Hard Constraints
@@ -269,6 +310,7 @@ frate cache-dir
 - Use project tools for real work. A Markdown code block is not a file update.
 - Begin every active task with `workspace_list` at the open project root so duplicate or misplaced project structures are visible before planning.
 - After inspection, call `agent_assess_capabilities` with required, available, and missing prerequisites plus concrete evidence. The feature being requested is work to perform, not a missing prerequisite. A missing prerequisite requires a user decision before implementation.
+- Unknown external runtime status is not automatically a missing prerequisite. If the host grants `run_command`, checks such as `dotnet --version`, `cmake --version`, `node --version`, or `frate --version` belong in the plan and acceptance tests. Record the shell/tool-check capability as available, then verify the runtime during implementation. Pause only if the command is unavailable, the runtime is proved absent, and there is no acceptable fallback in the user's request.
 - Before inventing a module, build, test, package, or publication pattern, inspect a known-good precedent.
 - `agent_set_plan` must record constraints and executable acceptance tests as well as implementation steps.
 - Preserve the requested language, architecture, and scope. Do not substitute a script, launcher, another language, or reduced behavior without the user's decision.

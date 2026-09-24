@@ -1,0 +1,6 @@
+{
+  "name": "frusty-smoke-test",
+  "version": "0.1.0",
+  "type": "bin",
+  "description": "Minimal standalone Frate build smoke test."
+}

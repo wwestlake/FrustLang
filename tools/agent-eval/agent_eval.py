@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import time
 import urllib.error
@@ -140,11 +141,56 @@ def evaluate_assertion(assertion: dict, result: dict, workspace: Path) -> tuple[
         content = path.read_text(encoding="utf-8") if path.is_file() else ""
         passed = expected in content
         return passed, f"{relative} {'contains' if passed else 'does not contain'} {expected!r}"
+    if kind == "file_contains_any":
+        relative = str(assertion.get("path", ""))
+        values = [str(value) for value in assertion.get("values", [])]
+        path = workspace / relative
+        content = path.read_text(encoding="utf-8") if path.is_file() else ""
+        found = [value for value in values if value in content]
+        return bool(found), f"{relative} contains one of {values!r}: {found!r}"
     if kind == "task_field":
         field = str(assertion.get("field", ""))
         actual = nested(task, field)
         expected = assertion.get("equals")
         return actual == expected, f"task.{field} is {actual!r}; expected {expected!r}"
+    if kind == "command_exit":
+        command = str(assertion.get("command", "")).strip()
+        expected = int(assertion.get("equals", 0))
+        if not command:
+            return False, "command_exit requires a command"
+        completed = subprocess.run(
+            command,
+            cwd=workspace,
+            shell=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=int(assertion.get("timeoutSeconds", 60)),
+        )
+        output = completed.stdout.strip()
+        message = f"{command!r} exited {completed.returncode}; expected {expected}"
+        if output:
+            message += f"; output: {output[:240]}"
+        return completed.returncode == expected, message
+    if kind == "built_executable_exit":
+        expected = int(assertion.get("equals", 0))
+        executables = sorted((workspace / "build").glob("*.exe"))
+        if not executables:
+            return False, "build directory contains no .exe files"
+        executable = executables[0]
+        completed = subprocess.run(
+            [str(executable)],
+            cwd=workspace,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=int(assertion.get("timeoutSeconds", 60)),
+        )
+        output = completed.stdout.strip()
+        message = f"{executable.relative_to(workspace)} exited {completed.returncode}; expected {expected}"
+        if output:
+            message += f"; output: {output[:240]}"
+        return completed.returncode == expected, message
     if kind in {"max_tool_calls", "max_provider_calls", "max_duration_ms", "max_total_tokens"}:
         maximum = int(assertion.get("value", 0))
         field_map = {

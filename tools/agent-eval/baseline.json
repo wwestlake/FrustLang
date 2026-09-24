@@ -54,6 +54,37 @@
         { "type": "max_tool_calls", "value": 16 },
         { "type": "max_provider_calls", "value": 10 }
       ]
+    },
+    {
+      "id": "real-score-frust",
+      "title": "Create a real Frust scoring executable",
+      "fixture": "fixtures/real-score-frust",
+      "session": {
+        "maxProviderCalls": 28,
+        "maxToolCalls": 100,
+        "maxTotalTokens": 350000
+      },
+      "prompt": "Create a small real Frust executable project in the currently open fixture folder. The only existing file is .gitkeep; preserve it and create the project files alongside it. Implement actual program logic, not an empty smoke test. Files: frate.json, src/main.fr, and README.md. Implement a tiny scoring/rating engine in Frust using a ScoreInput struct and several functions. Avoid println_str and console_io; use return values for verification because standalone console output may not be linkable. Represent a ScoreInput with base points, combo multiplier, and penalty; compute final score; classify the score into numeric ranks; include deterministic self-check functions. main must return 0 only when all internal self-checks pass, otherwise return 1. Bind struct literals to locals before passing them into multi-argument calls. Inspect first, record capabilities and a concrete plan, implement the files, run workspace_check_frust, run frate build, run the built executable and confirm exit code 0, read back the created files, then complete. Keep code and docs in files, not chat. Keep the visible response brief.",
+      "assertions": [
+        { "type": "file_exists", "path": "frate.json" },
+        { "type": "file_exists", "path": "src/main.fr" },
+        { "type": "file_exists", "path": "README.md" },
+        { "type": "file_contains", "path": "src/main.fr", "value": "struct ScoreInput" },
+        { "type": "file_contains_any", "path": "src/main.fr", "values": ["fn final_score", "fn compute_score"] },
+        { "type": "file_contains_any", "path": "src/main.fr", "values": ["fn rank_for_score", "fn classify_score"] },
+        { "type": "file_contains_any", "path": "src/main.fr", "values": ["fn all_checks_pass", "fn check_scoring", "fn score_check"] },
+        { "type": "file_contains", "path": "src/main.fr", "value": "let input = ScoreInput" },
+        { "type": "file_contains", "path": "src/main.fr", "value": "fn main() -> i64" },
+        { "type": "file_contains", "path": "README.md", "value": "ScoreInput" },
+        { "type": "file_contains_any", "path": "README.md", "values": ["exit code", "process exit code"] },
+        { "type": "task_field", "field": "status", "equals": "completed" },
+        { "type": "task_field", "field": "verified", "equals": true },
+        { "type": "task_field", "field": "buildVerified", "equals": true },
+        { "type": "built_executable_exit", "equals": 0 },
+        { "type": "max_tool_calls", "value": 40 },
+        { "type": "max_provider_calls", "value": 20 },
+        { "type": "max_total_tokens", "value": 250000 }
+      ]
     }
   ]
 }

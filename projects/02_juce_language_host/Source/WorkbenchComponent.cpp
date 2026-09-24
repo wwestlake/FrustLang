@@ -78,6 +78,9 @@ WorkbenchComponent::WorkbenchComponent()
     terminalPanel = terminal.get();
     terminalPanel->getProjectRoot = [this] { return fileTreePanel->getRootDirectory(); };
 
+    auto planReview = std::make_unique<PlanReviewPanel>();
+    planReviewPanel = planReview.get();
+
     auto context = std::make_unique<ContextPanel>();
     contextPanel = context.get();
     contextPanel->getBindings = [this] { return consolePanel->getReplSession()->listBindings(); };
@@ -94,6 +97,20 @@ WorkbenchComponent::WorkbenchComponent()
     aiChat->getProjectRoot = [this] { return fileTreePanel->getRootDirectory(); };
     aiChat->getReadOnlyRoots = [this] { return getReadOnlyRoots(); };
     aiChat->openReadOnlyRoot = [this](const juce::File& folder) { addReadOnlyRoot(folder); };
+    aiChat->onPlanReady = [this](const juce::String& conversationId, const juce::String& markdown) {
+        if (planReviewPanel != nullptr)
+            planReviewPanel->setPlan(conversationId, markdown);
+    };
+    planReviewPanel->onApprove = [this](const juce::String& conversationId, const juce::String& markdown) {
+        if (aiChatPanel != nullptr && aiChatPanel->approveCurrentPlan(conversationId, markdown)
+            && planReviewPanel != nullptr)
+            planReviewPanel->clearPlan();
+    };
+    planReviewPanel->onDeny = [this](const juce::String& conversationId, const juce::String& reason) {
+        if (aiChatPanel != nullptr && aiChatPanel->denyCurrentPlan(conversationId, reason)
+            && planReviewPanel != nullptr)
+            planReviewPanel->clearPlan();
+    };
     aiChat->onFileSystemChanged = [this] {
         if (fileTreePanel != nullptr) fileTreePanel->refresh();
         for (const auto& reference : referenceTrees)
@@ -103,6 +120,12 @@ WorkbenchComponent::WorkbenchComponent()
     // discovered plugins are marked auto-load across restarts - same
     // mechanism already used for lastOpenedFolder.
     auto plugins = std::make_unique<PluginsPanel>(appProperties.get());
+    plugins->onPluginUiPanel = [this](const juce::String& id,
+                                      const juce::String& title,
+                                      std::unique_ptr<juce::Component> component) {
+        if (dockManager == nullptr || component == nullptr) return;
+        dockManager->registerPanel(id, title, std::move(component), CreationDock::DockTargetZone::Right);
+    };
 
     dockManager->registerPanel("explorer", "Project Explorer", std::move(fileTree), CreationDock::DockTargetZone::Left);
     dockManager->registerPanel("editor", "Code Editor", std::move(editor), CreationDock::DockTargetZone::CenterTab);
@@ -113,6 +136,7 @@ WorkbenchComponent::WorkbenchComponent()
     dockManager->registerPanel("plugins", "Plugins", std::move(plugins), CreationDock::DockTargetZone::Right);
     dockManager->registerPanel("console", "Console & Output REPL", std::move(console), CreationDock::DockTargetZone::Bottom);
     dockManager->registerPanel("errors", "Error List", std::move(errorList), CreationDock::DockTargetZone::Bottom);
+    dockManager->registerPanel("plan-review", "Plan Review", std::move(planReview), CreationDock::DockTargetZone::Bottom);
     dockManager->registerPanel("terminal", "OS Terminal", std::move(terminal), CreationDock::DockTargetZone::Bottom);
 
     if (appProperties)
@@ -163,6 +187,45 @@ WorkbenchComponent::WorkbenchComponent()
             return;
         }
         completion(true, "Session configured.", safeThis->aiChatPanel->externalSessionSnapshot());
+    };
+    localAgentApi->onPlanSnapshot = [safeChat = juce::Component::SafePointer<AiChatPanel>(aiChatPanel)]
+        (LocalAgentApi::Completion completion) mutable {
+        if (safeChat == nullptr)
+        {
+            completion(false, "The AI Assistant panel is unavailable.", {});
+            return;
+        }
+        completion(true, "Plan snapshot.", safeChat->pendingPlanSnapshot());
+    };
+    localAgentApi->onPlanApprove = [safeChat = juce::Component::SafePointer<AiChatPanel>(aiChatPanel)]
+        (const juce::var& options, LocalAgentApi::Completion completion) mutable {
+        if (safeChat == nullptr)
+        {
+            completion(false, "The AI Assistant panel is unavailable.", {});
+            return;
+        }
+        const auto markdown = options.getProperty("markdown", {}).toString();
+        if (!safeChat->approveCurrentPlan(markdown))
+        {
+            completion(false, "No plan is waiting for approval, the assistant is busy, or the supplied markdown is empty.", safeChat->pendingPlanSnapshot());
+            return;
+        }
+        completion(true, "Plan approved; execution started.", safeChat->externalSessionSnapshot());
+    };
+    localAgentApi->onPlanDeny = [safeChat = juce::Component::SafePointer<AiChatPanel>(aiChatPanel)]
+        (const juce::var& options, LocalAgentApi::Completion completion) mutable {
+        if (safeChat == nullptr)
+        {
+            completion(false, "The AI Assistant panel is unavailable.", {});
+            return;
+        }
+        const auto reason = options.getProperty("reason", {}).toString();
+        if (!safeChat->denyCurrentPlan(reason))
+        {
+            completion(false, "No plan is waiting for denial, or the assistant is busy.", safeChat->pendingPlanSnapshot());
+            return;
+        }
+        completion(true, "Plan denied.", safeChat->externalSessionSnapshot());
     };
     localAgentApi->onCancel = [safeChat = juce::Component::SafePointer<AiChatPanel>(aiChatPanel)] {
         if (safeChat != nullptr)

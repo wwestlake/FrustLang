@@ -27,6 +27,14 @@ int main()
     expect(execute.ok && execute.mode == AgentMode::execute, "Accepts fenced provider JSON");
     expect(execute.continuation, "Parses plan continuation");
 
+    auto conversation = AgentModeRouter::parse(
+        R"({"mode":"conversation","continuation":false,"confidence":0.91,"reason":"requirements discussion"})");
+    expect(conversation.ok && conversation.mode == AgentMode::conversation, "Parses conversation mode");
+
+    auto architect = AgentModeRouter::parse(
+        R"({"mode":"architect","continuation":false,"confidence":0.93,"reason":"business architecture discussion"})");
+    expect(architect.ok && architect.mode == AgentMode::architect, "Parses architect mode");
+
     expect(!AgentModeRouter::parse("I would use execute mode.").ok, "Rejects prose instead of JSON");
     expect(!AgentModeRouter::parse(R"({"mode":"destroy","continuation":false})").ok,
            "Rejects unknown modes");
@@ -43,6 +51,8 @@ int main()
 
     const auto messages = AgentModeRouter::messagesFor("execute the plan", "Previous mode: plan");
     expect(messages.size() == 2, "Router uses a minimal two-message context");
+    expect(messages[0].content.find("conversation|architect|answer|review|plan|execute") != std::string::npos,
+           "Router advertises architect as a valid mode");
     expect(messages[1].content.find("execute the plan") != std::string::npos,
            "Router preserves the original request");
     expect(messages[1].content.find("Previous mode: plan") != std::string::npos,

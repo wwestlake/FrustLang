@@ -26,6 +26,79 @@ bool isPlanContinuation(const juce::String& request)
         || text.contains("implement the plan");
 }
 
+void appendRagAuditRecord(const juce::File& conversationFolder,
+                          const juce::String& conversationId,
+                          const ConversationBlock* userBlock,
+                          const rag::RetrievalResult& retrieval,
+                          const juce::String& profile,
+                          const juce::String& provider,
+                          const juce::String& model,
+                          const juce::String& mode,
+                          const juce::String& access,
+                          const juce::String& outputDetail,
+                          const juce::String& projectRoot,
+                          bool contextAttached)
+{
+    const auto auditId = juce::Uuid().toString();
+    auto auditFolder = conversationFolder.getChildFile(".agent-state").getChildFile("rag-audit");
+    auto auditFile = auditFolder.getChildFile(conversationId + ".jsonl");
+
+    auto* root = new juce::DynamicObject();
+    root->setProperty("schema", "frustide-litesemrag-audit");
+    root->setProperty("schemaVersion", 1);
+    root->setProperty("auditId", auditId);
+    root->setProperty("timestamp", juce::Time::getCurrentTime().toISO8601(true));
+    root->setProperty("conversationId", conversationId);
+    root->setProperty("conversationFile", conversationFolder.getChildFile(conversationId + ".json").getFullPathName());
+    root->setProperty("auditFile", auditFile.getFullPathName());
+    root->setProperty("query", retrieval.query);
+    root->setProperty("profile", profile);
+    root->setProperty("provider", provider);
+    root->setProperty("model", model);
+    root->setProperty("mode", mode);
+    root->setProperty("access", access);
+    root->setProperty("outputDetail", outputDetail);
+    root->setProperty("projectRoot", projectRoot);
+    root->setProperty("database", rag::getKnowledgeDatabaseFile().getFullPathName());
+    root->setProperty("contextAttachedToPrompt", contextAttached);
+    root->setProperty("contextCharacterCount", retrieval.context.length());
+    root->setProperty("resultCount", static_cast<int>(retrieval.nodes.size()));
+
+    if (userBlock != nullptr)
+    {
+        auto* block = new juce::DynamicObject();
+        block->setProperty("index", userBlock->index);
+        block->setProperty("timestamp", userBlock->timestamp);
+        block->setProperty("role", userBlock->role);
+        block->setProperty("previousHash", userBlock->previousHash);
+        block->setProperty("hash", userBlock->hash);
+        root->setProperty("conversationBlock", juce::var(block));
+    }
+
+    juce::Array<juce::var> tokens;
+    for (const auto& token : retrieval.tokens)
+        tokens.add(token);
+    root->setProperty("tokens", tokens);
+
+    juce::Array<juce::var> nodes;
+    for (const auto& retrieved : retrieval.nodes)
+    {
+        auto* node = new juce::DynamicObject();
+        node->setProperty("id", retrieved.id);
+        node->setProperty("type", retrieved.type);
+        node->setProperty("name", retrieved.name);
+        node->setProperty("sourceFile", retrieved.sourceFile);
+        node->setProperty("content", retrieved.content);
+        nodes.add(juce::var(node));
+    }
+    root->setProperty("nodes", nodes);
+    root->setProperty("context", retrieval.context);
+
+    if (!auditFolder.createDirectory())
+        return;
+    auditFile.appendText(juce::JSON::toString(juce::var(root), false) + "\n", false, false, "\n");
+}
+
 // Shows a card and waits for the user's answer, from the assistant's worker thread. Returns the button pressed and the comment,
 // or -1 when the run was stopped, the panel is gone, or nobody answered in thirty minutes (the card is then taken away).
 std::pair<int, juce::String> askWithCard(juce::Component::SafePointer<AiChatPanel> panel, const ActionCard::Request& request,
@@ -269,10 +342,12 @@ AiChatPanel::AiChatPanel(juce::ApplicationProperties* properties)
     modeBox.addItem("Plan", static_cast<int>(AgentMode::plan));
     modeBox.addItem("Execute", static_cast<int>(AgentMode::execute));
     modeBox.addItem("Review", static_cast<int>(AgentMode::review));
+    modeBox.addItem("Conversation", static_cast<int>(AgentMode::conversation));
+    modeBox.addItem("Architect", static_cast<int>(AgentMode::architect));
     modeBox.setTooltip("Agent workflow mode; access is controlled separately");
     const auto savedMode = appProperties != nullptr
         ? appProperties->getUserSettings()->getIntValue("aiAssistantMode", 1) : 1;
-    modeBox.setSelectedId(juce::jlimit(1, 4, savedMode), juce::dontSendNotification);
+    modeBox.setSelectedId(juce::jlimit(1, 7, savedMode), juce::dontSendNotification);
     modeBox.onChange = [this] {
         if (appProperties == nullptr) return;
         appProperties->getUserSettings()->setValue("aiAssistantMode", modeBox.getSelectedId());
@@ -367,6 +442,80 @@ bool AiChatPanel::requestStop(const juce::String& reason)
     return true;
 }
 
+juce::var AiChatPanel::pendingPlanSnapshot() const
+{
+    auto* snapshot = new juce::DynamicObject();
+    snapshot->setProperty("conversationId", currentConversation.id);
+    snapshot->setProperty("busy", requestInFlight);
+    snapshot->setProperty("waitingForPlanApproval", false);
+
+    AgentTask task;
+    if (AgentTask::load(conversationStore.getConversationFolder(), currentConversation.id, task))
+    {
+        snapshot->setProperty("task", task.evaluationSnapshot());
+        snapshot->setProperty("waitingForPlanApproval", task.isWaitingForPlanApproval());
+        if (task.isWaitingForPlanApproval())
+            snapshot->setProperty("markdown", task.planMarkdown());
+    }
+    return juce::var(snapshot);
+}
+
+bool AiChatPanel::approveCurrentPlan(const juce::String& conversationId, const juce::String& markdown)
+{
+    if (requestInFlight || conversationId.isEmpty() || markdown.trim().isEmpty())
+        return false;
+    AgentTask task;
+    if (!AgentTask::load(conversationStore.getConversationFolder(), conversationId, task)
+        || !task.isWaitingForPlanApproval())
+        return false;
+    if (!task.approvePlanMarkdown(markdown))
+        return false;
+    if (!task.save(conversationStore.getConversationFolder()))
+        return false;
+    taskStatusLabel.setText(task.statusLine(), juce::dontSendNotification);
+    modeBox.setSelectedId(static_cast<int>(AgentMode::execute), juce::sendNotificationSync);
+    inputBox.setText("Execute the approved plan.", false);
+    sendMessage();
+    return true;
+}
+
+bool AiChatPanel::approveCurrentPlan(const juce::String& markdown)
+{
+    juce::String approvedMarkdown = markdown;
+    if (approvedMarkdown.trim().isEmpty())
+    {
+        AgentTask task;
+        if (!AgentTask::load(conversationStore.getConversationFolder(), currentConversation.id, task)
+            || !task.isWaitingForPlanApproval())
+            return false;
+        approvedMarkdown = task.planMarkdown();
+    }
+    return approveCurrentPlan(currentConversation.id, approvedMarkdown);
+}
+
+bool AiChatPanel::denyCurrentPlan(const juce::String& conversationId, const juce::String& reason)
+{
+    if (requestInFlight || conversationId.isEmpty())
+        return false;
+    AgentTask task;
+    if (!AgentTask::load(conversationStore.getConversationFolder(), conversationId, task)
+        || !task.isWaitingForPlanApproval())
+        return false;
+    task.denyPlan(reason);
+    if (!task.save(conversationStore.getConversationFolder()))
+        return false;
+    taskStatusLabel.setText(task.statusLine(), juce::dontSendNotification);
+    appendTranscript("system", reason.isNotEmpty()
+        ? "Plan denied: " + reason
+        : "Plan denied.");
+    return true;
+}
+
+bool AiChatPanel::denyCurrentPlan(const juce::String& reason)
+{
+    return denyCurrentPlan(currentConversation.id, reason);
+}
+
 AiChatPanel::~AiChatPanel()
 {
     // A run still going: tell it to stop (a running command is ended at once) and give its thread a moment to finish, so
@@ -455,7 +604,7 @@ void AiChatPanel::resized()
     bounds.removeFromTop(4);
 
     auto taskBar = bounds.removeFromTop(22);
-    modeBox.setBounds(taskBar.removeFromLeft(92));
+    modeBox.setBounds(taskBar.removeFromLeft(118));
     taskBar.removeFromLeft(4);
     outputBox.setBounds(taskBar.removeFromLeft(92));
     taskBar.removeFromLeft(4);
@@ -696,7 +845,9 @@ bool AiChatPanel::configureExternalSession(const juce::var& options, juce::Strin
     };
 
     if (!selectNamed(modeBox, options.getProperty("mode", {}).toString(),
-                     { { "auto", 1 }, { "plan", 2 }, { "execute", 3 }, { "review", 4 } }, "mode")
+                     { { "auto", 1 }, { "plan", 2 }, { "execute", 3 }, { "review", 4 },
+                       { "answer", 5 }, { "conversation", 6 }, { "discuss", 6 },
+                       { "architect", 7 }, { "architecture", 7 } }, "mode")
         || !selectNamed(accessBox, options.getProperty("access", {}).toString(),
                        { { "observe", 1 }, { "workspace", 2 }, { "full", 3 }, { "full access", 3 } }, "access")
         || !selectNamed(outputBox, options.getProperty("outputDetail", {}).toString(),
@@ -1118,17 +1269,30 @@ void AiChatPanel::startResolvedMessage(const juce::String& userText, AgentMode s
 
     juce::Component::SafePointer<AiChatPanel> safeThis(this);
     auto historySnapshot = history;
-    auto ragContext = rag::getContextForQuery(userText);
+    const auto projectRoot = getProjectRoot ? getProjectRoot() : juce::File();
+    auto ragRetrieval = rag::getRetrievalForQuery(userText, projectRoot);
+    auto ragContext = ragRetrieval.context;
     if (ragContext.isNotEmpty() && !historySnapshot.empty())
         historySnapshot.back().content =
             (userText + "\n\n---\nRetrieved context for this request:\n" + ragContext).toStdString();
-    const auto projectRoot = getProjectRoot ? getProjectRoot() : juce::File();
     const auto access = accessBox.getSelectedId() == 3 ? EngineerTools::AccessLevel::full
         : accessBox.getSelectedId() == 2 ? EngineerTools::AccessLevel::workspace
                                          : EngineerTools::AccessLevel::observe;
     const auto outputDetail = outputBox.getSelectedId() == 1 ? juce::String("brief")
         : outputBox.getSelectedId() == 3 ? juce::String("detailed") : juce::String("standard");
     const bool executeRequested = selectedMode == AgentMode::execute;
+    appendRagAuditRecord(conversationStore.getConversationFolder(),
+                         currentConversation.id,
+                         currentConversation.blocks.empty() ? nullptr : &currentConversation.blocks.back(),
+                         ragRetrieval,
+                         profileName,
+                         providerIdentity,
+                         modelIdentity,
+                         AgentModeRouter::modeName(selectedMode),
+                         EngineerTools::accessName(access),
+                         outputDetail,
+                         projectRoot.getFullPathName(),
+                         ragContext.isNotEmpty() && !historySnapshot.empty());
     EngineerTools engineerTools(projectRoot, access, executeRequested);
     const auto readOnlyRoots = getReadOnlyRoots ? getReadOnlyRoots() : std::vector<juce::File> {};
     engineerTools.setReferenceRoots(readOnlyRoots);
@@ -1152,6 +1316,8 @@ void AiChatPanel::startResolvedMessage(const juce::String& userText, AgentMode s
         engineerTools.setCommandServices(std::move(services));
     }
     auto toolDefinitions = engineerTools.definitions();
+    if (selectedMode == AgentMode::conversation || selectedMode == AgentMode::architect)
+        toolDefinitions.clear();
     if (!historySnapshot.empty())
     {
         historySnapshot.front().content +=
@@ -1180,6 +1346,26 @@ void AiChatPanel::startResolvedMessage(const juce::String& userText, AgentMode s
             + ". Brief means state only the result and essential caveats. Standard means a balanced explanation. "
               "Detailed means include reasoning, evidence, and relevant implementation detail. "
               "Output detail changes presentation only; it does not change the task, mode, access, or approval rules.";
+        if (selectedMode == AgentMode::conversation)
+            historySnapshot.front().content += " Conversation mode is for natural back-and-forth, requirements discussion, "
+                "brainstorming, and social comments. Do not create a host task packet, do not use project tools, do not "
+                "claim 'Task completed', and do not turn ordinary conversation into an implementation report. When asked "
+                "about capabilities that are available only in tool modes, explain the mode boundary instead of making an "
+                "absolute incapability claim. For example: say that Python can be run in Execute mode through run_command "
+                "with `py` when it is on PATH, while Conversation mode can only discuss that plan.";
+        if (selectedMode == AgentMode::architect)
+            historySnapshot.front().content += " Architect mode is a sustained abstract architecture conversation space. "
+                "Stay above implementation: discuss business requirements, end-user purpose, product intent, workflows, "
+                "domain and business objects, vocabulary, responsibilities, boundaries, trust, risk, constraints, data "
+                "shape, system evolution, and software architecture only as it follows from those concerns. Do not create "
+                "a host task packet, do not use project tools, do not write code, and do not turn the conversation into an "
+                "implementation plan. Be literate in artifacts such as use cases, requirements, architecture notes, "
+                "decision records, business rules, risks, domain model notes, open questions, and interface contracts, "
+                "but do not force those artifacts. Ask open-ended requirements questions when the purpose, boundaries, "
+                "actors, workflows, or tradeoffs are unclear; avoid multiple-choice grids unless the user is choosing "
+                "among known alternatives. When the user asks to document, capture, or write up an architectural construct, "
+                "produce the requested markdown artifact clearly and durably in the conversation; saving it to files is a "
+                "separate Execute-mode task unless a capture tool is explicitly available.";
         if (!readOnlyRoots.empty())
         {
             historySnapshot.front().content += " Open read-only reference roots:";
@@ -1374,11 +1560,17 @@ void AiChatPanel::startResolvedMessage(const juce::String& userText, AgentMode s
                         "implementation. Implement the smallest functional vertical slice now; do not write "
                         "'implementation will go here' scaffolding into the project." };
                 }
-                else
+                else if (agentRun)
                 {
-                    result = engineerTools.execute(call);
-                    if (agentRun)
+                    const auto preflightError = task.engineerToolPreflight(call);
+                    if (preflightError.isNotEmpty())
                     {
+                        result = { false, false, preflightError };
+                        task.recordEngineerResult(call.name, result);
+                    }
+                    else
+                    {
+                        result = engineerTools.execute(call);
                         if (result.ok && !result.workspaceChanged && !result.verificationPerformed
                             && (call.name == "workspace_list" || call.name == "workspace_read"
                                 || call.name == "workspace_search" || call.name == "registry_search"))
@@ -1401,6 +1593,10 @@ void AiChatPanel::startResolvedMessage(const juce::String& userText, AgentMode s
                         if (reason.isNotEmpty())
                             task.fail(reason);
                     }
+                }
+                else
+                {
+                    result = engineerTools.execute(call);
                 }
                 workspaceChanged = workspaceChanged || result.workspaceChanged;
                 const auto summary = result.message.upToFirstOccurrenceOf("\n", false, false);
@@ -1478,7 +1674,11 @@ void AiChatPanel::startResolvedMessage(const juce::String& userText, AgentMode s
                 safeThis->renderConversation();
                 safeThis->completeExternalRequest(true, juce::String(finalContent));
                 if (agentRun)
+                {
                     safeThis->taskStatusLabel.setText(task.statusLine(), juce::dontSendNotification);
+                    if (task.isWaitingForPlanApproval() && safeThis->onPlanReady)
+                        safeThis->onPlanReady(safeThis->currentConversation.id, task.planMarkdown());
+                }
                 safeThis->frusty.showMood(agentRun && !task.isCompleted()
                     ? FrustyComponent::Mood::compilerError
                     : FrustyComponent::Mood::success, 1800);
@@ -1518,5 +1718,7 @@ juce::String AiChatPanel::loadFrustSystemPrompt()
            "the LiteSemRAG context attached to individual user requests as the source of truth for Frust. "
            "Do not assume Frust works like Rust, C++, or any other language where they differ. If the "
            "retrieved context is not enough, say exactly what needs to be checked in the grammar, compiler, "
-           "or library sources.\n\nAuthoritative spec path: " + specLocation + "\n\n---\n\n" + agentContext;
+           "or library sources. LiteSemRAG memory cards with kind `personality` are durable voice and style "
+           "guidance for how the embedded assistant should sound; follow them unless they conflict with task "
+           "safety, tool rules, or explicit user instructions.\n\nAuthoritative spec path: " + specLocation + "\n\n---\n\n" + agentContext;
 }

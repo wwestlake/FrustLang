@@ -214,6 +214,85 @@
         },
         "required": ["command", "instructions", "reason"]
       }
+    },
+    {
+      "name": "plugin_prepare_release_packet",
+      "description": "Create the review packet for a FrustIDE plugin before community publication: release checklist, registry metadata, permission summary, capability summary, and forum announcement draft.",
+      "usage": "Use after a plugin has been implemented or substantially designed and the user is considering sharing it. This does not publish. It prepares the artifacts the user must review before final approval: PLUGIN_RELEASE_PACKET.md, REGISTRY_METADATA.json, and FORUM_ANNOUNCEMENT_DRAFT.md.",
+      "access": "workspace",
+      "tokens": ["plugin", "release", "publish", "registry", "forum", "announcement", "community", "metadata", "permissions", "capabilities"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "plugin_name": { "type": "string", "minLength": 1, "description": "Short package/plugin name." },
+          "title": { "type": "string", "description": "Human-facing plugin title. Defaults to plugin_name." },
+          "version": { "type": "string", "default": "0.1.0" },
+          "summary": { "type": "string", "minLength": 1, "description": "What the plugin does and why users would want it." },
+          "plugin_directory": { "type": "string", "description": "Where to write the packet, relative to the open project. Defaults to plugins/<plugin_name>." },
+          "registry_name": { "type": "string", "description": "Registry package name. Defaults to a safe form of plugin_name." },
+          "forum_category": { "type": "string", "default": "Frust Plugins" },
+          "permissions": { "type": "array", "items": { "type": "string" } },
+          "capabilities": { "type": "array", "items": { "type": "string" } },
+          "files": { "type": "array", "items": { "type": "string" }, "description": "Source, manifest, cards, tests, and docs that belong to the release." },
+          "tests": { "type": "array", "items": { "type": "string" }, "description": "Verification evidence already passed or still required." },
+          "approval_notes": { "type": "string", "description": "Any final user-approval notes or constraints." }
+        },
+        "required": ["plugin_name", "summary"]
+      }
+    },
+    {
+      "name": "memory_list_cards",
+      "description": "List durable LiteSemRAG memory cards that steer the Virtual Engineer across project or global scope.",
+      "usage": "Use before changing memory, or when the user asks what you remember. Project memory applies only to the open workspace. Global memory applies across sessions and projects.",
+      "access": "observe",
+      "tokens": ["memory", "remember", "cards", "rules", "preferences", "global", "project"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "scope": { "type": "string", "enum": ["project", "global", "both"], "default": "project" },
+          "include_inactive": { "type": "boolean", "default": false }
+        }
+      }
+    },
+    {
+      "name": "memory_upsert_card",
+      "description": "Create or update a durable LiteSemRAG memory card from an explicit user rule, preference, workflow, or project convention.",
+      "usage": "Use only for durable memory the user asked you to remember or clearly approved. Prefer project scope for project-specific rules. Use global scope only for cross-session user preferences or identity/personality rules. The card is loaded after ordinary process cards.",
+      "access": "workspace",
+      "tokens": ["memory", "remember", "card", "create", "update", "preference", "rule", "personality"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "scope": { "type": "string", "enum": ["project", "global"], "default": "project" },
+          "id": { "type": "string", "description": "Stable card id. If omitted the host derives one from the title." },
+          "kind": { "type": "string", "default": "user_rule" },
+          "title": { "type": "string", "minLength": 1 },
+          "tokens": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+          "priority": { "type": "integer", "minimum": 0, "maximum": 100, "default": 75 },
+          "status": { "type": "string", "enum": ["active", "inactive"], "default": "active" },
+          "text": { "type": "string", "minLength": 1 }
+        },
+        "required": ["title", "text"]
+      }
+    },
+    {
+      "name": "memory_delete_card",
+      "description": "Delete a durable LiteSemRAG memory card by id.",
+      "usage": "Use when the user explicitly says a remembered rule or preference is wrong, obsolete, or should be forgotten. Prefer listing cards first if the id is not known.",
+      "access": "workspace",
+      "tokens": ["memory", "forget", "delete", "card", "remove", "obsolete"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "scope": { "type": "string", "enum": ["project", "global"], "default": "project" },
+          "id": { "type": "string", "minLength": 1 }
+        },
+        "required": ["id"]
+      }
     }
   ]
 }

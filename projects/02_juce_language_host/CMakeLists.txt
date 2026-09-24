@@ -123,6 +123,8 @@ target_sources(LagDaemonResearchIDE PRIVATE
     Source/AiChatPanel.cpp
     Source/FrustyComponent.h
     Source/FrustyComponent.cpp
+    Source/PluginUiPanel.h
+    Source/PluginUiPanel.cpp
     Source/ActionCard.h
     Source/ActionCard.cpp
     Source/EngineerTools.h
@@ -135,6 +137,8 @@ target_sources(LagDaemonResearchIDE PRIVATE
     Source/AgentModeRouter.cpp
     Source/AiConversationView.h
     Source/AiConversationView.cpp
+    Source/PlanReviewPanel.h
+    Source/PlanReviewPanel.cpp
     Source/LocalAgentApi.h
     Source/LocalAgentApi.cpp
     Source/FratePanel.h

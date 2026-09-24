@@ -10,8 +10,8 @@
     },
     {
       "id": "assess",
-      "purpose": "Separate the requested feature from prerequisite capabilities and verify that the toolchain can support the work.",
-      "exit": "agent_assess_capabilities records required, available, and missing prerequisites with evidence. Missing prerequisites pause for a user decision."
+      "purpose": "Separate the requested feature from prerequisite capabilities and verify that the host has the tools needed to attempt the work.",
+      "exit": "agent_assess_capabilities records required, available, and missing prerequisites with evidence. Unknown external runtime status is recorded as an implementation-time verification step when run_command is available. Proven missing prerequisites pause for a user decision."
     },
     {
       "id": "plan",
@@ -45,9 +45,12 @@
     "Treat host-supplied provider, model ID, application, and role as authoritative runtime identity; never infer model identity from application branding.",
     "Inspect a known-good precedent before inventing a module, build, package, or publication pattern.",
     "Do not substitute another language, script, library, architecture, or reduced scope without a user decision.",
+    "Treat installed-tool checks such as dotnet --version, cmake --version, node --version, or frate --version as plan/verification steps when run_command is available, not as missing prerequisites before implementation.",
     "Use workspace editing tools for source files. Use the shell for inspection, builds, tests, and approved operational commands, not as a text editor.",
+    "For standalone Frate build smoke tests, prefer numeric-return entry points. Treat console printing through println_str or println_* as a JIT-only capability unless a current build path proves it is linkable.",
     "After the second recurrence of a failure, stop surface-level edits and investigate the root cause. The third recurrence is a blocker.",
     "Build and test before package or local installation. Publish only after all acceptance tests pass.",
+    "When the user says they wish the IDE/app had a new capability, treat it as a plugin opportunity: offer to construct a plugin, ask open requirements questions, design permissions and routing cards, build and test locally, prepare a release packet, ask for final approval, then publish and announce only after approval.",
     "Completion reports must distinguish completed, partial, and blocked work without optimistic claims."
   ]
 }

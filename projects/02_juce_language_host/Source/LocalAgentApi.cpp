@@ -25,6 +25,15 @@ juce::String headerValue(const juce::StringArray& lines, const juce::String& nam
     }
     return {};
 }
+
+juce::var responseBody(const juce::String& response, const juce::var& details = {})
+{
+    auto* body = new juce::DynamicObject();
+    body->setProperty("response", response);
+    if (!details.isVoid())
+        body->setProperty("details", details);
+    return juce::var(body);
+}
 }
 
 struct LocalAgentApi::State
@@ -224,6 +233,59 @@ void LocalAgentApi::handleConnection(juce::StreamingSocket& socket)
         auto* body = new juce::DynamicObject();
         body->setProperty("status", "stopping");
         writeJson(socket, 202, "Accepted", juce::var(body));
+        return;
+    }
+
+    if ((request.method == "GET" && request.path == "/v1/plan")
+        || (request.method == "POST" && (request.path == "/v1/plan/approve" || request.path == "/v1/plan/deny")))
+    {
+        const bool getPlan = request.method == "GET";
+        const bool approve = request.path == "/v1/plan/approve";
+        const auto parsed = getPlan ? juce::var(new juce::DynamicObject())
+                                    : juce::JSON::parse(request.body);
+        if (!getPlan && !parsed.isObject())
+        {
+            writeJson(socket, 400, "Bad Request", errorBody("Plan action body must be a JSON object."));
+            return;
+        }
+
+        auto handler = getPlan ? PlanDecisionHandler()
+                     : approve ? onPlanApprove
+                               : onPlanDeny;
+        auto snapshotHandler = onPlanSnapshot;
+        if ((getPlan && !snapshotHandler) || (!getPlan && !handler))
+        {
+            writeJson(socket, 503, "Service Unavailable",
+                      errorBody("The IDE plan controller is unavailable."));
+            return;
+        }
+
+        juce::WaitableEvent done;
+        bool ok = false;
+        juce::String result;
+        juce::var details;
+        juce::MessageManager::callAsync([getPlan, snapshotHandler, handler, parsed, &done, &ok, &result, &details] {
+            auto completion = [&done, &ok, &result, &details](bool completionOk,
+                                                               const juce::String& completionResult,
+                                                               const juce::var& completionDetails) {
+                ok = completionOk;
+                result = completionResult;
+                details = completionDetails;
+                done.signal();
+            };
+            if (getPlan)
+                snapshotHandler(std::move(completion));
+            else
+                handler(parsed, std::move(completion));
+        });
+
+        if (!done.wait(5000))
+        {
+            writeJson(socket, 504, "Gateway Timeout", errorBody("Timed out waiting for the IDE plan controller."));
+            return;
+        }
+        writeJson(socket, ok ? 200 : 409, ok ? "OK" : "Conflict",
+                  ok ? responseBody(result, details) : errorBody(result));
         return;
     }
 

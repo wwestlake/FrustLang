@@ -67,6 +67,41 @@ POST /v1/cancel
 
 Returns `202` with `status: stopping`. Cancellation uses the same stop path as the AI Assistant's Stop button. The worker finishes the current provider request, then stops before another model or tool call.
 
+## Plan review
+
+When an Execute run records a plan, the host pauses in
+`waiting-for-plan-approval`. The UI shows the Plan Review panel. The
+local API exposes the same gate so orchestration clients can inspect,
+approve, edit, or deny the plan.
+
+```http
+GET /v1/plan
+```
+
+Returns the current conversation id, whether a plan is waiting, the plan
+markdown when present, and the task snapshot.
+
+```http
+POST /v1/plan/approve
+Content-Type: application/json
+
+{"markdown":"optional edited markdown"}
+```
+
+If `markdown` is omitted or empty, the currently pending markdown is
+approved as-is. Approval switches the assistant into Execute and starts
+the same continuation as the UI Approve button.
+
+```http
+POST /v1/plan/deny
+Content-Type: application/json
+
+{"reason":"What must change before approval."}
+```
+
+Denial records feedback and leaves the assistant waiting for the next
+user instruction.
+
 ## PowerShell example
 
 ```powershell

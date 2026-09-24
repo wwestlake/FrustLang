@@ -11,6 +11,8 @@ public:
     using Completion = std::function<void(bool, const juce::String&, const juce::var&)>;
     using MessageHandler = std::function<void(const juce::String&, Completion)>;
     using SessionHandler = std::function<void(const juce::var&, Completion)>;
+    using PlanSnapshotHandler = std::function<void(Completion)>;
+    using PlanDecisionHandler = std::function<void(const juce::var&, Completion)>;
     using CancelHandler = std::function<void()>;
 
     explicit LocalAgentApi(juce::File discoveryFileOverride = {});
@@ -21,6 +23,9 @@ public:
 
     MessageHandler onMessage;
     SessionHandler onSession;
+    PlanSnapshotHandler onPlanSnapshot;
+    PlanDecisionHandler onPlanApprove;
+    PlanDecisionHandler onPlanDeny;
     CancelHandler onCancel;
 
     static juce::File getDiscoveryFile();

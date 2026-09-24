@@ -83,6 +83,10 @@ private:
     Result launchProgram(const juce::var& arguments) const;
     Result stopProgram(const juce::var& arguments) const;
     Result userTest(const juce::var& arguments) const;
+    Result preparePluginReleasePacket(const juce::var& arguments) const;
+    Result listMemoryCards(const juce::var& arguments) const;
+    Result upsertMemoryCard(const juce::var& arguments) const;
+    Result deleteMemoryCard(const juce::var& arguments) const;
 
     juce::File root;
     mutable std::vector<WorkspaceRoot> workspaceRoots;
