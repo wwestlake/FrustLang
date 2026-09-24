@@ -14,6 +14,7 @@ AGENT_CONTEXT = REPO_ROOT / "projects" / "frust-ide-agent" / "FRUST_AI_CONTEXT.m
 SPEC_FILE = REPO_ROOT / "projects" / "01_language_paradigms" / "02_functional" / "FRUST_LANG_SPEC.md"
 ENGINEER_TOOL_CARDS = REPO_ROOT / "projects" / "frust-ide-agent" / "ENGINEER_TOOL_CARDS.jsonl"
 ENGINEER_PROCESS_CARDS = REPO_ROOT / "projects" / "frust-ide-agent" / "ENGINEER_PROCESS_CARDS.jsonl"
+PROJECT_PROCESS_CARDS = REPO_ROOT / "projects" / "frust-ide-agent" / "PROJECT_PROCESS_CARDS.jsonl"
 MEMORY_GLOBAL_CARDS = REPO_ROOT / "projects" / "frust-ide-agent" / "MEMORY_GLOBAL_CARDS.jsonl"
 GRAMMAR_FILES = [
     REPO_ROOT / "projects" / "01_language_paradigms" / "02_functional" / "grammar" / "frust.y",
@@ -119,6 +120,7 @@ def parse_card_file(cursor, path, node_type, label):
 def parse_engineer_cards(cursor):
     parse_card_file(cursor, ENGINEER_TOOL_CARDS, "TOOL", "Tool")
     parse_card_file(cursor, ENGINEER_PROCESS_CARDS, "PROCESS", "Process")
+    parse_card_file(cursor, PROJECT_PROCESS_CARDS, "PROJECT_PROCESS", "Project Process")
     parse_card_file(cursor, MEMORY_GLOBAL_CARDS, "MEMORY_GLOBAL", "Global Memory")
 
 def parse_pods(cursor):
