@@ -2,6 +2,7 @@
 #include <CompilerApi.h>
 #include <frate/FrateCache.h>
 #include <frate/FrateConfig.h>
+#include <node_compiler/NodeCompiler.h>
 
 #include <filesystem>
 #include <mutex>
@@ -280,6 +281,8 @@ EngineerTools::Result EngineerTools::execute(const ai_provider::ToolCall& call) 
     if (name == "workspace_write_file") return writeFile(arguments);
     if (name == "workspace_replace_text") return replaceText(arguments);
     if (name == "workspace_check_frust") return checkFrust(arguments);
+    if (name == "node_schematic_create") return createNodeSchematic(arguments);
+    if (name == "node_schematic_compile") return compileNodeSchematic(arguments);
     if (name == "run_command") return runCommand(arguments);
     if (name == "launch_program") return launchProgram(arguments);
     if (name == "stop_program") return stopProgram(arguments);
@@ -566,6 +569,88 @@ EngineerTools::Result EngineerTools::checkFrust(const juce::var& arguments) cons
     for (const auto& diagnostic : result.diagnostics)
         output << "\n" << juce::String(frust::FormatDiagnostic(diagnostic));
     return { result.ok, false, output, true };
+}
+
+EngineerTools::Result EngineerTools::createNodeSchematic(const juce::var& arguments) const
+{
+    juce::String error;
+    const auto file = resolveProjectPath(stringProperty(arguments, "path"), PathPurpose::write, error);
+    if (error.isNotEmpty()) return failure(error);
+    if (!file.hasFileExtension("frnode.json;json"))
+        return failure("Node schematics should use .frnode.json or .json.");
+    if (file.existsAsFile()) return failure("File already exists; read and edit it instead of overwriting.");
+
+    const auto graphJson = stringProperty(arguments, "graph_json").trim();
+    if (graphJson.isEmpty()) return failure("graph_json is required.");
+    const auto parsed = juce::JSON::parse(graphJson);
+    if (!parsed.isObject()) return failure("graph_json is not valid JSON object text.");
+    const auto target = stringProperty(arguments, "target", "frust").trim().toLowerCase();
+    if (target != "frust")
+        return failure("The research IDE node tool currently has only the Frust backend wired. Production has a GLSL node system that should be used as reference while the cleaner shared graph target contract is implemented here.");
+
+    const auto compileNow = boolProperty(arguments, "compile", true);
+    juce::String generated;
+    if (compileNow)
+    {
+        const auto compiled = node_compiler::CompileGraphToSource(graphJson.toStdString());
+        if (!compiled.ok)
+            return failure("The schematic does not compile: " + juce::String(compiled.errorMessage));
+        generated = juce::String(compiled.source);
+    }
+
+    const auto parentResult = file.getParentDirectory().createDirectory();
+    if (parentResult.failed()) return failure(parentResult.getErrorMessage());
+    if (!file.replaceWithText(juce::JSON::toString(parsed, true)))
+        return failure("Could not write the node schematic.");
+
+    juce::String out = "Created node schematic " + displayPath(file);
+    if (compileNow)
+    {
+        const auto outputPath = stringProperty(arguments, "output_path").trim();
+        const auto sourceFile = outputPath.isNotEmpty()
+            ? resolveProjectPath(outputPath, PathPurpose::write, error)
+            : file.withFileExtension(".fr");
+        if (error.isNotEmpty()) return failure(error);
+        if (!sourceFile.getParentDirectory().createDirectory())
+            return failure("Could not create output folder: " + sourceFile.getParentDirectory().getFullPathName());
+        if (!sourceFile.replaceWithText(generated))
+            return failure("Could not write generated Frust source.");
+        out << "\nCompiled generated Frust source to " << displayPath(sourceFile);
+    }
+    return { true, true, out, compileNow };
+}
+
+EngineerTools::Result EngineerTools::compileNodeSchematic(const juce::var& arguments) const
+{
+    juce::String error;
+    const auto file = resolveProjectPath(stringProperty(arguments, "path"), PathPurpose::read, error);
+    if (error.isNotEmpty()) return failure(error);
+    if (!file.existsAsFile()) return failure("Node schematic does not exist.");
+    if (file.getSize() > maxTextFileBytes) return failure("Node schematic exceeds the 2 MB limit.");
+
+    const auto graphJson = file.loadFileAsString();
+    const auto target = stringProperty(arguments, "target", "frust").trim().toLowerCase();
+    if (target != "frust")
+        return { false, false, "Node schematic target '" + target + "' is not wired in this research IDE yet. Production GLSL exists as reference; this tool currently compiles the Frust target only.", true };
+
+    const auto compiled = node_compiler::CompileGraphToSource(graphJson.toStdString());
+    if (!compiled.ok)
+        return { false, false, "Node schematic failed to compile: " + juce::String(compiled.errorMessage), true };
+
+    const auto outputPath = stringProperty(arguments, "output_path").trim();
+    const auto sourceFile = outputPath.isNotEmpty()
+        ? resolveProjectPath(outputPath, PathPurpose::write, error)
+        : file.withFileExtension(".fr");
+    if (error.isNotEmpty()) return failure(error);
+    if (!sourceFile.getParentDirectory().createDirectory())
+        return failure("Could not create output folder: " + sourceFile.getParentDirectory().getFullPathName());
+    if (!sourceFile.replaceWithText(juce::String(compiled.source)))
+        return failure("Could not write generated Frust source.");
+
+    juce::String out;
+    out << "Compiled " << displayPath(file) << " to " << displayPath(sourceFile) << "\n\n"
+        << juce::String(compiled.source).substring(0, 4000);
+    return { true, true, out, true };
 }
 
 EngineerTools::Result EngineerTools::runCommand(const juce::var& arguments) const

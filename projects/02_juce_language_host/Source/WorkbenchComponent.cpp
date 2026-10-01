@@ -296,6 +296,9 @@ juce::PopupMenu WorkbenchComponent::getMenuForIndex(int topLevelMenuIndex, const
     juce::PopupMenu menu;
     if (menuName == "File") {
         menu.addItem(FileNew, "New File");
+        menu.addItem(FileNewNodeSchematic, "New Node Schematic");
+        menu.addItem(FileOpenNodeSchematic, "Open Node Schematic...");
+        menu.addSeparator();
         menu.addItem(FileOpenFolder, "Open Folder...");
         menu.addItem(FileOpenReferenceFolder, "Open Read-Only Reference Folder...");
         menu.addSeparator();
@@ -364,6 +367,10 @@ void WorkbenchComponent::menuItemSelected(int menuItemID, int topLevelMenuIndex)
             });
     } else if (menuItemID == FileNew) {
         if (editorTabComponent) editorTabComponent->newUntitledTab();
+    } else if (menuItemID == FileNewNodeSchematic) {
+        newNodeSchematic();
+    } else if (menuItemID == FileOpenNodeSchematic) {
+        openNodeSchematic();
     } else if (menuItemID == FileSave) {
         if (editorTabComponent == nullptr) return;
 
@@ -404,6 +411,46 @@ void WorkbenchComponent::menuItemSelected(int menuItemID, int topLevelMenuIndex)
     } else if (menuItemID == AccountSignOut) {
         if (authSession) authSession->clearSession();
     }
+}
+
+void WorkbenchComponent::newNodeSchematic()
+{
+    registerNodeSchematicPanel(std::make_unique<NodeDesignerPanel>(),
+        "Node Schematic " + juce::String(nodeSchematicCounter + 1));
+}
+
+void WorkbenchComponent::openNodeSchematic()
+{
+    auto startDir = fileTreePanel != nullptr && fileTreePanel->getRootDirectory().isDirectory()
+        ? fileTreePanel->getRootDirectory()
+        : juce::File::getCurrentWorkingDirectory();
+
+    activeFileChooser = std::make_unique<juce::FileChooser>(
+        "Open Node Schematic...",
+        startDir,
+        "*.frnode.json;*.json");
+
+    activeFileChooser->launchAsync(
+        juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+        [this](const juce::FileChooser& fc) {
+            const auto file = fc.getResult();
+            if (file.existsAsFile())
+                registerNodeSchematicPanel(std::make_unique<NodeDesignerPanel>(file), file.getFileName());
+            activeFileChooser = nullptr;
+        });
+}
+
+void WorkbenchComponent::registerNodeSchematicPanel(std::unique_ptr<NodeDesignerPanel> panel, const juce::String& title)
+{
+    if (dockManager == nullptr || panel == nullptr) return;
+    const auto id = "node-schematic-" + juce::String(++nodeSchematicCounter);
+    auto* dockPanel = dockManager->registerPanel(id, title, std::move(panel), CreationDock::DockTargetZone::CenterTab);
+    dockPanel->onCloseRequested = [safeThis = juce::Component::SafePointer<WorkbenchComponent>(this)](CreationDock::DockPanel* closing) {
+        juce::MessageManager::callAsync([safeThis, closing] {
+            if (safeThis != nullptr && safeThis->dockManager != nullptr)
+                safeThis->dockManager->removePanel(closing);
+        });
+    };
 }
 
 void WorkbenchComponent::addReadOnlyRoot(const juce::File& folder, bool persist)

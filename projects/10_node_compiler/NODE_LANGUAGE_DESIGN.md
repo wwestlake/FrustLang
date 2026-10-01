@@ -6,6 +6,10 @@ long design conversation is easy to lose once it's only ever lived in
 chat history - the whole point is that it stays current, not that it
 gets written once and goes stale.
 
+Requirements for the IDE-facing visual designer live in
+[`NODE_DESIGNER_REQUIREMENTS.md`](NODE_DESIGNER_REQUIREMENTS.md). This
+document focuses on language/compiler design and attack order.
+
 ## Audience and philosophy (read this first - it's the test for every
 ## future "should this be a node" question)
 
@@ -23,6 +27,28 @@ that belongs in the Frust code a node calls into?
 
 ## Core architecture
 
+### Product boundary
+
+**The graph system is the product; individual code generators are
+targets.** Do not rename the whole effort after whichever target is
+being worked on today. Frust, GLSL, DSP, host automation, and future
+targets are peer outputs of the same schematic model.
+
+Production already has a GLSL-producing node system. Treat that as
+reference material and prior art, not as the research IDE's source of
+truth. The goal in this branch is to design the cleaner general graph
+system we actually want, then adapt or replace target backends behind
+that contract.
+
+- **The node system is a general data-flow and execution-flow graph
+  system with multiple possible compile targets.** Frust is the research
+  IDE target currently wired to `10_node_compiler`. GLSL is already a
+  proven production target in Creation Suite and should be studied while
+  designing the shared contract. HLSL/WGSL are sibling shader targets.
+  Other future targets can exist for DSP, data transforms, or
+  host-specific packaged graphs. The schematic JSON is the source;
+  generated target code is an artifact.
+
 - **Nodes are not generated from a visual description - they're a
   reflection of real, already-written, already-compiled Frust code.**
   You don't draw a node and have the system invent Frust for it. You
@@ -39,15 +65,21 @@ that belongs in the Frust code a node calls into?
   its real struct fields) - this doubles as the reason to finally build
   real interface/struct reflection, a gap already named and deferred
   once before (see "Relationship to existing work" below).
-- **Compiling a diagram generates CALLS into already-compiled Frust,
-  never fresh logic.** The graph compiler's job is topology -> glue
-  code, not "understand what `+` means" the way today's
-  `10_node_compiler` hardcodes it.
+- **Compiling a diagram generates a target artifact.** For the Frust
+  backend, that usually means calls into already-compiled/reflected
+  Frust nodes plus glue code. For GLSL and other shader backends, that
+  means shader source and target-specific validation. The compiler's job
+  is topology, type/flow validation, and backend emission, not hidden
+  interpretation.
 - **Nodes never execute directly.** A compiled diagram becomes real
   Frust source/AST, JIT'd through the exact same pipeline
   `frust_plugin_host` already runs today. There is no graph
   interpreter, now or ever - this was true of `10_node_compiler`
   already and stays true here.
+- **Data flow and execution flow are first-class.** Pure nodes are
+  data-flow only. Callable/stateful nodes participate in execution flow.
+  Loop/branch/sequence nodes define execution topology. A target may
+  support both flows or only a restricted subset.
 
 ## Node shape model (grounded in how UE4/Blueprint actually does this -
 ## researched, not guessed, see the design conversation for sources)
@@ -173,15 +205,34 @@ wrapper function, which becomes a discoverable node. Verify with a
 real example host exposing at least one domain-specific node (e.g.
 this IDE's own `OpenReadSourceFile`).
 
-### 6. Graph-to-glue-code compiler rearchitecture
+### 6. Graph-to-target compiler rearchitecture
 **Status: OPEN. Depends on #1-#5 (needs real discoverable nodes to
 call before it can generate calls to them).**
 Rework `10_node_compiler` away from hardcoded node-type dispatch
-toward: given a wiring diagram over known, reflection-discovered
-nodes, generate the calling glue (topological order, exec-flow
-sequencing, data threading) - AND switch from text-generation+reparse
-to direct AST construction. Existing topo-sort/call-emission logic is
-a real, reusable starting point, not a throwaway.
+toward: given a wiring diagram over known, reflection-discovered nodes,
+generate a target artifact. Frust calling glue is the target currently
+wired in this research branch (topological order, exec-flow sequencing,
+data threading). Production GLSL is an existing target system to study
+and align with, not a backend to copy blindly. The clean design is a
+shared schematic model with separate Frust/GLSL target adapters. Frust
+should eventually switch from text-generation+reparse to direct AST
+construction. Existing topo-sort/call-emission logic is a real, reusable
+starting point, not a throwaway.
+
+### 6a. Rich schematic metadata and extraction model
+**Status: IN PROGRESS - 2026-09-25.**
+The IDE now needs UE-style graph authoring affordances: comment boxes
+around node groups, collapsed pseudo-nodes, extraction into pure or
+stateful functions, and schematic-owned structs/enums. The schema work is
+tracked in `NODE_SCHEMATIC_SCHEMA_V2.md`.
+
+This does not change the core rule: visual organization is metadata;
+runtime behavior must still compile into real Frust source. Comment
+groups and positions can be stored/displayed immediately. Collapsed
+subgraphs and extracted functions are semantic and require compiler
+support before they count as executable. Structs/enums are similarly
+semantic declarations and should compile to real Frust declarations when
+the language path supports them.
 
 ### 7. Visual canvas (JUCE panel)
 **Status: OPEN. Deliberately last - do not start before #6's

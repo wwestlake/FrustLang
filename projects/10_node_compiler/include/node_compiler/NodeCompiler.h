@@ -70,14 +70,52 @@
 
 #ifdef __cplusplus
 
-#include <optional>
 #include <string>
+#include <vector>
 
 namespace node_compiler {
 
 struct CompileResult {
     bool ok = false;
     std::string source;       // valid only if ok
+    std::string errorMessage; // valid only if !ok
+};
+
+enum class ArtifactKind {
+    FunctionSource,
+    FrustExecutablePod,
+    FrustLibraryPod
+};
+
+struct GeneratedFile {
+    std::string path;    // package-relative path, e.g. src/main.fr
+    std::string content;
+};
+
+struct RequiredPod {
+    std::string name;
+    std::string version;
+};
+
+struct SourceMapEntry {
+    std::string nodeId;
+    std::string generatedFile;
+    int line = 0;
+    int column = 1;
+};
+
+struct SchematicCompileResult {
+    bool ok = false;
+    ArtifactKind artifactKind = ArtifactKind::FunctionSource;
+    std::string packageName;
+    std::string namespaceName;
+    std::string entryFile;
+    std::string source;       // primary source, kept for older callers/UI previews
+    std::string frateJson;    // valid for pod artifacts
+    std::vector<GeneratedFile> files;
+    std::vector<RequiredPod> requiredPods;
+    std::vector<SourceMapEntry> sourceMap;
+    std::vector<std::string> diagnostics;
     std::string errorMessage; // valid only if !ok
 };
 
@@ -89,6 +127,16 @@ struct CompileResult {
 // type error comes back as ok=false with that error, not silently
 // handed to the caller as if it were fine.
 CompileResult CompileGraphToSource(const std::string& graphJson);
+
+// Compiles the richer schematic/package JSON. This is the real boundary
+// for IDE node schematics: it accepts v1 graphs and v2 schematics,
+// preserves architectural metadata such as namespace/events/messages/
+// execution contexts for diagnostics/source maps, and returns the target
+// artifact the build/run layer should materialize.
+//
+// The older CompileGraphToSource API remains for tests and callers that
+// only need a pure function source string.
+SchematicCompileResult CompileSchematic(const std::string& schematicJson);
 
 } // namespace node_compiler
 

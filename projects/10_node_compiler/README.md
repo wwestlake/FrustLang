@@ -1,9 +1,10 @@
 # node_compiler
 
-Graph JSON -> real `.frust` source text. Nodes are data, never executed
-directly - a graph description compiles down to genuine source that runs
-through the exact same pipeline as any hand-written `.frust` file (parse
--> AST -> LLVM IR via `frust_lang`), loadable through
+Graph JSON -> target source. Today the implemented target is real
+`.frust` source text. Nodes are data, never executed directly - a graph
+description compiles down to genuine source that runs through the exact
+same pipeline as any hand-written `.frust` file (parse -> AST -> LLVM IR
+via `frust_lang`), loadable through
 [`frust_plugin_host`](../09_frust_plugin_host) exactly like a
 hand-written plugin. There is no separate graph-interpreter runtime.
 
@@ -47,6 +48,29 @@ real error, not source the caller has to discover is broken later.
 Not in v1, named explicitly (see the session plan): loops, node-defined
 structs, multi-graph composition (a graph calling another graph as a
 sub-node).
+
+## v2 schematic direction
+
+The IDE-facing schematic format is growing beyond the v1 compiler core.
+See [`NODE_DESIGNER_REQUIREMENTS.md`](NODE_DESIGNER_REQUIREMENTS.md)
+for the product requirements and
+[`NODE_SCHEMATIC_SCHEMA_V2.md`](NODE_SCHEMATIC_SCHEMA_V2.md) for the
+current schema direction.
+
+The important distinction:
+
+- comment groups, titles, colors, and node positions are editor metadata
+  and do not change generated source;
+- structs/enums/subgraphs are semantic declarations and must compile to
+  real Frust source before they count as executable behavior;
+- collapsed groups and extracted functions are represented as subgraphs,
+  with pure/callable/macro intent recorded explicitly.
+
+The schematic JSON is the source of truth. Code is generated for target
+backends. Frust is the backend currently wired in this research IDE
+branch. Production already has a GLSL-producing node system; treat it as
+reference material for the multi-target contract, with target-specific
+validation deciding which nodes and flows are legal.
 
 ## Verification
 

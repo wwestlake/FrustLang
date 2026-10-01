@@ -3,9 +3,11 @@
 #include <juce_core/juce_core.h>
 
 #include <cstring>
+#include <cctype>
 #include <map>
 #include <set>
 #include <sstream>
+#include <algorithm>
 #include <vector>
 
 #include "AST.h"
@@ -403,6 +405,530 @@ CompileResult CompileGraphToSource(const std::string& graphJson) {
 
     result.ok = true;
     result.source = src.str();
+    return result;
+}
+
+namespace {
+
+std::string JsonString(const juce::var& obj, const char* name, const std::string& fallback = {}) {
+    if (!obj.isObject()) return fallback;
+    auto* dyn = obj.getDynamicObject();
+    if (dyn == nullptr || !dyn->hasProperty(name)) return fallback;
+    return dyn->getProperty(name).toString().toStdString();
+}
+
+std::string JsonString(const juce::DynamicObject* obj, const char* name, const std::string& fallback = {}) {
+    if (obj == nullptr || !obj->hasProperty(name)) return fallback;
+    return obj->getProperty(name).toString().toStdString();
+}
+
+std::string SanitizeIdentifier(std::string text, const std::string& fallback) {
+    std::string out;
+    for (char c : text) {
+        if (std::isalnum((unsigned char)c) || c == '_') out.push_back(c);
+        else if (c == '-' || c == ' ' || c == '.') out.push_back('_');
+    }
+    if (out.empty()) out = fallback;
+    if (!std::isalpha((unsigned char)out.front()) && out.front() != '_')
+        out = "_" + out;
+    return out;
+}
+
+std::string EscapeFrustString(const juce::String& s) {
+    return ("\"" + s.replace("\\", "\\\\").replace("\"", "\\\"")).toStdString() + "\"";
+}
+
+std::string NormalizePrintValueType(const std::string& type) {
+    if (type == "String") return "string";
+    if (type == "bool" || type == "i64" || type == "f64" || type == "string") return type;
+    return "string";
+}
+
+struct ExecValue {
+    std::string expression;
+    std::string type;
+};
+
+struct StateMachineState {
+    std::string id;
+    std::string name;
+    bool initial = false;
+    bool terminal = false;
+};
+
+struct StateMachineEvent {
+    std::string id;
+    std::string name;
+};
+
+struct StateMachineTransition {
+    std::string id;
+    std::string from;
+    std::string to;
+    std::string event;
+    std::string guard;
+    std::string action;
+};
+
+bool ResolveExecutableValue(const std::map<std::string, juce::var>& nodesById,
+                            const juce::var& ref,
+                            ExecValue& value,
+                            std::string& err) {
+    if (!ref.isObject()) {
+        err = "print value input must be an object reference";
+        return false;
+    }
+
+    auto* refObj = ref.getDynamicObject();
+    const auto sourceId = JsonString(refObj, "ref");
+    if (sourceId.empty()) {
+        err = "print value input must reference a node";
+        return false;
+    }
+
+    auto found = nodesById.find(sourceId);
+    if (found == nodesById.end()) {
+        err = "print value references unknown node '" + sourceId + "'";
+        return false;
+    }
+
+    auto* node = found->second.getDynamicObject();
+    const auto type = JsonString(node, "type");
+    if (type == "literal_string") {
+        value.expression = EscapeFrustString(node->getProperty("text").toString());
+        value.type = "string";
+        return true;
+    }
+    if (type == "literal_i64") {
+        value.expression = std::to_string((int64_t)node->getProperty("value"));
+        value.type = "i64";
+        return true;
+    }
+    if (type == "literal_f64") {
+        value.expression = std::to_string((double)node->getProperty("value"));
+        value.type = "f64";
+        return true;
+    }
+    if (type == "const_bool" || type == "literal_bool") {
+        value.expression = (bool)node->getProperty("value") ? "true" : "false";
+        value.type = "bool";
+        return true;
+    }
+
+    err = "executable print currently supports literal string/i64/f64/bool values; node '" + sourceId
+        + "' is type '" + type + "'";
+    return false;
+}
+
+bool CompileExecutablePod(const juce::var& parsed, SchematicCompileResult& result) {
+    auto* root = parsed.getDynamicObject();
+    const auto diagramName = JsonString(root, "name", JsonString(root, "functionName", "node_program"));
+    result.packageName = SanitizeIdentifier(diagramName, "node_program");
+    result.namespaceName = JsonString(root, "namespace", result.packageName);
+    result.artifactKind = ArtifactKind::FrustExecutablePod;
+    result.entryFile = "src/main.fr";
+    result.requiredPods.push_back({ "core", "1.0.1" });
+
+    if (!root->hasProperty("nodes") || !root->getProperty("nodes").isArray()) {
+        result.errorMessage = "executable schematic needs a nodes array";
+        return false;
+    }
+
+    std::map<std::string, juce::var> nodesById;
+    for (auto& nodeVar : *root->getProperty("nodes").getArray()) {
+        if (!nodeVar.isObject()) {
+            result.errorMessage = "each node must be an object";
+            return false;
+        }
+        auto* node = nodeVar.getDynamicObject();
+        const auto id = JsonString(node, "id");
+        if (id.empty()) {
+            result.errorMessage = "node missing id";
+            return false;
+        }
+        nodesById[id] = nodeVar;
+    }
+
+    std::ostringstream src;
+    src << "import core, \"current\";\n\n";
+    src << "fn main() -> i64 = {\n";
+
+    int line = 4;
+    bool emittedAction = false;
+    for (auto& nodeVar : *root->getProperty("nodes").getArray()) {
+        auto* node = nodeVar.getDynamicObject();
+        const auto type = JsonString(node, "type");
+        if (type != "print") continue;
+
+        auto inputs = node->getProperty("inputs");
+        if (!inputs.isArray() || inputs.getArray()->size() < 1) {
+            result.errorMessage = "print node '" + JsonString(node, "id") + "' needs a value input";
+            return false;
+        }
+
+        // Rich execution schematics use input 0 for exec and input 1 for
+        // data. Older pure graph print nodes use input 0 for the value.
+        const int valueIndex = inputs.getArray()->size() > 1 ? 1 : 0;
+        ExecValue value;
+        std::string err;
+        if (!ResolveExecutableValue(nodesById, inputs.getArray()->getReference(valueIndex), value, err)) {
+            result.errorMessage = "print node '" + JsonString(node, "id") + "': " + err;
+            return false;
+        }
+
+        const auto valueType = NormalizePrintValueType(value.type);
+        if (valueType == "string")
+            src << "    println_str(" << value.expression << ");\n";
+        else if (valueType == "i64")
+            src << "    println_i64(" << value.expression << ");\n";
+        else if (valueType == "f64")
+            src << "    println_f64(" << value.expression << ");\n";
+        else if (valueType == "bool")
+            src << "    println_bool(" << value.expression << ");\n";
+        else {
+            result.errorMessage = "print node '" + JsonString(node, "id") + "' has unsupported value type '" + valueType + "'";
+            return false;
+        }
+
+        result.sourceMap.push_back({ JsonString(node, "id"), result.entryFile, line++, 5 });
+        emittedAction = true;
+    }
+
+    if (!emittedAction) {
+        result.errorMessage = "executable schematic has no runnable action nodes yet";
+        return false;
+    }
+
+    src << "    0\n";
+    src << "}\n";
+
+    result.source = src.str();
+    result.files.push_back({ result.entryFile, result.source });
+
+    std::ostringstream frate;
+    frate << "{\n"
+          << "  \"name\": \"" << result.packageName << "\",\n"
+          << "  \"version\": \"0.1.0\",\n"
+          << "  \"type\": \"bin\",\n"
+          << "  \"description\": \"Generated from a node schematic. The schematic JSON is authoritative.\",\n"
+          << "  \"exports\": [],\n"
+          << "  \"dependencies\": [\n"
+          << "    { \"name\": \"core\", \"version\": \"1.0.1\" }\n"
+          << "  ]\n"
+          << "}\n";
+    result.frateJson = frate.str();
+    result.files.push_back({ "frate.json", result.frateJson });
+
+    std::string validateErr;
+    if (!ValidateCompiles(result.source, validateErr)) {
+        result.errorMessage = "generated executable source does not compile: " + validateErr
+            + "\n--- generated source ---\n" + result.source;
+        return false;
+    }
+
+    result.ok = true;
+    return true;
+}
+
+std::string StateFnName(const std::string& id) {
+    return "state_" + SanitizeIdentifier(id, "unnamed");
+}
+
+std::string EventFnName(const std::string& id) {
+    return "event_" + SanitizeIdentifier(id, "unnamed");
+}
+
+bool ParseStateMachine(const juce::var& parsed,
+                       std::vector<StateMachineState>& states,
+                       std::vector<StateMachineEvent>& events,
+                       std::vector<StateMachineTransition>& transitions,
+                       std::string& initialState,
+                       std::string& err) {
+    auto* root = parsed.getDynamicObject();
+    if (root == nullptr) {
+        err = "state-machine schematic root must be an object";
+        return false;
+    }
+
+    auto statesVar = root->getProperty("states");
+    if (!statesVar.isArray()) {
+        err = "state-machine schematic needs a states array";
+        return false;
+    }
+
+    std::set<std::string> stateIds;
+    for (auto& stateVar : *statesVar.getArray()) {
+        if (!stateVar.isObject()) {
+            err = "each state must be an object";
+            return false;
+        }
+        auto* stateObj = stateVar.getDynamicObject();
+        StateMachineState state;
+        state.id = JsonString(stateObj, "id");
+        state.name = JsonString(stateObj, "name", state.id);
+        state.initial = (bool)stateObj->getProperty("initial");
+        state.terminal = (bool)stateObj->getProperty("terminal");
+        if (state.id.empty()) {
+            err = "state missing id";
+            return false;
+        }
+        if (!stateIds.insert(state.id).second) {
+            err = "duplicate state id '" + state.id + "'";
+            return false;
+        }
+        if (state.initial) {
+            if (!initialState.empty()) {
+                err = "state machine can only have one initial state";
+                return false;
+            }
+            initialState = state.id;
+        }
+        states.push_back(std::move(state));
+    }
+
+    if (states.empty()) {
+        err = "state machine needs at least one state";
+        return false;
+    }
+    if (initialState.empty()) {
+        err = "state machine needs one initial state";
+        return false;
+    }
+
+    auto eventsVar = root->getProperty("events");
+    std::set<std::string> eventIds;
+    if (eventsVar.isArray()) {
+        for (auto& eventVar : *eventsVar.getArray()) {
+            if (!eventVar.isObject()) {
+                err = "each event must be an object";
+                return false;
+            }
+            auto* eventObj = eventVar.getDynamicObject();
+            StateMachineEvent event;
+            event.id = JsonString(eventObj, "id");
+            event.name = JsonString(eventObj, "name", event.id);
+            if (event.id.empty()) {
+                err = "event missing id";
+                return false;
+            }
+            if (eventIds.insert(event.id).second)
+                events.push_back(std::move(event));
+        }
+    }
+
+    auto transitionsVar = root->getProperty("transitions");
+    if (transitionsVar.isArray()) {
+        std::set<std::string> transitionIds;
+        for (auto& transitionVar : *transitionsVar.getArray()) {
+            if (!transitionVar.isObject()) {
+                err = "each transition must be an object";
+                return false;
+            }
+            auto* transitionObj = transitionVar.getDynamicObject();
+            StateMachineTransition transition;
+            transition.id = JsonString(transitionObj, "id");
+            transition.from = JsonString(transitionObj, "from");
+            transition.to = JsonString(transitionObj, "to");
+            transition.event = JsonString(transitionObj, "event");
+            transition.guard = JsonString(transitionObj, "guard");
+            transition.action = JsonString(transitionObj, "action");
+            if (transition.id.empty()) {
+                err = "transition missing id";
+                return false;
+            }
+            if (!transitionIds.insert(transition.id).second) {
+                err = "duplicate transition id '" + transition.id + "'";
+                return false;
+            }
+            if (!stateIds.count(transition.from)) {
+                err = "transition '" + transition.id + "' references unknown source state '" + transition.from + "'";
+                return false;
+            }
+            if (!stateIds.count(transition.to)) {
+                err = "transition '" + transition.id + "' references unknown destination state '" + transition.to + "'";
+                return false;
+            }
+            if (transition.event.empty()) {
+                err = "transition '" + transition.id + "' needs an event";
+                return false;
+            }
+            if (eventIds.insert(transition.event).second)
+                events.push_back({ transition.event, transition.event });
+            transitions.push_back(std::move(transition));
+        }
+    }
+
+    return true;
+}
+
+bool CompileStateMachinePod(const juce::var& parsed, SchematicCompileResult& result) {
+    auto* root = parsed.getDynamicObject();
+    const auto diagramName = JsonString(root, "name", "state_machine");
+    auto targetOptions = root->getProperty("targetOptions");
+    auto frustOptions = targetOptions.getProperty("frust", {});
+    const auto projectType = JsonString(frustOptions, "projectType", "lib");
+    result.packageName = SanitizeIdentifier(diagramName, "state_machine");
+    result.namespaceName = JsonString(root, "namespace", result.packageName);
+    result.artifactKind = projectType == "bin" ? ArtifactKind::FrustExecutablePod : ArtifactKind::FrustLibraryPod;
+    result.entryFile = projectType == "bin" ? "src/main.fr" : "src/lib.fr";
+    result.requiredPods.push_back({ "core", "1.0.1" });
+
+    std::vector<StateMachineState> states;
+    std::vector<StateMachineEvent> events;
+    std::vector<StateMachineTransition> transitions;
+    std::string initialState;
+    std::string parseErr;
+    if (!ParseStateMachine(parsed, states, events, transitions, initialState, parseErr)) {
+        result.errorMessage = parseErr;
+        return false;
+    }
+
+    std::ostringstream src;
+    src << "import core, \"current\";\n\n";
+    src << "// Generated from state-machine schematic '" << diagramName << "'.\n";
+    src << "// The schematic JSON remains authoritative; this is a lowerable Frust artifact.\n\n";
+
+    for (size_t i = 0; i < states.size(); ++i) {
+        src << "pub fn " << StateFnName(states[i].id) << "() -> i64 = { " << i << " }\n";
+    }
+    src << "\n";
+    for (size_t i = 0; i < events.size(); ++i) {
+        src << "pub fn " << EventFnName(events[i].id) << "() -> i64 = { " << i << " }\n";
+    }
+    src << "\n";
+
+    src << "pub fn initial_state() -> i64 = {\n";
+    src << "    " << StateFnName(initialState) << "()\n";
+    src << "}\n\n";
+
+    src << "pub fn state_name(state: i64) -> String = {\n";
+    for (size_t i = 0; i < states.size(); ++i) {
+        src << "    if (state == " << StateFnName(states[i].id) << "()) { "
+            << EscapeFrustString(juce::String(states[i].name)) << " } else {\n";
+    }
+    src << "    \"Unknown\"\n";
+    for (size_t i = 0; i < states.size(); ++i) {
+        src << "    }";
+        if (i + 1 < states.size()) src << "\n";
+    }
+    src << "\n}\n\n";
+
+    src << "pub fn step(current_state: i64, event: i64) -> i64 = {\n";
+    src << "    let next_state: i64 = current_state;\n";
+    for (const auto& transition : transitions) {
+        src << "    if (current_state == " << StateFnName(transition.from) << "()) {\n";
+        src << "        if (event == " << EventFnName(transition.event) << "()) {\n";
+        if (!transition.guard.empty())
+            src << "            // guard: " << transition.guard << "\n";
+        if (!transition.action.empty())
+            src << "            // action: " << transition.action << "\n";
+        src << "            next_state = " << StateFnName(transition.to) << "();\n";
+        src << "        } else { next_state = next_state; };\n";
+        src << "    } else { next_state = next_state; };\n";
+    }
+    src << "    next_state\n";
+    src << "}\n";
+
+    if (projectType == "bin") {
+        src << "\nfn main() -> i64 = {\n";
+        src << "    let state: i64 = initial_state();\n";
+        src << "    println_str(\"Initial state:\");\n";
+        src << "    println_str(state_name(state));\n";
+        if (!transitions.empty()) {
+            src << "    let after: i64 = step(state, " << EventFnName(transitions.front().event) << "());\n";
+            src << "    println_str(\"After first transition event:\");\n";
+            src << "    println_str(state_name(after));\n";
+        }
+        src << "    0\n";
+        src << "}\n";
+    }
+
+    result.source = src.str();
+    result.files.push_back({ result.entryFile, result.source });
+
+    std::ostringstream frate;
+    frate << "{\n"
+          << "  \"name\": \"" << result.packageName << "\",\n"
+          << "  \"version\": \"0.1.0\",\n"
+          << "  \"type\": \"" << (projectType == "bin" ? "bin" : "lib") << "\",\n"
+          << "  \"description\": \"Generated from a state-machine node schematic. The schematic JSON is authoritative.\",\n"
+          << "  \"exports\": [],\n"
+          << "  \"dependencies\": [\n"
+          << "    { \"name\": \"core\", \"version\": \"1.0.1\" }\n"
+          << "  ]\n"
+          << "}\n";
+    result.frateJson = frate.str();
+    result.files.push_back({ "frate.json", result.frateJson });
+
+    int line = 0;
+    for (const auto& transition : transitions) {
+        result.sourceMap.push_back({ transition.id, result.entryFile, ++line, 1 });
+    }
+    result.diagnostics.push_back("state-machine lowering emitted integer-backed states/events; enum-backed lowering is the next compatibility step");
+
+    std::string validateErr;
+    if (!ValidateCompiles(result.source, validateErr)) {
+        result.errorMessage = "generated state-machine source does not compile: " + validateErr
+            + "\n--- generated source ---\n" + result.source;
+        return false;
+    }
+
+    result.ok = true;
+    return true;
+}
+
+} // namespace
+
+SchematicCompileResult CompileSchematic(const std::string& schematicJson) {
+    SchematicCompileResult result;
+
+    juce::var parsed;
+    auto parseResult = juce::JSON::parse(juce::String(schematicJson), parsed);
+    if (parseResult.failed() || !parsed.isObject()) {
+        result.errorMessage = "invalid schematic JSON: " + parseResult.getErrorMessage().toStdString();
+        return result;
+    }
+
+    auto* root = parsed.getDynamicObject();
+    const auto diagramType = JsonString(root, "diagramType", "node_graph");
+    auto targetOptions = root->getProperty("targetOptions");
+    auto frustOptions = targetOptions.getProperty("frust", {});
+    const auto projectType = JsonString(frustOptions, "projectType", "function");
+
+    if (diagramType == "state_machine") {
+        CompileStateMachinePod(parsed, result);
+        return result;
+    }
+
+    if (projectType == "bin") {
+        CompileExecutablePod(parsed, result);
+        return result;
+    }
+
+    const auto functionResult = CompileGraphToSource(schematicJson);
+    if (!functionResult.ok) {
+        result.errorMessage = functionResult.errorMessage;
+        return result;
+    }
+
+    result.ok = true;
+    result.artifactKind = projectType == "lib" ? ArtifactKind::FrustLibraryPod : ArtifactKind::FunctionSource;
+    result.packageName = SanitizeIdentifier(JsonString(root, "name", "node_graph"), "node_graph");
+    result.namespaceName = JsonString(root, "namespace", result.packageName);
+    result.entryFile = projectType == "lib" ? "src/lib.fr" : "";
+    result.source = functionResult.source;
+    if (result.artifactKind == ArtifactKind::FrustLibraryPod) {
+        result.files.push_back({ "src/lib.fr", result.source });
+        result.frateJson = "{\n"
+            "  \"name\": \"" + result.packageName + "\",\n"
+            "  \"version\": \"0.1.0\",\n"
+            "  \"type\": \"lib\",\n"
+            "  \"description\": \"Generated from a node schematic. The schematic JSON is authoritative.\",\n"
+            "  \"exports\": [],\n"
+            "  \"dependencies\": []\n"
+            "}\n";
+        result.files.push_back({ "frate.json", result.frateJson });
+    }
     return result;
 }
 

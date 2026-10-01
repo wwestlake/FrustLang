@@ -79,6 +79,8 @@ private:
     Result writeFile(const juce::var& arguments) const;
     Result replaceText(const juce::var& arguments) const;
     Result checkFrust(const juce::var& arguments) const;
+    Result createNodeSchematic(const juce::var& arguments) const;
+    Result compileNodeSchematic(const juce::var& arguments) const;
     Result runCommand(const juce::var& arguments) const;
     Result launchProgram(const juce::var& arguments) const;
     Result stopProgram(const juce::var& arguments) const;

@@ -13,6 +13,7 @@
 #include "TerminalPanel.h"
 #include "ErrorListPanel.h"
 #include "PlanReviewPanel.h"
+#include "NodeDesignerPanel.h"
 #include "Auth/DesktopAuthSession.h"
 #include "LocalAgentApi.h"
 
@@ -35,6 +36,9 @@ public:
 
 private:
     void runActiveFileInRepl();
+    void newNodeSchematic();
+    void openNodeSchematic();
+    void registerNodeSchematicPanel(std::unique_ptr<NodeDesignerPanel> panel, const juce::String& title);
     void addReadOnlyRoot(const juce::File& folder, bool persist = true);
     void removeReadOnlyRoot(CreationDock::DockPanel* panel);
     std::vector<juce::File> getReadOnlyRoots() const;
@@ -65,11 +69,14 @@ private:
     FratePanel* fratePanel = nullptr;
     AiChatPanel* aiChatPanel = nullptr;
     std::unique_ptr<juce::FileChooser> activeFileChooser;
+    int nodeSchematicCounter = 0;
 
     static juce::File getLayoutFile();
 
     enum MenuCommands {
         FileNew = 1,
+        FileNewNodeSchematic,
+        FileOpenNodeSchematic,
         FileOpenFolder,
         FileOpenReferenceFolder,
         FileSave,

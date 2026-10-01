@@ -149,6 +149,42 @@
       }
     },
     {
+      "name": "node_schematic_create",
+      "description": "Create a target-backed node schematic JSON file and optionally compile it through the currently wired research backend.",
+      "usage": "Use when the user asks for a node graph, node schematic, visual program, shader/material graph, or graph-built function. The graph_json describes the portable schematic: nodes, pins, links, flow, groups, and target intent. Frust is the currently wired research IDE backend. Production already has a GLSL node system; treat it as reference material for the cleaner multi-target design, not as proof that every GLSL feature is wired here.",
+      "access": "workspace",
+      "tokens": ["node", "nodes", "schematic", "graph", "visual program", "create", "compile", "frnode"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string", "description": "Where to create the schematic, relative to the open project. Prefer .frnode.json." },
+          "graph_json": { "type": "string", "description": "Complete node schematic JSON text." },
+          "target": { "type": "string", "description": "Target backend to compile, default frust. Currently wired here: frust. Production GLSL exists as reference for the multi-target contract.", "default": "frust" },
+          "compile": { "type": "boolean", "default": true },
+          "output_path": { "type": "string", "description": "Optional generated source path. For the current frust target, defaults to the schematic path with .fr extension." }
+        },
+        "required": ["path", "graph_json"]
+      }
+    },
+    {
+      "name": "node_schematic_compile",
+      "description": "Compile an existing node schematic JSON file for a selected target using the currently wired research backend.",
+      "usage": "Use after editing a .frnode.json schematic, before testing or claiming completion. The portable schematic is not owned by one language. Frust is the currently wired research backend; GLSL exists in production and should guide the target contract, but is not wired in this research IDE tool yet.",
+      "access": "workspace",
+      "tokens": ["node", "nodes", "schematic", "graph", "compile", "generate", "frust", "glsl", "target", "frnode"],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string", "description": "Existing node schematic path relative to the open project." },
+          "target": { "type": "string", "description": "Target backend to compile, default frust. Currently wired here: frust.", "default": "frust" },
+          "output_path": { "type": "string", "description": "Optional generated source path. For the current frust target, defaults to the schematic path with .fr extension." }
+        },
+        "required": ["path"]
+      }
+    },
+    {
       "name": "run_command",
       "description": "Run a command in PowerShell inside the open project: compile, build and test any language (C++ with CMake or MSBuild, C# and F# with dotnet, Rust with cargo, Frust with frate), run a script, or look at the project with git. The host judges every command first: some run at once, some are shown to the user to approve, some are refused with the reason. Shell-based source rewriting is refused; use the workspace editing tools. It returns the exit code and the output (the start and the end of long output, with the full log kept).",
       "usage": "Use it to build and test after changing code in any language other than Frust, and repair what the compiler reports until the build and tests pass. On this machine builds are single-core and name their target: use 'cmake --build <dir> --config Debug --target <name>', 'msbuild <project> /t:<target> /p:Configuration=Debug' (never /m), and 'dotnet build' or 'dotnet test' (the host adds -m:1). Never build or install LLVM and never run vcpkg install. A program that waits for input or keeps running (a REPL, a server, a game) never finishes here, because this shell has no keyboard or screen: open it with launch_program instead. Say in 'reason' what the command is for, so the user can decide quickly. If the user does not allow a command, do not try to get around it; ask with agent_request_user.",

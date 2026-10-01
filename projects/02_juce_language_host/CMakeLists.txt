@@ -38,6 +38,13 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../09_frust_plugin_host/CMakeLists.txt")
     endif()
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../10_node_compiler/CMakeLists.txt")
+    if(NOT TARGET node_compiler)
+        message(STATUS "LagDaemonResearchIDE: Adding node_compiler library")
+        add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../10_node_compiler" node_compiler_build)
+    endif()
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../04_ai_provider/CMakeLists.txt")
     message(STATUS "LagDaemonResearchIDE: Adding ai_provider library")
     add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../04_ai_provider" ai_provider_build)
@@ -139,6 +146,8 @@ target_sources(LagDaemonResearchIDE PRIVATE
     Source/AiConversationView.cpp
     Source/PlanReviewPanel.h
     Source/PlanReviewPanel.cpp
+    Source/NodeDesignerPanel.h
+    Source/NodeDesignerPanel.cpp
     Source/LocalAgentApi.h
     Source/LocalAgentApi.cpp
     Source/FratePanel.h
@@ -166,6 +175,7 @@ target_link_libraries(LagDaemonResearchIDE PRIVATE
     frust_lang
     frust_runtime
     frust_plugin_host
+    node_compiler
     ai_provider
     frate_lib
     juce::juce_core
@@ -227,6 +237,7 @@ target_link_libraries(EngineerToolsTests PRIVATE
     frate_lib
     frust_lang
     frust_runtime
+    node_compiler
     juce::juce_core
     juce::juce_cryptography
 )
