@@ -85,6 +85,12 @@ public:
         }
 
         indexTypeAliases(prog);
+        // Every enum and interface name is known before ANY field or payload type is resolved, so types may refer to
+        // each other in any order - a struct field typed as an enum or an interface, an enum carrying an enum declared
+        // after it, a type recursive through a struct (FRUST_LANG_SPEC.md "Declaration order"). Structs already do
+        // the same in indexStructs.
+        indexInterfaceDecls(prog);
+        declareEnumNames(prog);
         indexStructs(prog); // must precede signature declaration below - param/return types can name a struct
         if (hadCodegenError) return false;
         indexEnums(prog); // same reason, plus synthesizes variant constructor decls into enumVariantConstructorDecls (below)
@@ -114,7 +120,6 @@ public:
         printBuilder.CreateRetVoid();
 
         indexEffectDecls(prog);
-        indexInterfaceDecls(prog);
         if (!compileManifestDecl(prog)) return false;
         if (!compileNodeReflection(prog)) return false;
 
@@ -1040,6 +1045,25 @@ private:
         }
     }
 
+    // First pass over enums, before indexStructs: every enum's name (and its
+    // variants' tags, which need no types) is registered, so resolveType knows
+    // an enum named anywhere in the program - enums are pointer-represented,
+    // so naming one needs no layout. indexEnums fills in the payloads after.
+    void declareEnumNames(const Program& prog) {
+        for (auto* decl : prog.decls) {
+            if (decl->kind != DeclKind::Enum) continue;
+            const EnumDecl& ed = *decl->enumDecl;
+            if (!ed.genericParams.empty()) {
+                genericEnumTemplates[ed.name] = &ed;
+                continue;
+            }
+            auto& variantIndex = enumVariantIndex[ed.name];
+            for (size_t i = 0; i < ed.variants.size(); ++i) {
+                variantIndex[ed.variants[i].name] = static_cast<int>(i);
+            }
+        }
+    }
+
     // Must precede signature declaration below, same reason as indexStructs
     // - param/return types can name an enum. Also synthesizes every
     // variant's `EnumName::VariantName` constructor FunctionDecl here (see
@@ -1692,6 +1716,19 @@ private:
             if (variantMapIt != enumVariantIndex.end() && variantMapIt->second.count(expr->pathSegments[1])) {
                 return expr->pathSegments[0];
             }
+        }
+        // A struct field typed as an enum (`match (h.mode)`) - the field's
+        // declared type, found the same way inferStructTypeName's own
+        // Member case finds a struct-typed field (FRUST_LANG_SPEC.md 5.2:
+        // structs hold enums).
+        if (expr->kind == ExprKind::Member) {
+            auto baseType = inferStructTypeName(expr->lhs);
+            if (!baseType) return std::nullopt;
+            auto structIt = structFieldTypes.find(*baseType);
+            if (structIt == structFieldTypes.end()) return std::nullopt;
+            auto fieldIt = structIt->second.find(expr->text);
+            if (fieldIt == structIt->second.end()) return std::nullopt;
+            return resolveEnumTypeName(fieldIt->second);
         }
         if (expr->kind != ExprKind::Call || !expr->lhs) return std::nullopt;
 

@@ -11,6 +11,7 @@ This is the single spec document for the language. The grammar itself (flex/biso
 2. [Smart Pointers & Memory](#2-smart-pointers--memory)
 3. [REPL & Dynamic JIT Driver](#3-repl--dynamic-jit-driver)
 4. [The Automation Layer](#4-the-automation-layer)
+5. [Types and Declarations](#5-types-and-declarations)
 
 ---
 
@@ -352,3 +353,44 @@ parse, or one incompatible with the host per its declared
 `intendedApplications`/`requiredHostFunctions` - is refused outright,
 with no permissive fallback. See `docs/17-Plugin-Automation-Layer.md`
 section 4.2 for the full manifest schema and compatibility-check rules.
+
+---
+
+## 5. Types and Declarations
+
+### 5.1 Declaration order (requirement)
+
+**Nothing in a program depends on the order it is declared in.** Every
+declaration - function, struct, enum, interface, type alias, effect - can be
+used before the point where it is written, and that includes types used
+inside other types:
+
+- a struct field or an enum payload may name any struct, enum or interface,
+  wherever in the program it is declared;
+- types may be mutually recursive, directly or through each other
+  (`enum Tree { Leaf(i64), Node(Branch) }` with
+  `struct Branch { left: Tree, right: Tree }`);
+- this holds across files and pods too (Frate imports).
+
+A compiler that rejects a program, or compiles it differently, because of
+where a declaration sits is wrong, not limited. Code generators that emit
+Frust (the Creation Suite's node graphs) rely on this: they emit types in
+whatever order suits them.
+
+### 5.2 Algebraic data types (requirement)
+
+Frust has a full algebraic type system:
+
+- **Product types:** `struct Name { field: Type, ... }` - every field at once.
+- **Sum types:** `enum Name { Variant, Variant(Type, ...), ... }` - one
+  variant at a time, each carrying its own typed values (none, one or
+  several). A variant may carry any type, including structs, enums and
+  interfaces.
+- **Any nesting:** structs hold enums, enums carry structs, and so on, to
+  any depth.
+- **Recursion:** a type may contain itself, directly or through other types
+  (`enum List { Nil, Cons(i64, List) }`). Struct and enum values are
+  pointer-represented, so a recursive type has a finite layout.
+- **Generics:** `struct Box<T> { ... }`, `enum Choice<A, B> { Left(A), Right(B) }`.
+- **`match`** takes a sum apart, with nested patterns that bind the
+  variants' values.

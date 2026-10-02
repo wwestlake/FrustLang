@@ -1,0 +1,31 @@
+// FRUST_LANG_SPEC.md 5.1: nothing depends on declaration order - here every type is declared AFTER the code that
+// uses it, and the types refer to each other forwards: a struct field typed as an enum (with and without payloads),
+// an enum carrying an enum declared after it, a type recursive through a struct, and a struct holding a data enum
+// that carries a struct. Before the fix each of these failed with "unknown type".
+// Hand-predicted: mode On(7) -> 7; light On -> 1; Outer::Wrap(Inner::B(9)) -> 9; tree 1 + (2 + 3) = 6;
+// Sheet's fill Styled(Company 2026) -> 2026.
+// 7 + 1 * 10 + 9 * 100 + 6 * 1000 + 2026 * 10000 = 20266917.
+fn mode(h: Holder) -> i64 = { match (h.mode) { Mode::On(v) => v  _ => 0 } }
+fn light(h: Holder) -> i64 = { match (h.light) { Light::On => 1  _ => 0 } }
+fn inner(o: Outer) -> i64 = { match (o) { Outer::Wrap(Inner::B(v)) => v  _ => 0 } }
+fn total(t: Tree) -> i64 = { match (t) { Tree::Leaf(v) => v  Tree::Node(b) => total(b.left) + total(b.right) } }
+fn year(s: Sheet) -> i64 = { match (s.fill) { Fill::Styled(c) => c.year  _ => 0 } }
+
+fn main() -> i64 = {
+    let h: Holder = Holder { mode: Mode::On(7), light: Light::On };
+    let o: Outer = Outer::Wrap(Inner::B(9));
+    let t: Tree = Tree::Node(Branch { left: Tree::Leaf(1), right: Tree::Node(Branch { left: Tree::Leaf(2), right: Tree::Leaf(3) }) });
+    let s: Sheet = Sheet { fill: Fill::Styled(Company { year: 2026 }) };
+    mode(h) + light(h) * 10 + inner(o) * 100 + total(t) * 1000 + year(s) * 10000
+}
+
+struct Holder { mode: Mode, light: Light }
+enum Outer { Nothing, Wrap(Inner) }
+enum Tree { Leaf(i64), Node(Branch) }
+struct Branch { left: Tree, right: Tree }
+struct Sheet { fill: Fill }
+enum Fill { Plain, Styled(Company) }
+struct Company { year: i64 }
+enum Mode { Off, On(i64) }
+enum Light { Off, On }
+enum Inner { A, B(i64) }

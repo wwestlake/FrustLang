@@ -1150,6 +1150,48 @@ type, never a destructured shape.
 
 ## CRITICAL BUGS (post-2026-09-08, found in the wild)
 
+### Types could not name enums or interfaces declared later - "unknown type"
+
+**Status: DONE - 2026-10-02, verified on a Debug build.** Breaks the
+requirement in FRUST_LANG_SPEC.md 5.1 (nothing depends on declaration
+order). Found by the Creation Suite's Struct Editor, whose node graph
+types compile to Frust. Every one of these failed with
+`frust: codegen error: unknown type '...'`:
+
+- a struct field typed as any enum, with or without payloads
+  (`struct Holder { mode: Mode }`), wherever `Mode` was declared;
+- an enum carrying an enum declared after it
+  (`enum Outer { Wrap(Inner) }` before `enum Inner`);
+- a type recursive through a struct
+  (`enum Tree { Node(Branch) }`, `struct Branch { left: Tree }`) - in no
+  order at all;
+- a struct field typed as an interface.
+
+**Root cause:** structs registered every name before resolving any field
+(indexStructs' first pass), but enums were registered one at a time, in
+source order, AFTER all struct fields had been resolved, and interfaces
+later still. So `resolveType` could not see them.
+
+**Fix:** `declareEnumNames` registers every enum's name and variant tags,
+and `indexInterfaceDecls` (moved up) every interface's name, before
+`indexStructs`. Naming an enum needs no layout, because enums are
+pointer-represented.
+
+**Second gap, found by the same test once the names resolved:** `match`
+on a struct field of enum type (`match (h.mode)`) failed with "pattern
+'On' expects an enum value, but this scrutinee's enum type is unknown":
+`inferEnumTypeName` had no field-access case (`inferStructTypeName` did).
+Fixed by giving it the same Member case, resolving the field's declared
+type through `resolveEnumTypeName`.
+
+Tests: `test_type_order.frust` (every type declared
+after its use; hand-predicted 20266917) and
+`test_type_order_interface.frust` (hand-predicted 1). Both failed with
+"unknown type" on the compiler before the fix, and give their predicted
+values after it. No regressions: every other `test_*.frust` gives exactly
+what it gave before, and `tests/wrong_programs` is unchanged (69 wrong
+programs: 55 refused, 14 accepted, no crashes).
+
 ### Compiler silently returned success even when codegen had failed
 
 **Status: DONE - 2026-09-16, commit `61c0e4c`.** `compileProgram`'s own
