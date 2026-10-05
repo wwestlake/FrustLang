@@ -69,3 +69,11 @@ FRUST_RUNTIME_EXPORT void* frust_buf_get_ptr(void* const* base, int64_t idx) {
 FRUST_RUNTIME_EXPORT void frust_buf_set_ptr(void** base, int64_t idx, void* val) {
     base[idx] = val;
 }
+
+FRUST_RUNTIME_EXPORT void (*g_frust_dbg_callback)(int, int) = nullptr;
+
+FRUST_RUNTIME_EXPORT void frust_dbg_tick(int line, int col) {
+    if (g_frust_dbg_callback) {
+        g_frust_dbg_callback(line, col);
+    }
+}

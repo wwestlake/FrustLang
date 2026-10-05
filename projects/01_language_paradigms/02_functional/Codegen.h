@@ -2184,6 +2184,17 @@ private:
     llvm::Value* compileExpr(const Expr* expr) {
         if (!expr) return nullptr;
 
+        if (expr->loc.line > 0 && !blockTerminated) {
+            llvm::FunctionCallee dbgTickFn = module.getOrInsertFunction(
+                "frust_dbg_tick",
+                llvm::FunctionType::get(builder.getVoidTy(), {builder.getInt32Ty(), builder.getInt32Ty()}, false)
+            );
+            builder.CreateCall(dbgTickFn, {
+                llvm::ConstantInt::get(builder.getInt32Ty(), expr->loc.line),
+                llvm::ConstantInt::get(builder.getInt32Ty(), expr->loc.col)
+            });
+        }
+
         switch (expr->kind) {
             case ExprKind::IntLiteral:
                 return llvm::ConstantInt::get(context, llvm::APInt(64, static_cast<uint64_t>(expr->intValue), true));
