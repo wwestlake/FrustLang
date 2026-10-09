@@ -62,6 +62,8 @@ the signal to stop and just build the Windows version.
 ## Git discipline
 
 - **Commit AND push proactively, both, every time.** After every verified build/change: commit right then, push to `origin`/`main` right after. Don't wait to be asked for either one.
+- **Commit to protect the code - don't hold a commit waiting on tests.** Once a change builds, commit and push; note pending verification in the message and follow up (user, 2026-10-09).
+- **You own every uncommitted change that is part of the build, whoever made it.** Modified source/CMake/build files you didn't write still get committed (say in the message they were found in the tree). The only uncommitted code allowed is what you're actively mid-way through right now. Temp files, logs and debug scratch outside the build may stay untracked.
 - **This repo has no deployment - it's just a git repo.** `main` is the working branch; pushing straight to it carries no CI/CD or production risk. Treat pushing to `main` as routine, not something to hesitate over.
 - Never force-push, never `--no-verify`, never skip hooks without being told to.
 - Never summarize a set of tracked work (a gap list, a checklist) as "done"/"closed"/"complete" if even one item in it is genuinely PARTIAL - the summary sentence must reflect the worst status in the set, not the majority. Say "N of M done, rest open" plainly.
