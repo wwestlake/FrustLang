@@ -369,3 +369,5 @@ bool DockManager::loadLayoutFromFile(const juce::File& file)
 }
 
 } // namespace CreationDock
+
+
