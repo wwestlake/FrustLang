@@ -650,6 +650,31 @@ Nodes may include editor position data:
 
 Positions are optional. If absent, the IDE auto-lays out nodes.
 
+## Connections (schemaVersion 3)
+
+Version 3 adds an explicit `connections` section; everything else is
+unchanged. A wire names the output pin it leaves, so wires from a node's
+second or third output (Branch `false`, a For Loop's `index`) survive a
+save, and an input may take several wires where its node allows it.
+
+```json
+"connections": [
+  { "id": "choose.false->say.in",
+    "from": { "node": "choose", "pin": "false", "index": 1 },
+    "to":   { "node": "say", "pin": "in", "index": 0 } },
+  { "id": "x.x->sum.a",
+    "from": { "input": "x", "pin": "x", "index": 0 },
+    "to":   { "node": "sum", "pin": "a", "index": 0 } }
+]
+```
+
+When present it is authoritative. Each node's `inputs` array is still
+written as the compiler-format copy (`{"ref", "pin"}`, `{"param"}`,
+`{"default"}`), so backends that read `inputs` keep working. Readers of
+versions 1 and 2 derive connections from `inputs`, each from the
+referenced node's first output. The reader, writer and validator live in
+[`frust-node-graph`](../frust-node-graph).
+
 ## Debug Markers
 
 Diagram-level debugging stores user intent in the schematic. Target

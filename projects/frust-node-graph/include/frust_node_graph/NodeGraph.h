@@ -128,6 +128,9 @@ public:
     Connection& connectGraphInput(const juce::String& inputName,
                                   const juce::String& toNode, const juce::String& toPin);
     std::vector<const Connection*> connectionsInto(const juce::String& nodeId, const juce::String& pin) const;
+    // Gives each connection without an id one derived from its ends
+    // ("from.pin->to.pin"), so the same wiring always gets the same id.
+    void assignMissingConnectionIds();
 
     // The node definitions this graph resolves against: the built-ins plus a
     // call_function definition for each subgraph and for each external
