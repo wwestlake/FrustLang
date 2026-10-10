@@ -258,11 +258,6 @@ std::vector<const Connection*> Graph::connectionsInto(const juce::String& nodeId
     return found;
 }
 
-void Graph::assignMissingConnectionIds()
-{
-    assignConnectionIds(connections);
-}
-
 DefinitionRegistry Graph::definitions() const
 {
     DefinitionRegistry registry;
