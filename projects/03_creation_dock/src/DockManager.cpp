@@ -164,7 +164,7 @@ void DockManager::handlePanelDragEnded(DockPanel* panel, const juce::MouseEvent&
     // DockTab, but the overlay was never updated for it - treating that as a
     // "dropped outside everything" would float the panel on every ordinary
     // tab click. Only act if an actual drag happened.
-    if (!e.mouseWasDraggedSinceMouseDown()) {
+    if (!e.mouseWasDraggedSinceMouseDown() || e.getDistanceFromDragStart() < 8) {
         overlay.hideOverlay();
         return;
     }

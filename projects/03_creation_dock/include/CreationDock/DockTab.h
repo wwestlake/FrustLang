@@ -42,6 +42,7 @@ private:
 
     bool active = false;
     bool isBeingDragged = false;
+    bool dragStarted = false;
     bool closeHovered = false;
 
     juce::Rectangle<int> closeButtonBounds;

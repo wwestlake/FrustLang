@@ -52,21 +52,33 @@ void DockTab::mouseDown(const juce::MouseEvent& e)
 
     zone.setActivePanel(&panel);
 
-    isBeingDragged = true;
+    dragStarted = false;
+    isBeingDragged = false;
     repaint();
 }
 
 void DockTab::mouseDrag(const juce::MouseEvent& e)
 {
+    if (!dragStarted) {
+        if (e.getDistanceFromDragStart() < 8)
+            return;
+        dragStarted = true;
+        isBeingDragged = true;
+        repaint();
+    }
+
     if (panel.onTitleBarDragged) panel.onTitleBarDragged(&panel, e);
 }
 
 void DockTab::mouseUp(const juce::MouseEvent& e)
 {
+    const bool wasDragging = dragStarted;
+    dragStarted = false;
     isBeingDragged = false;
     repaint();
 
-    if (panel.onTitleBarDragEnded) panel.onTitleBarDragEnded(&panel, e);
+    if (wasDragging && panel.onTitleBarDragEnded)
+        panel.onTitleBarDragEnded(&panel, e);
 }
 
 void DockTab::mouseDoubleClick(const juce::MouseEvent& e)

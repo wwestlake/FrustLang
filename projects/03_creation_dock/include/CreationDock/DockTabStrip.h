@@ -23,18 +23,50 @@ public:
 
     void paint(juce::Graphics& g) override;
     void resized() override;
+    void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override;
 
     DockTab* addTabFor(DockPanel& panel);
     void removeTabFor(DockPanel* panel);
     void setActivePanel(DockPanel* panel);
+    void revealPanel(DockPanel* panel);
 
     int getNumTabs() const { return (int) tabViews.size(); }
     DockPanel* getPanelAt(int index) const;
     int indexOfPanel(DockPanel* panel) const;
 
 private:
+    class TabContainer final : public juce::Component
+    {
+    public:
+        explicit TabContainer(DockTabStrip& ownerStrip) : owner(ownerStrip) {}
+        void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override
+        {
+            owner.mouseWheelMove(e, wheel);
+        }
+    private:
+        DockTabStrip& owner;
+    };
+
+    class NavButton final : public juce::Button
+    {
+    public:
+        NavButton(const juce::String& name, bool isLeftArrow);
+        void paintButton(juce::Graphics& g, bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown) override;
+    private:
+        bool isLeft;
+    };
+
+    void updateLayout();
+    void setScrollOffset(int newOffset);
+    int getTotalTabsWidth() const;
+
     DockZone& zone;
+    TabContainer tabContainer { *this };
+    NavButton leftButton { "Scroll Left", true };
+    NavButton rightButton { "Scroll Right", false };
     std::vector<std::unique_ptr<DockTab>> tabViews;
+    int scrollOffset = 0;
+    bool isOverflowing = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DockTabStrip)
 };
