@@ -6,6 +6,9 @@
 #include "DockOverlay.h"
 #include "FloatingDockWindow.h"
 
+#include <map>
+#include <vector>
+
 namespace CreationDock {
 
 class DockManager : public juce::Component
@@ -22,6 +25,20 @@ public:
     void floatPanel(DockPanel* panel);
     void dockPanel(DockPanel* panel, DockTargetZone zone);
     void removePanel(DockPanel* panel);
+
+    // Visibility and activation management (View menu / workspace)
+    bool isPanelOpen(const juce::String& id) const;
+    bool isPanelActive(const juce::String& id) const;
+    void hidePanel(const juce::String& id);
+    void showPanel(const juce::String& id);
+    void activatePanel(const juce::String& id);
+    void togglePanel(const juce::String& id);
+
+    DockPanel* findPanelById(const juce::String& id) const;
+    juce::String getPanelTitle(const juce::String& id) const;
+    std::vector<juce::String> getRegisteredPanelIds() const;
+    DockTargetZone getDefaultZone(const juce::String& id) const;
+    DockTargetZone zoneContainingPanel(DockPanel* panel) const;
 
     // Rearranges every registered panel back to the zone it was first registered
     // into, and resets zone sizes to the library defaults.
@@ -43,6 +60,7 @@ private:
     std::vector<std::unique_ptr<DockPanel>> registeredPanels;
     std::vector<std::unique_ptr<FloatingDockWindow>> floatingWindows;
     std::vector<std::pair<juce::String, DockTargetZone>> defaultLayout;
+    std::map<juce::String, DockTargetZone> lastKnownZones;
 
     void handlePanelTitleDrag(DockPanel* panel, const juce::MouseEvent& e);
     void handlePanelDragEnded(DockPanel* panel, const juce::MouseEvent& e);
@@ -53,13 +71,9 @@ private:
     // dragged out past the dock area, so it detaches under the cursor).
     void floatPanelAt(DockPanel* panel, juce::Point<int> screenPos);
 
-    // Pulls a panel out of wherever it currently lives (the not-yet-placed list
-    // or one of the container's zones) so it can be moved elsewhere. Does not
-    // look inside floating windows - those are detached via handleFloatingWindowClosed.
+    // Pulls a panel out of wherever it currently lives (the not-yet-placed list,
+    // one of the container's zones, or a floating window) so it can be moved elsewhere.
     std::unique_ptr<DockPanel> extractPanel(DockPanel* panel);
-
-    DockTargetZone zoneContainingPanel(DockPanel* panel) const;
-    DockPanel* findPanelById(const juce::String& id) const;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DockManager)
 };

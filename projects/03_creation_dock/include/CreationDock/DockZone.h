@@ -29,6 +29,7 @@ public:
     // Called by a DockTab when it's clicked - makes its panel the visible
     // one in this zone and hides the rest.
     void setActivePanel(DockPanel* panel);
+    DockPanel* getActivePanel() const { return activePanel; }
 
     // Re-measures/repaints the tab strip (e.g. after a panel's title changed).
     void refreshLayout();
