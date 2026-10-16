@@ -554,7 +554,7 @@ FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_load_object(const char* nam
                 llvm::consumeError(symNameOrErr.takeError());
                 continue;
             }
-            const auto flagsOrErr = sym.getFlags();
+            auto flagsOrErr = sym.getFlags();
             if (!flagsOrErr) {
                 llvm::consumeError(flagsOrErr.takeError());
                 continue;
