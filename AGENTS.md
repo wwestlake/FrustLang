@@ -50,7 +50,7 @@ the signal to stop and just build the Windows version.
 
 1. Make the change.
 2. Build it (Debug config) and actually run/verify it — don't claim done on compile-success alone. For a language/codegen change, write a real test with a hand-predicted expected result BEFORE running it, then run and confirm the match.
-3. Run the full regression sweep (`09_frust_plugin_host`'s example suite, `02_juce_language_host` rebuild) when the change touches core codegen/grammar paths - not just the one new test.
+3. Run targeted tests relevant to the changed component. Broad or monolithic regression sweeps must not run automatically.
 4. `git status` / `git diff` — check what's actually changed before staging.
 5. Commit, with a real message explaining why, not just what.
 6. Push to `origin` — the user has standing authorization to push routinely ("push early, push often"); still use judgment on force-push/branch-deletion style destructive ops, those always need explicit sign-off.
@@ -64,7 +64,7 @@ the signal to stop and just build the Windows version.
 - **Commit AND push proactively, both, every time.** After every verified build/change: commit right then, push to `origin`/`main` right after. Don't wait to be asked for either one.
 - **Commit to protect the code - don't hold a commit waiting on tests.** Once a change builds, commit and push; note pending verification in the message and follow up (user, 2026-10-09).
 - **You own every uncommitted change that is part of the build, whoever made it.** Modified source/CMake/build files you didn't write still get committed (say in the message they were found in the tree). The only uncommitted code allowed is what you're actively mid-way through right now. Temp files, logs and debug scratch outside the build may stay untracked.
-- **This repo has no deployment - it's just a git repo.** `main` is the working branch; pushing straight to it carries no CI/CD or production risk. Treat pushing to `main` as routine, not something to hesitate over.
+- **This repo has no deployment - it's just a git repo.** When working on assigned feature branches (e.g. `feat/...`), commit and push proactively to the feature branch, then merge into `master` and push `origin/master` upon completing the assignment.
 - Never force-push, never `--no-verify`, never skip hooks without being told to.
 - Never summarize a set of tracked work (a gap list, a checklist) as "done"/"closed"/"complete" if even one item in it is genuinely PARTIAL - the summary sentence must reflect the worst status in the set, not the majority. Say "N of M done, rest open" plainly.
 
