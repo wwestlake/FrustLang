@@ -43,6 +43,7 @@
 
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 // A loaded plugin's manifest is no longer optional metadata a host might
@@ -122,6 +123,17 @@ FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_reload_source(FrustPluginHa
                                                                    const char* sourceText,
                                                                    FrustPluginSourceProvider provider,
                                                                    void* providerUserData);
+
+// Loads a precompiled native object file (emitted by frust::Compile with
+// emitObject=true) directly into an isolated JITDylib without parsing or
+// compiling Frust source text. Validates `manifestJson`, host compatibility,
+// object file integrity, target architecture, and declared entry points before
+// linking into the JIT. Returns NULL on any validation or link failure (with
+// reason in frust_plugin_last_error()).
+FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_load_object(const char* name,
+                                                                 const char* manifestJson,
+                                                                 const uint8_t* objectBytes,
+                                                                 size_t objectSize);
 
 // Returns the manifest of an already-loaded plugin - specifically, the
 // SAME parsed PluginManifest frust_plugin_load() itself already

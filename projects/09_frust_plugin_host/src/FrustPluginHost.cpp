@@ -30,7 +30,10 @@
 
 #include <llvm/ExecutionEngine/Orc/Core.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
+#include <llvm/Object/ObjectFile.h>
+#include <llvm/Support/MemoryBuffer.h>
 #include <llvm/Support/TargetSelect.h>
+#include <llvm/TargetParser/Triple.h>
 
 using namespace frust;
 
@@ -47,6 +50,7 @@ struct HostState {
     llvm::orc::JITDylib* hostDylib = nullptr;
     uint64_t nextPluginId = 0;
     bool initAttempted = false;
+    std::unordered_map<std::string, void*> registeredHostFunctions;
 
     // This host's own declared identity - see
     // frust_plugin_host_set_application_identity's header doc. Process-
@@ -488,6 +492,115 @@ FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_reload_source(FrustPluginHa
         handle, MakeSourceRequest(handle->path, sourceText, provider, providerUserData));
 }
 
+FRUST_PLUGIN_HOST_API FrustPluginHandle frust_plugin_load_object(const char* name,
+                                                                 const char* manifestJson,
+                                                                 const uint8_t* objectBytes,
+                                                                 size_t objectSize) {
+    if (!name || !name[0]) {
+        reportError("frust_plugin_load_object: plugin name is required");
+        return nullptr;
+    }
+    if (!manifestJson || !manifestJson[0]) {
+        reportError("refusing to load '" + std::string(name) + "': no plugin manifest provided");
+        return nullptr;
+    }
+    if (!objectBytes || objectSize == 0) {
+        reportError("refusing to load '" + std::string(name) + "': empty or null object code buffer");
+        return nullptr;
+    }
+
+    auto& s = state();
+    {
+        std::lock_guard<std::mutex> lock(s.mutex);
+        if (!s.ensureInit()) return nullptr;
+    }
+
+    auto parsedManifest = frust_plugin_host::ParseManifestJson(manifestJson, name);
+    if (!parsedManifest) {
+        reportError("refusing to load '" + std::string(name) + "': manifest failed to parse");
+        return nullptr;
+    }
+    if (!frust_plugin_host::IsCompatible(*parsedManifest)) {
+        reportError("refusing to load '" + std::string(name) + "': " +
+                    frust_plugin_host::LastIncompatibilityReason());
+        return nullptr;
+    }
+
+    auto memBuf = llvm::MemoryBuffer::getMemBufferCopy(
+        llvm::StringRef(reinterpret_cast<const char*>(objectBytes), objectSize), name);
+
+    auto objOrErr = llvm::object::ObjectFile::createObjectFile(memBuf->getMemBufferRef());
+    if (!objOrErr) {
+        reportError("refusing to load '" + std::string(name) + "': invalid or corrupt object file (" +
+                    llvm::toString(objOrErr.takeError()) + ")");
+        return nullptr;
+    }
+
+    std::lock_guard<std::mutex> lock(s.mutex);
+    const auto hostArch = s.jit->getTargetTriple().getArch();
+    const auto objArch = (*objOrErr)->getArch();
+    if (objArch != hostArch) {
+        reportError("refusing to load '" + std::string(name) + "': object architecture (" +
+                    std::string(llvm::Triple::getArchTypeName(objArch)) + ") does not match host (" +
+                    std::string(llvm::Triple::getArchTypeName(hostArch)) + ")");
+        return nullptr;
+    }
+
+    if (!parsedManifest->entryPoints.empty()) {
+        std::vector<std::string> foundSymbols;
+        for (const auto& sym : (*objOrErr)->symbols()) {
+            auto symNameOrErr = sym.getName();
+            if (!symNameOrErr) {
+                llvm::consumeError(symNameOrErr.takeError());
+                continue;
+            }
+            const auto flagsOrErr = sym.getFlags();
+            if (!flagsOrErr) {
+                llvm::consumeError(flagsOrErr.takeError());
+                continue;
+            }
+            if ((*flagsOrErr) & llvm::object::BasicSymbolRef::SF_Undefined)
+                continue;
+            std::string sName = symNameOrErr->str();
+            if (!sName.empty() && sName[0] == '_')
+                foundSymbols.push_back(sName.substr(1));
+            foundSymbols.push_back(std::move(sName));
+        }
+        for (const auto& ep : parsedManifest->entryPoints) {
+            if (std::find(foundSymbols.begin(), foundSymbols.end(), ep) == foundSymbols.end()) {
+                reportError("refusing to load '" + std::string(name) +
+                            "': declared entry point '" + ep + "' is missing from object file");
+                return nullptr;
+            }
+        }
+    }
+
+    std::string dylibName = "frust_plugin#" + std::to_string(s.nextPluginId++) + ":" + name;
+    auto jdOrErr = s.jit->createJITDylib(dylibName);
+    if (!jdOrErr) {
+        reportError("failed to create JITDylib for '" + std::string(name) + "'");
+        return nullptr;
+    }
+    llvm::orc::JITDylib& JD = *jdOrErr;
+    JD.addToLinkOrder(*s.hostDylib);
+
+    if (auto err = s.jit->addObjectFile(JD, std::move(memBuf))) {
+        reportError("JIT object load failed for '" + std::string(name) + "': " + llvm::toString(std::move(err)));
+        if (auto rmErr = s.jit->getExecutionSession().removeJITDylib(JD)) {
+            llvm::consumeError(std::move(rmErr));
+        }
+        return nullptr;
+    }
+
+    g_lastError.clear();
+    auto* handle = new FrustPluginHandleImpl();
+    handle->path = name;
+    handle->dylibName = dylibName;
+    handle->dylib = &JD;
+    handle->manifest = std::move(*parsedManifest);
+    return handle;
+}
+
 FRUST_PLUGIN_HOST_API FrustPluginManifestHandle frust_plugin_get_manifest(FrustPluginHandle handle) {
     if (!handle) return nullptr;
     return frust_plugin_host::WrapManifest(handle->manifest);
@@ -632,17 +745,30 @@ FRUST_PLUGIN_HOST_API void* frust_plugin_get_fn(FrustPluginHandle handle, const 
 }
 
 FRUST_PLUGIN_HOST_API void frust_plugin_register_host_function(const char* name, void* fn_ptr) {
+    if (!name || !name[0]) return;
     auto& s = state();
     std::lock_guard<std::mutex> lock(s.mutex);
     if (!s.ensureInit()) return;
 
+    auto existing = s.registeredHostFunctions.find(name);
+    if (existing != s.registeredHostFunctions.end() && existing->second == fn_ptr)
+        return;
+
     llvm::orc::MangleAndInterner mangle(s.jit->getExecutionSession(), s.jit->getDataLayout());
+    auto symName = mangle(name);
+    if (existing != s.registeredHostFunctions.end()) {
+        if (auto rmErr = s.hostDylib->remove({ symName })) {
+            llvm::consumeError(std::move(rmErr));
+        }
+    }
     auto err = s.hostDylib->define(llvm::orc::absoluteSymbols({
-        { mangle(name), llvm::orc::ExecutorSymbolDef(llvm::orc::ExecutorAddr::fromPtr(fn_ptr), llvm::JITSymbolFlags::Exported) }
+        { symName, llvm::orc::ExecutorSymbolDef(llvm::orc::ExecutorAddr::fromPtr(fn_ptr), llvm::JITSymbolFlags::Exported) }
     }));
     if (err) {
         reportError("failed to register host function '" + std::string(name) + "': " + llvm::toString(std::move(err)));
+        return;
     }
+    s.registeredHostFunctions[name] = fn_ptr;
 }
 
 FRUST_PLUGIN_HOST_API const char* frust_plugin_last_error(void) {
