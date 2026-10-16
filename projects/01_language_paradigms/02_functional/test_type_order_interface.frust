@@ -1,0 +1,8 @@
+// FRUST_LANG_SPEC.md 5.1: a struct field typed as an interface declared after the struct. Before the fix the
+// struct's layout failed with "unknown type 'Automation'". Nothing is constructed: the program only has to compile.
+// Hand-predicted: 1.
+struct Track { automation: Automation }
+interface Automation {
+    fn tick(&mut self, delta_time: f32) -> f32
+}
+fn main() -> i64 = { 1 }

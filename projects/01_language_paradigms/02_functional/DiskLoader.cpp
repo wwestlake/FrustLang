@@ -186,6 +186,56 @@ bool ResolveImportsFromDisk(Program* prog, AstArena& arena, std::vector<std::str
 }
 
 
+bool CompileFilesToObjectFile(const std::vector<std::string>& paths, const std::string& outputPath,
+                              const std::string& podNamespace, bool dumpIr) {
+    InstallDiskResolvers();
+
+    CompileRequest request;
+    request.podNamespace = podNamespace;
+    request.captureIr = dumpIr;
+
+    for (const auto& path : paths) {
+        SourceFile file;
+        file.name = path;
+        std::ifstream in(path, std::ios::binary);
+        if (!in) {
+            std::cerr << "frust: cannot open '" << path << "'\n";
+            return false;
+        }
+        std::ostringstream all;
+        all << in.rdbuf();
+        file.text = all.str();
+        request.sources.push_back(std::move(file));
+    }
+
+    // On the command line the files are real files: `use self::x;` names a file next to the one that
+    // says it, and `import pod, "version";` resolves through frate.json and the Frate cache.
+    request.siblingFiles = DiskSourceProvider();
+    request.pods = FratePodProvider();
+
+    const CompileResult result = Compile(request);
+
+    for (const auto& d : result.diagnostics) std::cerr << FormatDiagnostic(d) << "\n";
+    if (dumpIr) {
+        std::ofstream pre("output_pre_opt.ll");
+        pre << result.irBeforeOptimization;
+        std::ofstream post("output_post_opt.ll");
+        post << result.irAfterOptimization;
+    }
+    if (!result.ok) {
+        std::cerr << "frust: " << (result.hasErrors() ? "compilation failed" : "no object produced") << ", not emitting object\n";
+        return false;
+    }
+
+    std::ofstream out(outputPath, std::ios::binary);
+    if (!out) {
+        std::cerr << "Could not open file: " << outputPath << "\n";
+        return false;
+    }
+    out.write(reinterpret_cast<const char*>(result.object.data()), static_cast<std::streamsize>(result.object.size()));
+    return static_cast<bool>(out);
+}
+
 void InstallDiskResolvers() {
     SetImportResolver(ResolveImportsFromDisk);
     SetFileReader([](const std::string& path, std::string& text) {

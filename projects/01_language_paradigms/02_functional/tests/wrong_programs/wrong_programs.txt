@@ -1,0 +1,357 @@
+=== method_on_number
+pub fn run() -> String = {
+    let n = 3;
+    n.abs();
+    "y"
+}
+=== assign_immutable
+pub fn run() -> String = {
+    let n = 3;
+    n = 4;
+    "y"
+}
+=== undeclared_var
+pub fn run() -> String = {
+    m = 4;
+    "y"
+}
+=== use_undeclared
+pub fn run() -> String = {
+    let a = m + 1;
+    "y"
+}
+=== wrong_arg_count
+pub fn run() -> String = {
+    station_track_add();
+    "y"
+}
+=== too_many_args
+pub fn run() -> String = {
+    station_track_add("a", "b");
+    "y"
+}
+=== wrong_arg_type
+pub fn run() -> String = {
+    station_track_add(5);
+    "y"
+}
+=== wrong_arg_type2
+pub fn run() -> String = {
+    station_track_set_volume_db("x", "y");
+    "y"
+}
+=== return_number
+pub fn run() -> String = {
+    return 5;
+}
+=== return_number_tail
+pub fn run() -> String = {
+    5
+}
+=== annotation_i32
+pub fn run() -> String = {
+    let x: i32 = 5;
+    "y"
+}
+=== annotation_vec
+pub fn run() -> String = {
+    let v: Vec<i64> = 1;
+    "y"
+}
+=== unknown_type
+pub fn run() -> String = {
+    let v: Foo = 1;
+    "y"
+}
+=== closure
+pub fn run() -> String = {
+    let f = |x| x + 1;
+    "y"
+}
+=== impl_self
+struct P { x: i64 }
+impl P { fn get(&self) -> i64 { self.x } }
+pub fn run() -> String = {
+    "y"
+}
+=== self_ref
+pub fn run() -> String = {
+    let a = a;
+    "y"
+}
+=== string_lt
+pub fn run() -> String = {
+    let a = "a" < "b";
+    "y"
+}
+=== string_eq
+pub fn run() -> String = {
+    let a = "a" == "b";
+    if (a) { "y" } else { "n" }
+}
+=== not_number
+pub fn run() -> String = {
+    let a = !5;
+    "y"
+}
+=== not_string
+pub fn run() -> String = {
+    let a = !"x";
+    "y"
+}
+=== cast_string
+pub fn run() -> String = {
+    let a = "x" as f64;
+    "y"
+}
+=== cast_to_string
+pub fn run() -> String = {
+    let a = 5 as String;
+    a
+}
+=== branch_mismatch
+pub fn run() -> String = {
+    let x = if (true) { 1 } else { "a" };
+    "y"
+}
+=== if_without_else_value
+pub fn run() -> String = {
+    let x = if (true) { 1 };
+    "y"
+}
+=== break_outside
+pub fn run() -> String = {
+    break;
+    "y"
+}
+=== continue_outside
+pub fn run() -> String = {
+    continue;
+    "y"
+}
+=== return_bare
+pub fn run() -> String = {
+    return;
+}
+=== index_number
+pub fn run() -> String = {
+    let a = 5;
+    let b = a[0];
+    "y"
+}
+=== index_string
+pub fn run() -> String = {
+    let s = "abc";
+    let c = s[0];
+    "y"
+}
+=== array_literal
+pub fn run() -> String = {
+    let a = [1, 2, 3];
+    let b = a[1];
+    station_log_i64("b", b);
+    "y"
+}
+=== array_mixed
+pub fn run() -> String = {
+    let a = [1, "x", 2.5];
+    "y"
+}
+=== call_variable
+pub fn run() -> String = {
+    let a = 5;
+    a(1);
+    "y"
+}
+=== call_string
+pub fn run() -> String = {
+    "x"(1);
+    "y"
+}
+=== float_string_add
+pub fn run() -> String = {
+    let a = 1.5 + "a";
+    "y"
+}
+=== string_and_int_eq
+pub fn run() -> String = {
+    let a = "a" == 1;
+    "y"
+}
+=== bool_arith
+pub fn run() -> String = {
+    let a = true + true;
+    "y"
+}
+=== shift_float
+pub fn run() -> String = {
+    let a = 1.5 << 2;
+    "y"
+}
+=== unit_return
+pub fn run() -> String = {
+    station_track_count();
+    ()
+}
+=== match_int
+pub fn run() -> String = {
+    let a = 2;
+    match a {
+        1 => "one",
+        2 => "two",
+        _ => "other"
+    }
+}
+=== match_string
+pub fn run() -> String = {
+    let a = "x";
+    match a {
+        "x" => "one",
+        _ => "other"
+    }
+}
+=== for_float
+pub fn run() -> String = {
+    for i in 0.0..3.0 {
+        station_log_f64("i", i);
+    };
+    "y"
+}
+=== for_string
+pub fn run() -> String = {
+    for i in "a".."b" {
+        station_log("i");
+    };
+    "y"
+}
+=== while_string
+pub fn run() -> String = {
+    while ("x") {
+        station_log("i");
+    };
+    "y"
+}
+=== nested_fn
+pub fn run() -> String = {
+    fn inner() -> i64 = { 1 }
+    "y"
+}
+=== duplicate_run
+pub fn run() -> String = { "a" }
+pub fn run() -> String = { "b" }
+=== recursion
+fn f(n: i64) -> i64 = { f(n + 1) }
+pub fn run() -> String = {
+    "y"
+}
+=== struct_literal_unknown
+pub fn run() -> String = {
+    let p = Point { x: 1 };
+    "y"
+}
+=== member_on_number
+pub fn run() -> String = {
+    let n = 5;
+    let m = n.x;
+    "y"
+}
+=== assign_to_call
+pub fn run() -> String = {
+    station_track_count() = 5;
+    "y"
+}
+=== assign_literal
+pub fn run() -> String = {
+    5 = 6;
+    "y"
+}
+=== assign_type_mismatch
+pub fn run() -> String = {
+    let mut n = 3;
+    n = "x";
+    "y"
+}
+=== let_type_mismatch
+pub fn run() -> String = {
+    let n: i64 = "x";
+    "y"
+}
+=== param_type_missing
+fn f(a) -> i64 = { 1 }
+pub fn run() -> String = {
+    "y"
+}
+=== return_type_missing
+fn f(a: i64) = { a }
+pub fn run() -> String = {
+    "y"
+}
+=== import_std
+use std::collections::HashMap;
+pub fn run() -> String = {
+    "y"
+}
+=== attribute
+#[derive(Debug)]
+pub fn run() -> String = {
+    "y"
+}
+=== unsafe_block
+pub fn run() -> String = {
+    unsafe { station_track_count(); };
+    "y"
+}
+=== lifetime
+fn f<'a>(a: &'a str) -> &'a str = { a }
+pub fn run() -> String = {
+    "y"
+}
+=== generic_call
+pub fn run() -> String = {
+    let a = station_track_count::<i64>();
+    "y"
+}
+=== ref_param
+fn f(a: &i64) -> i64 = { *a }
+pub fn run() -> String = {
+    let n = 5;
+    f(&n);
+    "y"
+}
+=== deref_number
+pub fn run() -> String = {
+    let n = 5;
+    let m = *n;
+    "y"
+}
+=== huge_number
+pub fn run() -> String = {
+    let n = 99999999999999999999999999;
+    "y"
+}
+=== bad_float
+pub fn run() -> String = {
+    let n = 1.2.3;
+    "y"
+}
+=== unterminated_string
+pub fn run() -> String = {
+    let n = "abc;
+    "y"
+}
+=== nul_and_unicode
+pub fn run() -> String = {
+    "héllo wörld 日本語"
+}
+=== empty_function_body
+pub fn run() -> String = {}
+=== only_comment
+// nothing
+=== block_comment_unclosed
+/* never closed
+pub fn run() -> String = { "y" }
+=== deeply_nested
+pub fn run() -> String = {
+    let a = ((((((((((((((((((((1))))))))))))))))))));
+    "y"
+}

@@ -263,6 +263,28 @@ endif()
 target_link_libraries(frust_compiler PRIVATE frust_lang frust_runtime ${FRUST_LLVM_LIBS})
 
 # ------------------------------------------------------------------------------
+# frate: the package manager's command line. `frate build` compiles in process
+# through frust_lang (CompileFilesToObjectFile) - it launches no compiler. The
+# only program it still starts is the platform linker, to turn a `bin` pod's
+# object files into an executable.
+# ------------------------------------------------------------------------------
+add_executable(frate_cli "${CMAKE_CURRENT_SOURCE_DIR}/../../05_frate/src/main.cpp")
+set_target_properties(frate_cli PROPERTIES OUTPUT_NAME "frate")
+target_compile_definitions(frate_cli PRIVATE
+    "FRUST_BUILD_VERSION=\"${FRUST_BUILD_VERSION}\"")
+if(DEFINED FRUST_LLVM_ROOT)
+    target_compile_definitions(frate_cli PRIVATE
+        "FRUST_LLVM_ROOT=\"${FRUST_LLVM_ROOT}\"")
+endif()
+target_include_directories(frate_cli PRIVATE "${FRUST_GEN_DIR}" "${FRUST_FLEXLEXER_INCLUDE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../05_frate/src")
+if(WIN32)
+    target_compile_definitions(frate_cli PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+target_link_libraries(frate_cli PRIVATE frate_lib frust_lang frust_runtime ${FRUST_LLVM_LIBS})
+install(TARGETS frate_cli RUNTIME DESTINATION bin)
+
+# ------------------------------------------------------------------------------
 # frust_compiler_api_smoke: checks the embeddable compiler (CompilerApi.h) -
 # source text in, diagnostics and object bytes out, and that it touches no file.
 # Exit code 0 = pass.

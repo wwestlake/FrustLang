@@ -9,6 +9,7 @@
 #include <frate/FrateRegistryClient.h>
 #include <frate/FrateResolver.h>
 #include <frate/FrateConfig.h>
+#include <DiskLoader.h>
 #include "PodMetadataJson.h"
 #include <map>
 
@@ -34,12 +35,6 @@ juce::String loadIdeAuthToken() {
     if (token.isEmpty() || expiresAt <= juce::Time::getCurrentTime().toMilliseconds()) return {};
 
     return token;
-}
-
-static juce::File resolveSiblingTool(const juce::String& exeName) {
-    return juce::File::getSpecialLocation(juce::File::currentExecutableFile)
-        .getParentDirectory()
-        .getChildFile(exeName);
 }
 
 static juce::File resolveLlvmLibDir(const juce::String& configName) {
@@ -527,38 +522,19 @@ bool buildPod(const juce::File& podDir, bool isRun, const std::map<std::string, 
                 std::cerr << "Error: Could not collect source files for dep '" << dep.name << "': " << depCollectError << "\n";
                 return false;
             }
-            juce::File depCompilerExe = resolveSiblingTool("frust_compiler_x.exe");
-            if (!depCompilerExe.existsAsFile()) depCompilerExe = resolveSiblingTool("frust_compiler.exe");
-            if (!depCompilerExe.existsAsFile()) {
-                std::cerr << "Error: frust_compiler not found, cannot compile dependency '" << dep.name << "'\n";
-                return false;
-            }
-            juce::StringArray depArgs;
-            depArgs.add(depCompilerExe.getFullPathName());
-            depArgs.add("--emit-obj");
-            depArgs.add(depObj.getFullPathName());
-            // No --namespace here: building the dep's own .o is identical to
-            // running `frate build` inside its directory. --namespace is only
-            // used by the consumer's compiler (ModuleLoader) when importing
-            // the dep's AST, not when compiling the dep itself.
-            for (const auto& f : depSourceFiles) depArgs.add(f.getFullPathName());
+            std::vector<std::string> depInputs;
+            for (const auto& f : depSourceFiles) depInputs.push_back(f.getFullPathName().toStdString());
 
+            // No namespace here: building the dep's own .o is identical to running `frate build` inside
+            // its directory. A namespace is only used by the consumer's compiler when importing the dep's
+            // source, not when compiling the dep itself.
             std::cout << "Compiling cached dependency '" << dep.name << "' v" << dep.version << "...\n";
-            juce::ChildProcess depCompiler;
-            if (depCompiler.start(depArgs)) {
-                juce::String depOut;
-                int depExit = -1;
-                finishChildProcess(depCompiler, depOut, depExit);
-                if (depExit != 0) {
-                    std::cerr << "Error compiling dependency '" << dep.name << "':\n" << depOut << "\n";
-                    return false;
-                }
-            } else {
-                std::cerr << "Error: Failed to launch compiler for dependency '" << dep.name << "'\n";
+            if (!frust::CompileFilesToObjectFile(depInputs, depObj.getFullPathName().toStdString())) {
+                std::cerr << "Error compiling dependency '" << dep.name << "'\n";
                 return false;
             }
         }
-        
+
         objFiles.push_back(depObj.getFullPathName());
         // For workspace members, add this object file so the workspace can collect them if needed
         workspaceObjFiles.push_back(depObj.getFullPathName());
@@ -585,35 +561,13 @@ bool buildPod(const juce::File& podDir, bool isRun, const std::map<std::string, 
     juce::File mainObj = buildDir.getChildFile(juce::String(meta.name) + ".o");
 
     std::cout << "Compiling " << meta.name << " (" << sourceFiles.size() << " source file(s))...\n";
-    juce::ChildProcess compiler;
-    juce::StringArray args;
-    juce::File compilerExe = resolveSiblingTool("frust_compiler_x.exe");
-    if (!compilerExe.existsAsFile()) compilerExe = resolveSiblingTool("frust_compiler.exe");
-    if (!compilerExe.existsAsFile()) {
-        std::cerr << "Tested: " << compilerExe.getFullPathName() << "\n";
-        std::cerr << "Error: frust_compiler not found next to frate at "
-                  << juce::File::getSpecialLocation(juce::File::currentExecutableFile).getParentDirectory().getFullPathName()
-                  << "\n";
+    std::vector<std::string> inputs;
+    for (const auto& f : sourceFiles) inputs.push_back(f.getFullPathName().toStdString());
+    if (!frust::CompileFilesToObjectFile(inputs, mainObj.getFullPathName().toStdString())) {
+        std::cerr << "Error: compilation of " << meta.name << " failed\n";
         return false;
     }
-    args.add(compilerExe.getFullPathName());
-    args.add("--emit-obj");
-    args.add(mainObj.getFullPathName());
-    for (const auto& f : sourceFiles) args.add(f.getFullPathName());
 
-    if (compiler.start(args)) {
-        juce::String output;
-        int compilerExit = -1;
-        finishChildProcess(compiler, output, compilerExit);
-        if (compilerExit != 0) {
-            std::cerr << "Compiler exited with code " << compilerExit << "\n" << output << "\n";
-            return false;
-        }
-    } else {
-        std::cerr << "Error: Failed to launch frust_compiler at " << compilerExe.getFullPathName() << "\n";
-        return false;
-    }
-    
     objFiles.push_back(mainObj.getFullPathName());
     workspaceObjFiles.push_back(mainObj.getFullPathName());
     

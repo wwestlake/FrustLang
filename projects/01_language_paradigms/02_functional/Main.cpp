@@ -471,62 +471,6 @@ void RunFile(const std::vector<std::string>& paths) {
     });
 }
 
-// Reads a whole file. False if it cannot be opened.
-bool ReadWholeFile(const std::string& path, std::string& text) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return false;
-    std::ostringstream all;
-    all << in.rdbuf();
-    text = all.str();
-    return true;
-}
-
-// The command-line compiler is the only piece that touches the disk: it reads
-// its input files, hands the text to the embeddable compiler (CompilerApi.h),
-// and writes the object bytes it gets back.
-bool CompileToObject(const std::vector<std::string>& paths, const std::string& outputPath, const std::string& currentNamespace) {
-    CompileRequest request;
-    request.podNamespace = currentNamespace;
-    request.captureIr = g_dumpIr;
-
-    for (const auto& path : paths) {
-        SourceFile file;
-        file.name = path;
-        if (!ReadWholeFile(path, file.text)) {
-            std::cerr << "frust: cannot open '" << path << "'\n";
-            return false;
-        }
-        request.sources.push_back(std::move(file));
-    }
-
-    // On the command line the files are real files: `use self::x;` names a file next to the one that
-    // says it, and `import pod, "version";` resolves through frate.json and the Frate cache.
-    request.siblingFiles = DiskSourceProvider();
-    request.pods = FratePodProvider();
-
-    const CompileResult result = Compile(request);
-
-    for (const auto& d : result.diagnostics) std::cerr << FormatDiagnostic(d) << "\n";
-    if (g_dumpIr) {
-        std::ofstream pre("output_pre_opt.ll");
-        pre << result.irBeforeOptimization;
-        std::ofstream post("output_post_opt.ll");
-        post << result.irAfterOptimization;
-    }
-    if (!result.ok) {
-        std::cerr << "frust: " << (result.hasErrors() ? "compilation failed" : "no object produced") << ", not emitting object\n";
-        return false;
-    }
-
-    std::ofstream out(outputPath, std::ios::binary);
-    if (!out) {
-        std::cerr << "Could not open file: " << outputPath << "\n";
-        return false;
-    }
-    out.write(reinterpret_cast<const char*>(result.object.data()), static_cast<std::streamsize>(result.object.size()));
-    return static_cast<bool>(out);
-}
-
 void RunRepl() {
     std::cout << "=======================================================\n";
     std::cout << " Frust v0.1.0 - Parse/AST REPL (flex/bison front end)\n";
@@ -608,7 +552,7 @@ int main(int argc, char** argv) {
         }
         
         std::vector<std::string> inputFiles(argv + fileStart, argv + argc);
-        if (!frust::CompileToObject(inputFiles, outputFile, currentNamespace)) return 1;
+        if (!frust::CompileFilesToObjectFile(inputFiles, outputFile, currentNamespace, frust::g_dumpIr)) return 1;
     } else if (argc >= 2) {
         std::vector<std::string> inputFiles(argv + 1, argv + argc);
         frust::RunFile(inputFiles);
